@@ -16,14 +16,14 @@ class LogSubprocess:
     Helper class with functions for logging calls to subprocesses.
     """
 
-    def __init__(self, component_type, dir, remote_url=None, branch=None, no_pull=False, hide_progress=False):
+    def __init__(self):
         """
         Initialise the LogSubprocess object
         """
         self.pdeathsig = self._child_preexec_set_pdeathsig()
 
 
-    def _child_preexec_set_pdeathsig():
+    def _child_preexec_set_pdeathsig(self):
         """
         When used as the preexec_fn argument for subprocess.Popen etc,
         causes the subprocess to recieve SIGKILL if the parent process
