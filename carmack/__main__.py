@@ -77,13 +77,6 @@ stdout = rich.console.Console()
 # Set up the rich traceback
 rich.traceback.install(console=stderr, width=200, word_wrap=True, extra_lines=1)
 
-
-# 
-# 
-# 
-# 
-# 
-
 def run_carmack():
     # Print carmack header
     stderr.print("\n\n", highlight=False)
