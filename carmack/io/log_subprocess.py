@@ -22,7 +22,6 @@ class LogSubprocess:
         """
         self.pdeathsig = self._child_preexec_set_pdeathsig()
 
-
     def _child_preexec_set_pdeathsig(self):
         """
         When used as the preexec_fn argument for subprocess.Popen etc,
@@ -36,29 +35,21 @@ class LogSubprocess:
             return None
 
     def check_call(self, *args, **kwargs):
-        log.debug("subprocess check_call: %s" % " ".join(*args))
-
         if not 'preexec_fn' in kwargs:
             kwargs['preexec_fn'] = self.pdeathsig
         return subprocess.check_call(*args, **kwargs)
 
     def check_output(self, *args, **kwargs):
-        log.debug("subprocess check_output: %s" % " ".join(*args))
-
         if not 'preexec_fn' in kwargs:
             kwargs['preexec_fn'] = self.pdeathsig
         return subprocess.check_output(*args, **kwargs)
 
     def call(self, *args, **kwargs):
-        log.debug("subprocess call: %s" % " ".join(*args))
-
         if not 'preexec_fn' in kwargs:
             kwargs['preexec_fn'] = self.pdeathsig
         return subprocess.call(*args, **kwargs)
 
     def Popen(self, *args, **kwargs):
-        log.debug("subprocess Popen: %s" % " ".join(*args))
-
         if not 'preexec_fn' in kwargs:
             kwargs['preexec_fn'] = self.pdeathsig
         return subprocess.Popen(*args, **kwargs)

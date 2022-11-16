@@ -14,3 +14,7 @@ class TestIo(unittest.TestCase):
     from .io.log_subprocess import (
         test_log_subprocess
     )
+
+    from .io.subprocess_stream import (
+        test_subprocess_stream_gzip_read
+    )
