@@ -77,27 +77,38 @@ stdout = rich.console.Console()
 # Set up the rich traceback
 rich.traceback.install(console=stderr, width=200, word_wrap=True, extra_lines=1)
 
+
+# 
+# 
+# 
+# 
+# 
+
 def run_carmack():
-     # Print nf-core header
-    stderr.print(f"\n[green]{' ' * 42},--.[grey39]/[green],-.", highlight=False)
-    stderr.print("[blue]          ___     __   __   __   ___     [green]/,-._.--~\\", highlight=False)
-    stderr.print(r"[blue]    |\ | |__  __ /  ` /  \ |__) |__      [yellow]   }  {", highlight=False)
-    stderr.print(r"[blue]    | \| |       \__, \__/ |  \ |___     [green]\`-._,-`-,", highlight=False)
-    stderr.print("[green]                                          `._,._,'\n", highlight=False)
+    # Print carmack header
+    stderr.print("\n\n", highlight=False)
+    stderr.print("███████████████████████████████████████████████████████████████████", highlight=False)
+    stderr.print("░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", highlight=False)
+    stderr.print("[white]░░░░░█████╗░░█████╗░██████╗░███╗░░░███╗░█████╗░░█████╗░██╗░░██╗░░░░[white]", highlight=False)
+    stderr.print("[white]░░░░██╔══██╗██╔══██╗██╔══██╗████╗░████║██╔══██╗██╔══██╗██║░██╔╝░░░░[white]", highlight=False)
+    stderr.print("[white]░░░░██║░░╚═╝███████║██████╔╝██╔████╔██║███████║██║░░╚═╝█████═╝░░░░░[white]", highlight=False)
+    stderr.print("[white]░░░░██║░░██╗██╔══██║██╔══██╗██║╚██╔╝██║██╔══██║██║░░██╗██╔═██╗░░░░░[white]", highlight=False)
+    stderr.print("[white]░░░░╚█████╔╝██║░░██║██║░░██║██║░╚═╝░██║██║░░██║╚█████╔╝██║░╚██╗░░░░[white]", highlight=False)
+    stderr.print("[white]░░░░░╚════╝░╚═╝░░╚═╝╚═╝░░╚═╝╚═╝░░░░░╚═╝╚═╝░░╚═╝░╚════╝░╚═╝░░╚═╝░░░░[white]", highlight=False)
+    stderr.print("░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", highlight=False)
+    stderr.print("███████████████████████████████████████████████████████████████████", highlight=False)
+    stderr.print("\n", highlight=False)
+    # stderr.print(
+    #     f"[grey39]    carmack version {carmack.__version__} - [link=https://github.com/briscoelab/carmack]https://github.com/briscoelab/carmack[/]",
+    #     highlight=False,
+    # )
     stderr.print(
-        f"[grey39]    nf-core/tools version {nf_core.__version__} - [link=https://nf-co.re]https://nf-co.re[/]",
+        f"[grey25]    carmack version 0.1dev - [link=https://github.com/briscoelab/carmack]https://github.com/briscoelab/carmack[/]",
         highlight=False,
     )
-    try:
-        is_outdated, _, remote_vers = nf_core.utils.check_if_outdated()
-        if is_outdated:
-            stderr.print(
-                f"[bold bright_yellow]    There is a new version of nf-core/tools available! ({remote_vers})",
-                highlight=False,
-            )
-    except Exception as e:
-        log.debug(f"Could not check latest version: {e}")
-    stderr.print("\n")
+    stderr.print("\n", highlight=False)
+    stderr.print("███████████████████████████████████████████████████████████████████", highlight=False)
+    stderr.print("\n\n", highlight=False)
 
     # # Launch the click cli
     # nf_core_cli(auto_envvar_prefix="NFCORE")
