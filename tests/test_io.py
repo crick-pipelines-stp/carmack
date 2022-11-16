@@ -16,5 +16,6 @@ class TestIo(unittest.TestCase):
     )
 
     from .io.subprocess_stream import (
-        test_subprocess_stream_gzip_read
+        test_subprocess_stream_gzip_read,
+        test_subprocess_stream_gzip_write
     )
