@@ -8,10 +8,6 @@ import unittest
 class TestIo(unittest.TestCase):
     """Class for io tests"""
 
-    ############################################
-    # Test of the individual io commands. #
-    ############################################
-
     from .io.log_subprocess import test_log_subprocess
     from .io.subprocess_stream import test_subprocess_stream_gzip_read, test_subprocess_stream_gzip_write
     from .io.gzip_file import test_gzip_file_read, test_gzip_file_write, test_gzip_file_read_raw
