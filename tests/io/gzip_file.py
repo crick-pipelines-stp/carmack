@@ -13,6 +13,14 @@ def test_gzip_file_read(self):
         self.assertEqual(line, TEST_NAME)
         break
 
+def test_gzip_file_read_raw(self):
+    """Test reading gzip file thats actually not compressed"""
+    raw_file = GzipFile("tests/data/small.fastq")
+
+    for line in raw_file.open_read_iterator(as_string=True):
+        self.assertEqual(line, TEST_NAME)
+        break
+
 @with_temporary_folder
 def test_gzip_file_write(self, tmp_path):
     """Test with write gzip file"""

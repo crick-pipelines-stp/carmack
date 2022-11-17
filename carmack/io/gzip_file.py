@@ -29,15 +29,17 @@ class GzipFile:
         if self.compressor is not None:
             stream = SubprocessStream([self.compressor, "-c", "-d", self.filename], mode="r")
         else:
-            return None
+            stream = open(self.filename, "r")
 
         with stream as file:
             for line in file:
                 if as_string:
-                    yield line.decode("UTF-8").strip()
+                    if self.compressor is None:
+                        yield line.strip()
+                    else:
+                        yield line.decode("UTF-8").strip()
                 else:
                     yield line
-
 
     def open_write_stream(self):
         """
