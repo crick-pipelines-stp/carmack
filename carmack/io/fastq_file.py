@@ -32,7 +32,14 @@ class FastqFile:
         Open a fastq file for reading. Returns a generator that yields
         """
         line_index = 0
-        with SubprocessStream([self.compressor, "-c", "-d", self.filename], mode="r") as fastq_file:
+        stream = None
+
+        if self.compressor is not None:
+            stream = SubprocessStream([self.compressor, "-c", "-d", self.filename], mode="r")
+        else:
+            stream = open(self.filename, "r")
+
+        with stream  as fastq_file:
             for line in fastq_file:
                 if line_index == 0:
                     name1 = line.strip()[1:]
@@ -69,7 +76,10 @@ class FastqFile:
                             yield (name1, seq1, qual1, name2, seq2, qual2)
                     else:
                         if as_string:
-                            yield (name1.decode("UTF-8"), seq1.decode("UTF-8"), qual1.decode("UTF-8"))
+                            if self.compressor is None:
+                                yield (name1, seq1, qual1)
+                            else:
+                                yield (name1.decode("UTF-8"), seq1.decode("UTF-8"), qual1.decode("UTF-8"))
                         else:
                             yield (name1, seq1, qual1)
 
@@ -79,3 +89,12 @@ class FastqFile:
         """
         f = open(self.filename, "w")
         return SubprocessStream([self.compressor, "-c"], mode="w", stdout=f)
+
+    @staticmethod
+    def write_read(file_stream, name, seq, qual):
+        """ Writes a single read to a fastq file
+        """
+        file_stream.write(('@' + name + '\n').encode('UTF-8'))
+        file_stream.write((seq + '\n').encode('UTF-8'))
+        file_stream.write(('+\n').encode('UTF-8'))
+        file_stream.write((qual + '\n').encode('UTF-8'))
