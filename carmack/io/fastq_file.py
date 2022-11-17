@@ -1,15 +1,11 @@
-# import sys
-# import os
-# import subprocess
-# import lib.log_subprocess as tk_subproc
-
+from .gzip_file import GzipFile
 from .subprocess_stream import SubprocessStream
 
 GZIP_SUFFIX = ".gz"
 LZ4_SUFFIX = ".lz4"
 
 
-class FastqFile:
+class FastqFile(GzipFile):
     """
     Class that can read/write fastq files in raw or gz format
     """
@@ -18,14 +14,8 @@ class FastqFile:
         """
         Initialise the FastqFile object
         """
-        self.filename = filename
         self.paired_end = paired_end
-        self.compressor = None
-
-        if filename.endswith(GZIP_SUFFIX):
-            self.compressor = "gzip"
-        elif filename.endswith(LZ4_SUFFIX):
-            self.compressor = "lz4"
+        super().__init__(filename)
 
     def open_read_iterator(self, as_string: bool = False):
         """
@@ -82,13 +72,6 @@ class FastqFile:
                                 yield (name1.decode("UTF-8"), seq1.decode("UTF-8"), qual1.decode("UTF-8"))
                         else:
                             yield (name1, seq1, qual1)
-
-    def open_write_stream(self):
-        """
-        Open a fastq file for writing. Returns a stream that can be written to
-        """
-        f = open(self.filename, "w")
-        return SubprocessStream([self.compressor, "-c"], mode="w", stdout=f)
 
     @staticmethod
     def write_read(file_stream, name, seq, qual):

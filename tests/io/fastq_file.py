@@ -31,7 +31,7 @@ def test_fastq_file_raw_read(self):
 
 
 @with_temporary_folder
-def test_subprocess_stream_gzip_write(self, tmp_path):
+def test_fastq_file_gzip_write(self, tmp_path):
     """Test with write gzip file"""
     filename = os.path.join(tmp_path, "test.gz")
     fq_file = FastqFile(filename, paired_end=False)
