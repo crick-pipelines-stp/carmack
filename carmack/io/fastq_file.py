@@ -39,7 +39,7 @@ class FastqFile:
         else:
             stream = open(self.filename, "r")
 
-        with stream  as fastq_file:
+        with stream as fastq_file:
             for line in fastq_file:
                 if line_index == 0:
                     name1 = line.strip()[1:]
@@ -92,9 +92,8 @@ class FastqFile:
 
     @staticmethod
     def write_read(file_stream, name, seq, qual):
-        """ Writes a single read to a fastq file
-        """
-        file_stream.write(('@' + name + '\n').encode('UTF-8'))
-        file_stream.write((seq + '\n').encode('UTF-8'))
-        file_stream.write(('+\n').encode('UTF-8'))
-        file_stream.write((qual + '\n').encode('UTF-8'))
+        """Writes a single read to a fastq file"""
+        file_stream.write(("@" + name + "\n").encode("UTF-8"))
+        file_stream.write((seq + "\n").encode("UTF-8"))
+        file_stream.write(("+\n").encode("UTF-8"))
+        file_stream.write((qual + "\n").encode("UTF-8"))
