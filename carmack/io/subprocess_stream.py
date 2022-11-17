@@ -7,11 +7,13 @@ from .log_subprocess import LogSubprocess
 
 log = logging.getLogger(__name__)
 
+
 class SubprocessStream(object):
     """
     Wrap a subprocess that we stream from or stream to. Acts like an open filehandle by passing down
     next, fileno, write, and close down to its pipe.
     """
+
     def __init__(self, *args, **kwargs):
         mode = kwargs.pop("mode", "r")
         if mode == "r":
