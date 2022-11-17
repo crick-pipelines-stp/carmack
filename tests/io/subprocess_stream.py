@@ -4,16 +4,18 @@ from carmack.io.subprocess_stream import SubprocessStream
 from ..utils import with_temporary_folder
 
 CONTENT = "test_content"
+READ_NAME = "@NB501505:171:H3KMGAFX3:1:21208:17616:17963 1:N:0:AGATCTCGGT"
 
 
 def test_subprocess_stream_gzip_read(self):
     """Test with read gzip file"""
-    stream = SubprocessStream(["gzip", "-c", "-d", "tests/data/test.txt.gz"], mode="r")
+    stream = SubprocessStream(["gzip", "-c", "-d", "tests/data/sc_10k.fastq.gz"], mode="r")
     assert stream is not None
 
     for idx, line in enumerate(stream):
         if idx == 0:
-            assert line == "@NB501505:171:H3KMGAFX3:1:21208:17616:17963 1:N:0:AGATCTCGGT"
+            line_str = line.decode("UTF-8").strip()
+            self.assertEqual(line_str, READ_NAME)
 
 
 @with_temporary_folder
@@ -30,4 +32,4 @@ def test_subprocess_stream_gzip_write(self, tmp_path):
 
     for idx, line in enumerate(stream):
         if idx == 0:
-            assert line.decode("UTF-8") == CONTENT
+            self.assertEqual(line.decode("UTF-8"), CONTENT)
