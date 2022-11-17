@@ -77,6 +77,7 @@ stdout = rich.console.Console()
 # Set up the rich traceback
 rich.traceback.install(console=stderr, width=200, word_wrap=True, extra_lines=1)
 
+
 def run_carmack():
     # Print carmack header
     stderr.print("\n\n", highlight=False)
@@ -105,6 +106,7 @@ def run_carmack():
 
     # Launch the click cli
     carmack_cli(auto_envvar_prefix="NFCORE")
+
 
 @click.group(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.version_option(nf_core.__version__)
