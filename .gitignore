@@ -8,3 +8,5 @@ docs/api/_build
 __pycache__/
 *.py[cod]
 *$py.class
+
+.vscode/
