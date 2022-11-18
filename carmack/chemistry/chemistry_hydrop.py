@@ -19,7 +19,6 @@ class ChemistryHydrop(ChemistryBase):
     def load_barcode_set(self):
         """Load barcode set for chemistry."""
 
-        barcodes = {}
         bc1_path = os.path.abspath(BC1_PATH)
         bc2_path = os.path.abspath(BC2_PATH)
         bc3_path = os.path.abspath(BC3_PATH)
@@ -36,11 +35,7 @@ class ChemistryHydrop(ChemistryBase):
         bc3 = [line.strip()[15:-10] for line in stream3]
         stream3.close()
 
-        barcodes['bc1'] = bc1
-        barcodes['bc2'] = bc2
-        barcodes['bc3'] = bc3
-
-        return barcodes
+        return [ bc1, bc2, bc3 ]
 
     def subset_barcodes(self, seq):
         """Subset barcodes from sequence for given chemistry where they are supposed to be found."""

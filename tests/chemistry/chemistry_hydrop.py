@@ -18,26 +18,26 @@ def test_hydrop_load_barcode_set(self):
     chemistry = ChemistryHydrop()
     barcode_set = chemistry.load_barcode_set()
 
-    self.assertEqual(barcode_set['bc1'][0], TEST_BC_1)
-    self.assertEqual(barcode_set['bc2'][0], TEST_BC_2)
-    self.assertEqual(barcode_set['bc3'][0], TEST_BC_3)
+    self.assertEqual(barcode_set[0][0], TEST_BC_1)
+    self.assertEqual(barcode_set[1][0], TEST_BC_2)
+    self.assertEqual(barcode_set[2][0], TEST_BC_3)
 
-    self.assertEqual(len(barcode_set['bc1']), 96)
-    self.assertEqual(len(barcode_set['bc2']), 96)
-    self.assertEqual(len(barcode_set['bc3']), 96)
+    self.assertEqual(len(barcode_set[0]), 96)
+    self.assertEqual(len(barcode_set[1]), 96)
+    self.assertEqual(len(barcode_set[2]), 96)
 
 def test_hydrop_load_barcode_set_with_factory(self):
     """Test loading barcode set for hydrop chemistry."""
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_set = chemistry.load_barcode_set()
 
-    self.assertEqual(barcode_set['bc1'][0], TEST_BC_1)
-    self.assertEqual(barcode_set['bc2'][0], TEST_BC_2)
-    self.assertEqual(barcode_set['bc3'][0], TEST_BC_3)
+    self.assertEqual(barcode_set[0][0], TEST_BC_1)
+    self.assertEqual(barcode_set[1][0], TEST_BC_2)
+    self.assertEqual(barcode_set[2][0], TEST_BC_3)
 
-    self.assertEqual(len(barcode_set['bc1']), 96)
-    self.assertEqual(len(barcode_set['bc2']), 96)
-    self.assertEqual(len(barcode_set['bc3']), 96)
+    self.assertEqual(len(barcode_set[0]), 96)
+    self.assertEqual(len(barcode_set[1]), 96)
+    self.assertEqual(len(barcode_set[2]), 96)
 
 @with_temporary_folder
 def test_hydrop_subset_barcodes(self, temp_path):
