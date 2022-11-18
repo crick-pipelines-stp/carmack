@@ -41,3 +41,15 @@ class ChemistryHydrop(ChemistryBase):
         barcodes['bc3'] = bc3
 
         return barcodes
+
+    def subset_barcodes(self, seq):
+        """Subset barcodes from sequence for given chemistry where they are supposed to be found."""
+
+        assert len(seq) >= 50, 'Sequence length must be at least 50 bases.'
+
+        # Subset sequences
+        bc3 = seq[:-42]
+        bc2 = seq[20:-22]
+        bc1 = seq[40:-2]
+
+        return [ bc1, bc2, bc3 ]
