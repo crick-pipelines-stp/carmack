@@ -13,7 +13,7 @@ class BarcodeExtractor:
         self.cell_barcode = cell_barcode
         self.chemistry = ChemistryFactory.get_chemistry(chemistry)
 
-    def calc_raw_barcode_match_distribution(self) -> list:
+    def calc_raw_barcode_match_counts(self) -> list:
         """
         Computes the distribution of raw barcode matches across the barcode set for the given chemistry.
         """
@@ -38,3 +38,16 @@ class BarcodeExtractor:
                     bc_counts[idx][ext_bc] = bc_counts[idx][ext_bc] + 1
 
         return bc_counts
+
+# def calc_raw_barcode_match_distribution(self) -> list:
+
+
+
+def calc_barcode_distribution(bc_counts):
+    # Prior distribution over barcodes, with pseudo-count based on matching barcodes only
+    counts = np.array(list(bc_counts.values()), dtype=float) + 1.0
+    total_dist = counts.sum()
+    bc_dist = counts / total_dist
+    bc_counts.update(zip(list(bc_counts.keys()), bc_dist))
+
+    return bc_counts
