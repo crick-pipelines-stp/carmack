@@ -31,23 +31,23 @@ def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
     utils.validate_file_md5(test_file, expected_hash)
 
 
-# @with_temporary_folder
-# def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
-#     """Test calculation of raw barcode match distribution."""
+@with_temporary_folder
+def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
+    """Test calculation of raw barcode match distribution."""
 
-#     expected_hash = '777cf483afbc2db0408f151baa693037'
+    expected_hash = '18d6549067432e6ca3d7d7843f02059c'
 
-#     # Init
-#     test_file = os.path.join(temp_path, 'barcode_counts.txt')
-#     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    # Init
+    test_file = os.path.join(temp_path, 'barcode_dist.txt')
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
 
-#     # Calc distribution
-#     bc_counts = barcode_ext.calc_raw_barcode_match_distribution()
+    # Calc distribution
+    bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
-#     with open(test_file, 'w') as out_file:
-#        for bc_count_set in bc_counts:
-#             for bc in bc_count_set:
-#                 line = bc + '-' + str(bc_count_set[bc])
-#                 out_file.write(line + '\n')
+    with open(test_file, 'w') as out_file:
+       for bc_count_set in bc_dist:
+            for bc in bc_count_set:
+                line = bc + '-' + str(bc_count_set[bc])
+                out_file.write(line + '\n')
     
-#     utils.validate_file_md5(test_file, expected_hash)
+    utils.validate_file_md5(test_file, expected_hash)

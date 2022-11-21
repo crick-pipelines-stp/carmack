@@ -1,4 +1,6 @@
 
+import numpy as np
+
 from..chemistry.chemistry_factory import ChemistryFactory
 from ..io.fastq_file import FastqFile
 
@@ -15,7 +17,7 @@ class BarcodeExtractor:
 
     def calc_raw_barcode_match_counts(self) -> list:
         """
-        Computes the distribution of raw barcode matches across the barcode set for the given chemistry.
+        Computes the counts of raw barcode matches across the barcode set for the given chemistry.
         """
         
         # Load the barcode set to match against
@@ -39,15 +41,20 @@ class BarcodeExtractor:
 
         return bc_counts
 
-# def calc_raw_barcode_match_distribution(self) -> list:
+    def calc_raw_barcode_match_dist(self) -> list:
+        """
+        Computes the distribution of raw barcode matches across the barcode set for the given chemistry.
+        Prior distribution over barcodes, with pseudo-count based on matching barcodes only
+        """
+        
+        # Get counts
+        bc_counts = self.calc_raw_barcode_match_counts()
 
+        # Calculate distribution
+        for count_set in bc_counts:
+            counts = np.array(list(count_set.values()), dtype=float) + 1.0
+            total_dist = counts.sum()
+            bc_dist = counts / total_dist
+            count_set.update(zip(list(count_set.keys()), bc_dist))
 
-
-def calc_barcode_distribution(bc_counts):
-    # Prior distribution over barcodes, with pseudo-count based on matching barcodes only
-    counts = np.array(list(bc_counts.values()), dtype=float) + 1.0
-    total_dist = counts.sum()
-    bc_dist = counts / total_dist
-    bc_counts.update(zip(list(bc_counts.keys()), bc_dist))
-
-    return bc_counts
+        return bc_counts
