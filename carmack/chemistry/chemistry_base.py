@@ -1,17 +1,21 @@
 """
-Defines interface for all chemistry classes.
+Defines base class for all chemistry classes.
 """
 
-class ChemistryBase:
+from abc import ABC, abstractmethod
+ 
+class ChemistryBase(ABC):
     """Base class for chemistry objects."""
-
-    def __init__(self) -> None:
-        pass
-        
-    def load_barcode_set(self):
+ 
+    def __init__(self):
+        super().__init__()
+    
+    @abstractmethod
+    def load_barcode_set(self) -> list:
         """Load barcode set for chemistry."""
-        raise NotImplementedError
+        pass
 
-    def subset_barcodes(self, seq):
+    @abstractmethod
+    def subset_barcodes(self, seq: str) -> list:
         """Subset barcodes from sequence for given chemistry."""
-        raise NotImplementedError
+        pass
