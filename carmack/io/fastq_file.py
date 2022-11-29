@@ -10,7 +10,7 @@ class FastqFile(GzipFile):
     Class that can read/write fastq files in raw or gz format
     """
 
-    def __init__(self, filename, paired_end: bool = False):
+    def __init__(self, filename: str, paired_end: bool = False):
         """
         Initialise the FastqFile object
         """
@@ -74,7 +74,7 @@ class FastqFile(GzipFile):
                             yield (name1, seq1, qual1)
 
     @staticmethod
-    def write_read(file_stream, name, seq, qual):
+    def write_read(file_stream, name: str, seq: str, qual: str) -> None:
         """Writes a single read to a fastq file"""
         file_stream.write(("@" + name + "\n").encode("UTF-8"))
         file_stream.write((seq + "\n").encode("UTF-8"))

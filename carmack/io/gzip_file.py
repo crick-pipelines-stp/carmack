@@ -49,6 +49,6 @@ class GzipFile:
         return SubprocessStream([self.compressor, "-c"], mode="w", stdout=f)
 
     @staticmethod
-    def write_string(file_stream, line):
+    def write_string(file_stream, line: str) -> None:
         """Writes a single line to a gzip file"""
         file_stream.write(line.encode("UTF-8"))
