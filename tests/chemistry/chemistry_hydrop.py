@@ -54,6 +54,6 @@ def test_hydrop_subset_barcodes(self, temp_path):
         for (name, seq, qual) in stream:
             barcodes = chemistry.subset_barcodes(seq)
             line = ','.join(barcodes)
-            out_file.write(line+ '\n')
-    
+            out_file.write(line + '\n')
+
     utils.validate_file_md5(test_file, expected_hash)

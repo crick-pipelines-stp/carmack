@@ -16,7 +16,7 @@ class ChemistryHydrop(ChemistryBase):
         """Initialize the ChemistryHydrop class."""
         super().__init__()
 
-    def load_barcode_set(self):
+    def load_barcode_set(self) -> list:
         """Load barcode set for chemistry."""
 
         bc1_path = os.path.abspath(BC1_PATH)
@@ -37,7 +37,7 @@ class ChemistryHydrop(ChemistryBase):
 
         return [ bc1, bc2, bc3 ]
 
-    def subset_barcodes(self, seq):
+    def subset_barcodes(self, seq: str) -> list:
         """Subset barcodes from sequence for given chemistry where they are supposed to be found."""
 
         assert len(seq) >= 50, 'Sequence length must be at least 50 bases.'
