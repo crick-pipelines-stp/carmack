@@ -9,7 +9,7 @@ class ChemistryBase(ABC):
  
     def __init__(self):
         super().__init__()
-    
+
     @abstractmethod
     def load_barcode_set(self) -> list:
         """Load barcode set for chemistry."""

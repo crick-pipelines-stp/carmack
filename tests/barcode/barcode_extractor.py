@@ -1,6 +1,8 @@
 import os
+import numpy as np
 
 import carmack.utils as utils
+from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 
 from ..utils import with_temporary_folder
@@ -51,3 +53,22 @@ def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
                 out_file.write(line + '\n')
     
     utils.validate_file_md5(test_file, expected_hash)
+
+# Tests when number of N's is greater than max dist - should return none
+# Test changes in max dist - 
+
+def test_gen_nearby_seqs(self):
+    """Test generation of nearby sequences."""
+
+    # Init
+    seq = 'TGTAGCAAGN'
+    qs = np.array([30,30,30,30,30,30,30,30,30,30])
+    maxdist = 1
+    chemistry = ChemistryFactory.get_chemistry('hydrop')
+    barcode_sets = chemistry.load_barcode_set()
+
+    # Generate nearby sequences
+    nearby_seqs = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+
+    # # Check
+    # assert nearby_seqs == [('ACGTACGT', 'IIIIIIII'), ('ACGTACGG', 'IIIIIIII')]
