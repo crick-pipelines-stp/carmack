@@ -1,0 +1,12 @@
+""" 
+Tests covering the barcode module
+"""
+
+import unittest
+
+
+class TestBarcode(unittest.TestCase):
+    """Class for barcode tests"""
+
+    from .barcode.whitelist import test_load_barcode_whitelist
+    from .barcode.barcode_extractor import test_calc_raw_barcode_match_counts_hydrop, test_calc_raw_barcode_match_distribution_hydrop

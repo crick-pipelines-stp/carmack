@@ -1,3 +1,5 @@
 click
 rich-click>=1.0.0
 rich>=10.7.0
+numpy==1.23.*
+pandas==1.5.*
