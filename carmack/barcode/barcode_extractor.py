@@ -71,6 +71,7 @@ class BarcodeExtractor:
         """Generate all sequences with at most maxdist changes from seq that are in a provided seq, along with the
         quality values of the bases at the changed positions.
         """
+
         # Find all index positions which are not N in seq as a list
         non_n_indices = [i for i in range(len(seq)) if seq[i] != 'N']
 
@@ -108,8 +109,6 @@ class BarcodeExtractor:
                 # Generate possible base substitutions from the indice positions using the minus alphabet
                 for substitutions in itertools.product(*[ALPHABET_MINUS[base] if i in indices else base for i, base in enumerate(seq)]):
                     new_seq = ''.join(substitutions)
-
-                    print(new_seq)
 
                     # If the new sequence is in the whitelist, sum the QS scores for the changed sequences and return 
                     if new_seq in barcode_set:
