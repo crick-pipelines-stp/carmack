@@ -1,4 +1,5 @@
 import os
+import pytest
 import numpy as np
 
 import carmack.utils as utils
@@ -54,21 +55,65 @@ def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
     
     utils.validate_file_md5(test_file, expected_hash)
 
-# Tests when number of N's is greater than max dist - should return none
-# Test changes in max dist - 
 
-def test_gen_nearby_seqs(self):
+# TODO: GEN BARCODE SET ONLY ONCE
+
+@pytest.mark.parametrize("maxdist", [1, 2, 3, 4])
+@pytest.mark.parametrize("seq", ['AGTTN', 'AGCTN', 'AGCTNN', 'AGCTNNN', 'AGCTNNNN'])
+def test_gen_nearby_seqs_withn(self, maxdist, seq):
     """Test generation of nearby sequences."""
 
     # Init
-    seq = 'TGTAGCAAGN'
-    qs = np.array([30,30,30,30,30,30,30,30,30,30])
-    maxdist = 1
+    qs = np.full(len(seq), 30)
+    chemistry = ChemistryFactory.get_chemistry('hydrop')
+    barcode_sets = chemistry.load_barcode_set()
+
+    # Generate nearby sequences
+    seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+
+@pytest.mark.parametrize("maxdist", [1, 2])
+@pytest.mark.parametrize("seq", ['AGTTNNN', 'AGCTNNNNNNN', 'AGCTNNNN', 'AGCTNNN', 'AGCTNNNN'])
+def test_gen_nearby_seqs_withn_none(self, maxdist, seq):
+    """Test generation of nearby sequences."""
+
+    # Init
+    qs = np.full(len(seq), 30)
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_sets = chemistry.load_barcode_set()
 
     # Generate nearby sequences
     nearby_seqs = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
 
-    # # Check
-    # assert nearby_seqs == [('ACGTACGT', 'IIIIIIII'), ('ACGTACGG', 'IIIIIIII')]
+    assert len(nearby_seqs) == 0
+
+@pytest.mark.parametrize("maxdist", [1, 2, 3, 4])
+@pytest.mark.parametrize("seq", ['AGTTC', 'AGCTC', 'AGCTTCG', 'AGCTGGCC', 'AGCTGGCCGG'])
+def test_gen_nearby_seqs_no_n(self, maxdist, seq):
+    """Test generation of nearby sequences."""
+
+    # Init
+    qs = np.full(len(seq), 30)
+    chemistry = ChemistryFactory.get_chemistry('hydrop')
+    barcode_sets = chemistry.load_barcode_set()
+
+    # Generate nearby sequences
+    seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+
+@pytest.mark.parametrize("maxdist", [1, 3, 5, 5, 5])
+@pytest.mark.parametrize("seq", ['TGTAGCAAGN', 'TGTAGCAAGN', 'TGTAGCAAGN', 'TGTAGCAANN', 'TGTANCAANN'])
+@pytest.mark.parametrize("expected", [1, 1, 7, 5, 3])
+def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
+    """Test generation of nearby sequences."""
+
+    # Init
+    qs = np.full(len(seq), 30)
+    chemistry = ChemistryFactory.get_chemistry('hydrop')
+    barcode_sets = chemistry.load_barcode_set()
+
+    # Generate nearby sequences
+    seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+
+    for seq in list(seqs):
+        assert seq in barcode_sets[0]
+    
+    assert len(seqs) == expected

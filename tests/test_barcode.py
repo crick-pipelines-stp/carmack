@@ -9,4 +9,9 @@ class TestBarcode(unittest.TestCase):
     """Class for barcode tests"""
 
     from .barcode.whitelist import test_load_barcode_whitelist
-    from .barcode.barcode_extractor import test_calc_raw_barcode_match_counts_hydrop, test_calc_raw_barcode_match_distribution_hydrop, test_gen_nearby_seqs
+    from .barcode.barcode_extractor import test_calc_raw_barcode_match_counts_hydrop, test_calc_raw_barcode_match_distribution_hydrop
+
+class TestBarcodeFixtures():
+    """Class for barcode tests with fixtures"""
+
+    from .barcode.barcode_extractor import test_gen_nearby_seqs_withn, test_gen_nearby_seqs_withn_none, test_gen_nearby_seqs_no_n, test_gen_nearby_seqs_expected
