@@ -57,6 +57,14 @@ def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
 # Tests when number of N's is greater than max dist - should return none
 # Test changes in max dist - 
 
+import pytest
+
+# @pytest.mark.parametrize("seq,expected_nr", [("3+5", 8), ("2+4", 6), ("6*9", 42)])
+# def test_eval(seq, expected_nr):
+#     assert eval(seq) == expected_nr
+
+@pytest.mark.parametrize("maxdist", [1, 2, 3, 4])
+#@pytest.mark.parametrize("seq", [2, 3])
 def test_gen_nearby_seqs(self):
     """Test generation of nearby sequences."""
 
@@ -69,6 +77,7 @@ def test_gen_nearby_seqs(self):
 
     # Generate nearby sequences
     nearby_seqs = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+    # print(nearby_seqs)
 
     # # Check
     # assert nearby_seqs == [('ACGTACGT', 'IIIIIIII'), ('ACGTACGG', 'IIIIIIII')]
