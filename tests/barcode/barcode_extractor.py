@@ -100,9 +100,7 @@ def test_gen_nearby_seqs_no_n(self, maxdist, seq):
     # Generate nearby sequences
     seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
 
-@pytest.mark.parametrize("maxdist", [1, 3, 5, 5, 5])
-@pytest.mark.parametrize("seq", ['TGTAGCAAGN', 'TGTAGCAAGN', 'TGTAGCAAGN', 'TGTAGCAANN', 'TGTANCAANN'])
-@pytest.mark.parametrize("expected", [1, 1, 7, 5, 3])
+@pytest.mark.parametrize("maxdist,seq,expected", [(1, 'TGTAGCAAGN', 1), (3, 'TGTAGCAAGN', 1), (5, 'TGTAGCAAGN', 7), (5, 'TGTAGCAANN', 5), (5, 'TGTANCAANN', 3)])
 def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
     """Test generation of nearby sequences."""
 
