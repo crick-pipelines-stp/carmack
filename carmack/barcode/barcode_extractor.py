@@ -103,7 +103,7 @@ class BarcodeExtractor:
                 if len(indices_list) == 0: continue
 
                 # Subset the quality scores for the indices we are changing and sum them
-                error_probs = qs[np.array(list(indices))]
+                error_probs = qs[indices_list]
                 error_probs_sum = error_probs.sum()
 
                 # Generate possible base substitutions from the indice positions using the minus alphabet
@@ -114,44 +114,44 @@ class BarcodeExtractor:
                     if new_seq in barcode_set:
                         yield new_seq, error_probs_sum
 
-# # Correct down to one possible barcode 
-# def correct_barcode_set(match_set, qs, barcode_set, bc_dist, max_corrections):
-#     """Estimate the correct barcode given an input sequence, base quality scores, a barcode whitelist, and a prior
-#     distribution of barcodes.  Returns the corrected barcode if the posterior likelihood is above the confidence
-#     threshold, otherwise None.  Only considers corrected sequences out to a maximum Hamming distance of 2
-#     """
+# Correct down to one possible barcode 
+def correct_barcode_set(match_set, qs, barcode_set, bc_dist, max_corrections):
+    """Estimate the correct barcode given an input sequence, base quality scores, a barcode whitelist, and a prior
+    distribution of barcodes.  Returns the corrected barcode if the posterior likelihood is above the confidence
+    threshold, otherwise None.  Only considers corrected sequences out to a maximum Hamming distance of 2
+    """
 
-#     match_candidates = []
-#     likelihoods = []
+    match_candidates = []
+    likelihoods = []
 
-#     # Rotate through each possible barcode
-#     for seq in match_set:
-#         # If we get a match and the seq quality is good across whole read then return the first one
-#         # this is becuase we only have multiple barcodes here if we have indel and then we have N's anyway
-#         if seq in barcode_set:
-#             if (qs > 24).all():
-#                 return seq
+    # Rotate through each possible barcode
+    for seq in match_set:
+        # If we get a match and the seq quality is good across whole read then return the first one
+        # this is becuase we only have multiple barcodes here if we have indel and then we have N's anyway
+        if seq in barcode_set:
+            if (qs > 24).all():
+                return seq
 
-#             # If the quality score is no good, then we add it as a candiate and do hamming correction anyway
-#             match_candidates.append(seq)
-#             likelihoods.append(bc_dist[seq])
+            # If the quality score is no good, then we add it as a candiate and do hamming correction anyway
+            match_candidates.append(seq)
+            likelihoods.append(bc_dist[seq])
 
-#         # Cycle thorugh sequence candidates and calculate the prob
-#         for test_seq, error_probs in gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
-#             # Get the prior prob of the barcode
-#             p_bc = bc_dist[test_seq]
-#             log10p_edit = error_probs / 10.0
-#             likelihoods.append(p_bc * (10 ** -log10p_edit))
-#             match_candidates.append(test_seq)
+        # Cycle thorugh sequence candidates and calculate the prob
+        for test_seq, error_probs in gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
+            # Get the prior prob of the barcode
+            p_bc = bc_dist[test_seq]
+            log10p_edit = error_probs / 10.0
+            likelihoods.append(p_bc * (10 ** -log10p_edit))
+            match_candidates.append(test_seq)
 
-#     posterior = np.array(likelihoods)
-#     posterior /= posterior.sum()
+    posterior = np.array(likelihoods)
+    posterior /= posterior.sum()
 
-#     if len(posterior) > 0:
-#         pmax = posterior.max()
-#         if pmax > BC_CONFIDENCE_THRESHOLD:
-#             return match_candidates[np.argmax(posterior)]
-#     return None
+    if len(posterior) > 0:
+        pmax = posterior.max()
+        if pmax > BC_CONFIDENCE_THRESHOLD:
+            return match_candidates[np.argmax(posterior)]
+    return None
 
     # def analyse_barcodes(self) -> list:
     #     pass
