@@ -58,8 +58,7 @@ def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
 
 # TODO: GEN BARCODE SET ONLY ONCE
 
-@pytest.mark.parametrize("maxdist", [1, 2, 3, 4])
-@pytest.mark.parametrize("seq", ['AGTTN', 'AGCTN', 'AGCTNN', 'AGCTNNN', 'AGCTNNNN'])
+@pytest.mark.parametrize("maxdist,seq", [(1, 'TGTAGCAAGN'), (2, 'TGTAGCAAGN'), (3, 'TGTAGCAANN'), (4, 'TGTANCANNN'), (4, 'NGTAGCANNN')])
 def test_gen_nearby_seqs_withn(self, maxdist, seq):
     """Test generation of nearby sequences."""
 
@@ -83,11 +82,11 @@ def test_gen_nearby_seqs_withn_none(self, maxdist, seq):
 
     # Generate nearby sequences
     nearby_seqs = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+    # print(nearby_seqs)
 
     assert len(nearby_seqs) == 0
 
-@pytest.mark.parametrize("maxdist", [1, 2, 3, 4])
-@pytest.mark.parametrize("seq", ['AGTTC', 'AGCTC', 'AGCTTCG', 'AGCTGGCC', 'AGCTGGCCGG'])
+@pytest.mark.parametrize("maxdist,seq", [(1, 'TGTAGCAAGC'), (3, 'TGTAGCAAGG'), (5, 'TGTAGCAAGC'), (4, 'AGCTGGCCGG')])
 def test_gen_nearby_seqs_no_n(self, maxdist, seq):
     """Test generation of nearby sequences."""
 
@@ -99,9 +98,7 @@ def test_gen_nearby_seqs_no_n(self, maxdist, seq):
     # Generate nearby sequences
     seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
 
-@pytest.mark.parametrize("maxdist", [1, 3, 5, 5, 5])
-@pytest.mark.parametrize("seq", ['TGTAGCAAGN', 'TGTAGCAAGN', 'TGTAGCAAGN', 'TGTAGCAANN', 'TGTANCAANN'])
-@pytest.mark.parametrize("expected", [1, 1, 7, 5, 3])
+@pytest.mark.parametrize("maxdist,seq,expected", [(1, 'TGTAGCAAGN', 1), (3, 'TGTAGCAAGN', 1), (5, 'TGTAGCAAGN', 7), (5, 'TGTAGCAANN', 5), (5, 'TGTANCAANN', 3)])
 def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
     """Test generation of nearby sequences."""
 
