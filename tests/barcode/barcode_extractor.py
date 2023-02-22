@@ -117,15 +117,16 @@ def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
 
 @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGN', 10, 0)])
 def test_gen_indel_set_n_in_seq(self, seq, target_len, expected):
-    """Test generation of indel sets."""
+    """Test generation of indel sets with N in input sequence raises a ValueError."""
+    with pytest.raises(ValueError):
 
-    qs = np.full(len(seq), 30)
+        qs = np.full(len(seq), 30)
 
-    # Generate indels
-    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
-    
-    assert len(seq_set) == expected
-    assert len(qs_set) == expected
+        # Generate indels
+        seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
+        
+        assert len(seq_set) == expected
+        assert len(qs_set) == expected
 
 # @pytest.mark.parametrize("seq,target_len", [('TGTAGCAAGN', 1), ('TGTAGCAAGN', 1), ('TGTAGCAAGN', 7), ('TGTAGCAANN', 5), ('TGTANCAANN', 3)])
 # def test_gen_indel_set_expected(self, maxdist, seq, expected):
