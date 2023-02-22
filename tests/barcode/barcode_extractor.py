@@ -115,7 +115,7 @@ def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
     
     assert len(seqs) == expected
 
-@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGN', 10, 0)])
+@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGN', 10, 0), ('NNTAGCAAGC', 10, 0), ('NNTAGCAAGC', 8, 0)])
 def test_gen_indel_set_n_in_seq(self, seq, target_len, expected):
     """Test generation of indel sets with N in input sequence raises a ValueError."""
     with pytest.raises(ValueError):
