@@ -117,10 +117,10 @@ class BarcodeExtractor:
 
     @staticmethod
     def gen_indel_set(seq, qs, target_len):
-        """Given an input sequence and a desired length, generate an exaustive combinatorial 
+        """Given an input sequence and a desired length, generate an exhaustive combinatorial 
         set of potential sequences with N in place of insertions. For qs, the indels are given
         a qs of 40 as we are 100% sure about their letter given that we have inserted the N ourselves. 
-        This seems counter intutative as its an N, but this will be subsituted for a real letter 
+        This seems counter-intuitive as it's an N, but this will be subsituted for a real letter 
         downstream that we are 100% sure on.
         """
         seq_set = []
