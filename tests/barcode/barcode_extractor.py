@@ -163,3 +163,18 @@ def test_gen_indel_set_insertions(self, seq, target_len, expected):
         
     assert len(seq_set) == expected
     assert len(qs_set) == expected
+
+@pytest.mark.parametrize("seq,target_len", [('TGTAGCAGC', 10), ('TGTAGCAAGC', 11), ('TGTAGCAGC', 11)])
+def test_gen_indel_set_qs_deletions(self, seq, target_len):
+    """Test generation of indel sets with high quality score for position N."""
+
+    # Init
+    qs = np.full(len(seq), 30)
+    expected_qs = np.full(target_len, 30)
+
+    # Generate indels
+    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
+
+    for qs_seq in qs_set:
+        assert not all([a == b for a, b in zip(qs_seq, expected_qs)])
+       
