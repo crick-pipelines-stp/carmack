@@ -138,22 +138,22 @@ class BarcodeExtractor:
         if seq_len == target_len:
             return [seq],[qs]
 
-        # # DELETION
-        # if seq_len < target_len:
-        #     while len(seq_set) > 0:
-        #         curr_seq = seq_set.pop()
-        #         curr_gen_seq = []
-        #         for i in range(0, len(curr_seq) + 1):
-        #             new_seq_ar = list(curr_seq)
-        #             new_seq_ar.insert(i, 'N')
-        #             new_seq = ''.join(new_seq_ar)
-        #             if new_seq not in curr_gen_seq:
-        #                 curr_gen_seq.append(new_seq)
-        #                 if len(new_seq) < target_len:
-        #                     seq_set.append(new_seq)
-        #                 else:
-        #                     if new_seq not in output_set:
-        #                         output_set.append(new_seq)
+        # DELETION
+        if seq_len < target_len:
+            while len(seq_set) > 0:
+                curr_seq = seq_set.pop()
+                curr_gen_seq = []
+                for i in range(0, len(curr_seq) + 1):
+                    new_seq_ar = list(curr_seq)
+                    new_seq_ar.insert(i, 'N')
+                    new_seq = ''.join(new_seq_ar)
+                    if new_seq not in curr_gen_seq:
+                        curr_gen_seq.append(new_seq)
+                        if len(new_seq) < target_len:
+                            seq_set.append(new_seq)
+                        else:
+                            if new_seq not in output_set:
+                                output_set.append(new_seq)
 
         # # INSERTION
         # if seq_len > target_len:
@@ -172,13 +172,13 @@ class BarcodeExtractor:
         #                     if new_seq not in output_set:
         #                         output_set.append(new_seq)
 
-        # # Construct qs scores
-        # for seq in output_set:
-        #     curr_qs = qs.copy()
-        #     for idx, base in enumerate(seq):
-        #         if base == 'N':
-        #             curr_qs.insert(idx, 50)
-        #     output_qs.append(curr_qs)
+        # Construct qs scores
+        for seq in output_set:
+            curr_qs = qs.copy()
+            for idx, base in enumerate(seq):
+                if base == 'N':
+                    curr_qs=np.insert(curr_qs, idx, 50)
+            output_qs.append(curr_qs)
 
 
         return output_set, output_qs
