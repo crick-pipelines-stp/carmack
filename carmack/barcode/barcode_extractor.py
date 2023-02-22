@@ -155,22 +155,22 @@ class BarcodeExtractor:
                             if new_seq not in output_set:
                                 output_set.append(new_seq)
 
-        # # INSERTION
-        # if seq_len > target_len:
-        #     while len(seq_set) > 0:
-        #         curr_seq = seq_set.pop()
-        #         curr_gen_seq = []
-        #         for i in range(0, len(curr_seq)):
-        #             new_seq_ar = list(curr_seq)
-        #             new_seq_ar.pop(i)
-        #             new_seq = ''.join(new_seq_ar)
-        #             if new_seq not in curr_gen_seq:
-        #                 curr_gen_seq.append(new_seq)
-        #                 if len(new_seq) > target_len:
-        #                     seq_set.append(new_seq)
-        #                 else:
-        #                     if new_seq not in output_set:
-        #                         output_set.append(new_seq)
+        # INSERTION
+        if seq_len > target_len:
+            while len(seq_set) > 0:
+                curr_seq = seq_set.pop()
+                curr_gen_seq = []
+                for i in range(0, len(curr_seq)):
+                    new_seq_ar = list(curr_seq)
+                    new_seq_ar.pop(i)
+                    new_seq = ''.join(new_seq_ar)
+                    if new_seq not in curr_gen_seq:
+                        curr_gen_seq.append(new_seq)
+                        if len(new_seq) > target_len:
+                            seq_set.append(new_seq)
+                        else:
+                            if new_seq not in output_set:
+                                output_set.append(new_seq)
 
         # Construct qs scores
         for seq in output_set:

@@ -140,7 +140,7 @@ def test_gen_indel_set_correct_length(self, seq, target_len, expected):
 
 @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGC', 10, 10), ('TGTAGCAAGC', 11, 11), ('TGTAGCAGC', 11, 55)])
 def test_gen_indel_set_deletions(self, seq, target_len, expected):
-    """Test generation of indel sets when input sequence has correct length."""
+    """Test generation of indel sets when input sequence has one or more deletions."""
 
     # Init
     qs = np.full(len(seq), 30)
@@ -151,17 +151,15 @@ def test_gen_indel_set_deletions(self, seq, target_len, expected):
     assert len(seq_set) == expected
     assert len(qs_set) == expected
 
-# @pytest.mark.parametrize("seq,target_len", [('TGTAGCAAGN', 1), ('TGTAGCAAGN', 1), ('TGTAGCAAGN', 7), ('TGTAGCAANN', 5), ('TGTANCAANN', 3)])
-# def test_gen_indel_set_expected(self, maxdist, seq, expected):
-#     """Test generation of indel sets."""
+@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGCGC', 10, 11), ('TGTAGCAGCCC', 10, 9), ('TGTAGCAGCGCA', 10, 63)])
+def test_gen_indel_set_insertions(self, seq, target_len, expected):
+    """Test generation of indel sets when input sequence has one or more insertions."""
 
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
+    # Init
+    qs = np.full(len(seq), 30)
 
-#     # Generate nearby sequences
-#     seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
-
-#     for seq in list(seqs):
-#         assert seq in barcode_sets[0]
-    
-#     assert len(seqs) == expected
+    # Generate indels
+    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
+        
+    assert len(seq_set) == expected
+    assert len(qs_set) == expected
