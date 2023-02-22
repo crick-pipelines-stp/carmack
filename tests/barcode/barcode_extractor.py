@@ -82,7 +82,6 @@ def test_gen_nearby_seqs_withn_none(self, maxdist, seq):
 
     # Generate nearby sequences
     nearby_seqs = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
-    # print(nearby_seqs)
 
     assert len(nearby_seqs) == 0
 
@@ -120,6 +119,7 @@ def test_gen_indel_set_n_in_seq(self, seq, target_len, expected):
     """Test generation of indel sets with N in input sequence raises a ValueError."""
     with pytest.raises(ValueError):
 
+        # Init
         qs = np.full(len(seq), 30)
 
         # Generate indels
@@ -129,6 +129,7 @@ def test_gen_indel_set_n_in_seq(self, seq, target_len, expected):
 def test_gen_indel_set_correct_length(self, seq, target_len, expected):
     """Test generation of indel sets when input sequence has correct length."""
 
+    # Init
     qs = np.full(len(seq), 30)
 
     # Generate indels
