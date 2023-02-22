@@ -114,3 +114,30 @@ def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
         assert seq in barcode_sets[0]
     
     assert len(seqs) == expected
+
+@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGN', 10, 0)])
+def test_gen_indel_set_n_in_seq(self, seq, target_len, expected):
+    """Test generation of indel sets."""
+
+    qs = np.full(len(seq), 30)
+
+    # Generate indels
+    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
+    
+    assert len(seq_set) == expected
+    assert len(qs_set) == expected
+
+# @pytest.mark.parametrize("seq,target_len", [('TGTAGCAAGN', 1), ('TGTAGCAAGN', 1), ('TGTAGCAAGN', 7), ('TGTAGCAANN', 5), ('TGTANCAANN', 3)])
+# def test_gen_indel_set_expected(self, maxdist, seq, expected):
+#     """Test generation of indel sets."""
+
+#     chemistry = ChemistryFactory.get_chemistry('hydrop')
+#     barcode_sets = chemistry.load_barcode_set()
+
+#     # Generate nearby sequences
+#     seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+
+#     for seq in list(seqs):
+#         assert seq in barcode_sets[0]
+    
+#     assert len(seqs) == expected

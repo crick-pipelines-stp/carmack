@@ -14,4 +14,4 @@ class TestBarcode(unittest.TestCase):
 class TestBarcodeFixtures():
     """Class for barcode tests with fixtures"""
 
-    from .barcode.barcode_extractor import test_gen_nearby_seqs_withn, test_gen_nearby_seqs_withn_none, test_gen_nearby_seqs_no_n, test_gen_nearby_seqs_expected
+    from .barcode.barcode_extractor import test_gen_nearby_seqs_withn, test_gen_nearby_seqs_withn_none, test_gen_nearby_seqs_no_n, test_gen_nearby_seqs_expected, test_gen_indel_set_n_in_seq
