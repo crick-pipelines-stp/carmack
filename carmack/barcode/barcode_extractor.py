@@ -99,7 +99,7 @@ class BarcodeExtractor:
                 # List of indices to change
                 indices = set(modified_indices + n_indices)
 
-                # Convert the set to a list of indices for subsetting the qs scores (ignore the empty list at the beggining)
+                # Convert the set to a list of indices for subsetting the qs scores (ignore the empty list at the beggining)                
                 indices_list = np.array(list(indices))
                 if len(indices_list) == 0: continue
 
@@ -192,23 +192,118 @@ class BarcodeExtractor:
     #         return None
 
     # Second function
-    @staticmethod
-    def correct_barcode(seq, qs, barcode_set):
-        if seq in barcode_set:
-            if (qs > 24).all():
-                return seq
-        else:
-            return None
+    # @staticmethod
+    # def correct_barcode(seq, qs, barcode_set):
+    #     if seq in barcode_set:
+    #         if (qs > 24).all():
+    #             return seq
+    #     else:
+    #         return None
 
+    # Third function
     # @staticmethod
     # def correct_barcode(seq, qs, barcode_set, max_corrections):
-    #     # Check for indels
     #     if seq in barcode_set:
-    #         return seq
+    #         if (qs > 24).all():
+    #             return seq
+    #         else:
+    #             # for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
+    #             #      return new_seq, error_probs_sum
+    #             val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
+    #             return val
+                
     #     else:
-    #         new_seq, error_probs_sum = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
-    #         yield new_seq, error_probs_sum
+    #         return None
         
+    #     return None
+
+
+    # Fourth function
+    # @staticmethod
+    # def correct_barcode(seq, qs, barcode_set, max_corrections):
+    #     if seq in barcode_set:
+    #         if (qs > 24).all():
+    #             return seq
+    #         else:
+    #             # for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
+    #             #      return new_seq, error_probs_sum
+    #             val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
+    #             return val
+                
+    #     else:
+    #         return None
+
+    # Fifth function
+    # @staticmethod
+    # def correct_barcode(seq, qs, barcode_set, max_corrections):
+    #     if seq in barcode_set:
+    #         if (qs > 24).all():
+    #             return seq
+    #         else:
+    #             val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
+    #             return val
+                
+    #     else:
+    #         val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
+    #         return val
+
+    # Seventh function
+    # @staticmethod
+    # def correct_barcode(seq, qs, barcode_set, max_corrections):
+    #     if seq in barcode_set:
+    #         if (qs > 24).all():
+    #             return seq
+    #         else:
+    #             for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
+    #                 return new_seq, error_probs_sum
+                
+    #     else:
+    #         for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
+    #             return new_seq, error_probs_sum
+    
+    # Eighth function
+    # @staticmethod
+    # def correct_barcode(seq, qs, barcode_set, max_corrections, target_len):
+    #     if seq in barcode_set:
+    #         if (qs > 24).all():
+    #             return seq
+    #         else:
+    #             for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
+    #                  return new_seq, error_probs_sum
+    #             # val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
+    #             # return val
+                
+    #     else:
+    #         for seq_set, qs_set  in BarcodeExtractor.gen_indel_set(seq, qs, target_len):
+    #                 return seq_set, qs_set
+            # val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
+            # return val
+
+    # Seventh function (for tenth test)
+    # @staticmethod
+    # def correct_barcode(seq, qs, barcode_set, max_corrections, target_len):
+    #     if seq in barcode_set:
+    #         if (qs > 24).all():
+    #             return seq
+    #         else:
+    #             for seq_set, qs_set in zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections)):
+    #                 print(seq_set)
+    #                 print(qs_set)
+    #                 return seq_set, qs_set
+                
+    #     else:
+    #         for seq_set, qs_set in zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections)):
+    #                 print(seq_set)
+    #                 print(qs_set)
+    #                 return seq_set, qs_set
+            # seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
+            # return seq_set, qs_set
+            # for each pair, execute gen_nearby_seqs
+            # for seq_set, qs_set in BarcodeExtractor.gen_indel_set(seq, qs, target_len):
+            #     print(seq_set)
+            #     return seq_set, qs_set
+            
+            
     # 
     # @staticmethod
     # def correct_barcode(seq, qs, barcode_set, target_len): 
