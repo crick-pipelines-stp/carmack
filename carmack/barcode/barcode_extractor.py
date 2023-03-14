@@ -188,202 +188,26 @@ class BarcodeExtractor:
 
         return output_set, output_qs
 
-    # First function
-    # @staticmethod
-    # def correct_barcode(seq, barcode_set):
-    #     if seq in barcode_set:
-    #         return seq
-    #     else:
-    #         return None
-
-    # Second function
-    # @staticmethod
-    # def correct_barcode(seq, qs, barcode_set):
-    #     if seq in barcode_set:
-    #         if (qs > 24).all():
-    #             return seq
-    #     else:
-    #         return None
-
-    # Third function
-    # @staticmethod
-    # def correct_barcode(seq, qs, barcode_set, max_corrections):
-    #     if seq in barcode_set:
-    #         if (qs > 24).all():
-    #             return seq
-    #         else:
-    #             # for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
-    #             #      return new_seq, error_probs_sum
-    #             val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
-    #             return val
-                
-    #     else:
-    #         return None
-        
-    #     return None
-
-
-    # Fourth function
-    # @staticmethod
-    # def correct_barcode(seq, qs, barcode_set, max_corrections):
-    #     if seq in barcode_set:
-    #         if (qs > 24).all():
-    #             return seq
-    #         else:
-    #             # for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
-    #             #      return new_seq, error_probs_sum
-    #             val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
-    #             return val
-                
-    #     else:
-    #         return None
-
-    # Fifth function
-    # @staticmethod
-    # def correct_barcode(seq, qs, barcode_set, max_corrections):
-    #     if seq in barcode_set:
-    #         if (qs > 24).all():
-    #             return seq
-    #         else:
-    #             val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
-    #             return val
-                
-    #     else:
-    #         val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
-    #         return val
-
-    # Seventh function
-    # @staticmethod
-    # def correct_barcode(seq, qs, barcode_set, max_corrections):
-    #     if seq in barcode_set:
-    #         if (qs > 24).all():
-    #             return seq
-    #         else:
-    #             for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
-    #                 return new_seq, error_probs_sum
-                
-    #     else:
-    #         for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
-    #             return new_seq, error_probs_sum
-    
-    # Eighth function
-    # @staticmethod
-    # def correct_barcode(seq, qs, barcode_set, max_corrections, target_len):
-    #     if seq in barcode_set:
-    #         if (qs > 24).all():
-    #             return seq
-    #         else:
-    #             for new_seq, error_probs_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
-    #                  return new_seq, error_probs_sum
-    #             # val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
-    #             # return val
-                
-    #     else:
-    #         for seq_set, qs_set  in BarcodeExtractor.gen_indel_set(seq, qs, target_len):
-    #                 return seq_set, qs_set
-            # val = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections))
-            # return val
-
-    # # Seventh function (for tenth test)
-    # @staticmethod
-    # def correct_barcode(seq, qs, barcode_set, max_corrections, target_len):
-    #     if seq in barcode_set:
-    #         if (qs > 24).all():
-    #             return seq, qs
-    #         else:
-    #             for seq_set, qs_set in zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections)):
-    #                 return seq_set, qs_set
-                
-    #     else:
-    #         seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
-            # return seq_set, qs_set
-            
-            # for seq_set, qs_set in zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections)):
-            #         return seq_set, qs_set
-    
-    # Final function 
-    # @staticmethod
-    # def correct_barcode(seq, qs, barcode_set, max_corrections, target_len, bc_dist):
-    #     # Init
-    #     match_candidates = []
-    #     unnorm_posterior = []
-    #     seq_set = None
-    #     corr_seq = None
-
-    #     if seq in barcode_set:
-    #         if (qs > 24).all():
-    #             corr_seq = seq
-    #         else:
-    #             for seq, error_sum in BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, max_corrections):
-    #                 # Find the posterior for each seq
-    #                 p_bc = bc_dist[seq]
-
-    #                 # Divide by 10 to get the log10 probability for errors summed across all modified bases.
-    #                 log10p_edit = error_sum / 10.0
-
-    #                 # The likelihood is (10 ** -log10p_edit). This is the probability that the modified index or indices were originally incorrect. 
-    #                 # Multiply the prior with the likelihood to get the unnormalised posterior: p(A)*p(B|A)
-    #                 # Store the unnormalised posterior and the match candidates.
-    #                 unnorm_posterior.append(p_bc * (10 ** -log10p_edit))
-    #                 match_candidates.append(seq)
-                
-    #             # Normalise the posterior values so that they all sum to 1
-    #             posterior = np.array(unnorm_posterior)
-    #             posterior /= posterior.sum()
-
-    #             # Find the barcode that is above the confidence threshold and has maximal posterior probability
-    #             if len(posterior) > 0:
-    #                 pmax = posterior.max()
-    #                 if pmax > BC_CONFIDENCE_THRESHOLD:
-    #                     corr_seq =  match_candidates[np.argmax(posterior)]
-                
-    #     else:
-    #         # If the input sequence doesn't perfectly match an existing barcode, this can be either due to indels or mutations.
-    #         # If there are indels, gen_indel_set will generate a set of sequences with the correct length containing N in each possible position and their associated qs
-    #         # If the original sequence already had the correct length, it will just return the input sequence and qs 
-    #         for indel_seq, indel_qs in zip(*BarcodeExtractor.gen_indel_set(seq, qs, target_len)):
-    #             # For each indel sequence, generate all possible nearby sequences that are at most max_corrections (Hamming distance) away from the input sequence
-    #             for seq, error_sum in BarcodeExtractor.gen_nearby_seqs(indel_seq, indel_qs, barcode_set, max_corrections):
-    #                 # Find the posterior for each seq
-    #                 p_bc = bc_dist[seq]
-
-    #                 # Divide by 10 to get the log10 probability for errors summed across all modified bases.
-    #                 log10p_edit = error_sum / 10.0
-
-    #                 # The likelihood is (10 ** -log10p_edit). This is the probability that the modified index or indices were originally incorrect. 
-    #                 # Multiply the prior with the likelihood to get the unnormalised posterior: p(A)*p(B|A)
-    #                 # Store the unnormalised posterior and the match candidates.
-    #                 unnorm_posterior.append(p_bc * (10 ** -log10p_edit))
-    #                 match_candidates.append(seq)
-
-    #         # Normalise the posterior values so that they all sum to 1
-    #         posterior = np.array(unnorm_posterior)
-    #         posterior /= posterior.sum()
-
-    #         # Find the barcode that is above the confidence threshold and has maximal posterior probability
-    #         if len(posterior) > 0:
-    #             pmax = posterior.max()
-    #             if pmax > BC_CONFIDENCE_THRESHOLD:
-    #                 corr_seq =  match_candidates[np.argmax(posterior)]
-    #     return corr_seq
-
-    # Refactoring final function
     @staticmethod
     def correct_barcode(seq, qs, barcode_set, max_corrections, target_len, bc_dist):
         # Init
         match_candidates = []
         unnorm_posterior = []
+        posterior = []
         corr_seq = None
 
         if seq in barcode_set and (qs > 24).all():
-            return seq
+            corr_seq = seq
+            match_candidates.append(seq)
+            posterior.append(1.0)
+            return corr_seq, match_candidates, posterior
 
         # If the input sequence doesn't perfectly match an existing barcode, this can be either due to indels or mutations.
         # If there are indels, gen_indel_set will generate a set of sequences with the correct length containing N in each possible position and their associated qs
         # If the original sequence already had the correct length or or is already in the barcode_set but has low qs, it will just return the input sequence and qs 
         for indel_seq, indel_qs in zip(*BarcodeExtractor.gen_indel_set(seq, qs, target_len)):
             # For each indel sequence, generate all possible nearby sequences that are at most max_corrections (Hamming distance) away from the input sequence
-            for seq, error_sum in BarcodeExtractor.gen_nearby_seqs(indel_seq, indel_qs, barcode_set, max_corrections):
+            for curr_seq, error_sum in BarcodeExtractor.gen_nearby_seqs(indel_seq, indel_qs, barcode_set, max_corrections):
                 # Find the posterior for each seq
                 p_bc = bc_dist[seq]
 
@@ -394,10 +218,7 @@ class BarcodeExtractor:
                 # Multiply the prior with the likelihood to get the unnormalised posterior: p(A)*p(B|A)
                 # Store the unnormalised posterior and the match candidates.
                 unnorm_posterior.append(p_bc * (10 ** -log10p_edit))
-                match_candidates.append(seq)
-
-                print(unnorm_posterior)
-                print(match_candidates)
+                match_candidates.append(curr_seq)
 
         # Normalise the posterior values so that they all sum to 1
         posterior = np.array(unnorm_posterior)
@@ -409,7 +230,7 @@ class BarcodeExtractor:
             if pmax > BC_CONFIDENCE_THRESHOLD:
                 corr_seq =  match_candidates[np.argmax(posterior)]
         
-        return corr_seq
+        return corr_seq, match_candidates, posterior
 
         # if seq in barcode_set:
         #     if (qs > 24).all():
