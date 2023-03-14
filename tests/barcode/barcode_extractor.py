@@ -194,11 +194,18 @@ def test_gen_indel_set_qs_deletions(self, seq, target_len):
 # ------------------------------------------------------------------------------ #
 
 # Refactoring testing
-@pytest.mark.parametrize("seq, qs, max_corrections, target_len, bc_dist, expected_seq", [
-('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, {'TGTAGCAAGT': 1}, 'TGTAGCAAGT'),
-
+@pytest.mark.parametrize("seq, qs, max_corrections, target_len, dist_updates, expected_seq", [
+('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a high quality score - should return the original sequence
+('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 1, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a low quality score - should return the original sequence as the max dist is not high enough to generate other possible barcodes
+('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a low quality score - should return the original sequence as the prior distribution is weighted to the matched barcode 
+('TGTAGCAAGT', [10,10,10,10,10,10,10,10,10,10], 5, 10, {'TGAATCCACC': 1000000}, None), # Sequence matches barcode and has a low quality score - should nothing as the qual score is so poor
+('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 4, 10, {'CATTGCGAGT': 10000000000, 'TGTAGCAAGT': 0}, 'CATTGCGAGT'), # Sequence matches barcode and has a low quality score - should return the a diff sequence as the prior distribution is weighted to another sequence
+('TGTAGCAAGTT', [30,30,30,30,30,30,30,30,30,30], 2, 10, {}, 'TGTAGCAAGTT'), # Insertion - ends up with 3 copies of the same barcode generated in different ways
+('TGTAGCAAGTTT', [30,30,30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGTT'), # Insertion
+('TGTAGCAGT', [30,30,30,30,30,30,30,30,30], 3, 10, {}, None), # Deletion - no real dominating prior means we cant decide with confidence
+('TGTAGCGT', [30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGT') # Deletion 
 ]) 
-def test_correct_barcode(self, seq, qs, max_corrections, target_len, bc_dist, expected_seq):
+def test_correct_barcode(self, seq, qs, max_corrections, target_len, dist_updates, expected_seq):
     """Test generation of barcode correction."""
 
     # Init
@@ -206,10 +213,25 @@ def test_correct_barcode(self, seq, qs, max_corrections, target_len, bc_dist, ex
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_sets = chemistry.load_barcode_set()
 
+    # Get bc counts
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    bc_counts = barcode_ext.calc_raw_barcode_match_counts()
+
+    # Set either very high or very low counts for target barcodes
+    for key in dist_updates.keys():
+        bc_counts[0][key] = dist_updates[key]
+
+    # Inject the altered numbers and calc the distribution
+    barcode_ext.bc_counts = bc_counts
+    bc_dist = barcode_ext.calc_raw_barcode_match_dist()
+
+    # print(bc_dist[0])
+
     # Correct barcode
-    corr_seq, match_candidates, posterior = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist)
-    print("")
-    print(match_candidates)
-    print(posterior)
-    print(corr_seq)
+    corr_seq, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist[0])
+    # print("")
+    # print(match_candidates)
+    # print(unnorm_posterior)
+    # print(posterior)
+    # print(corr_seq)
     #assert corr_seq == expected_seq
