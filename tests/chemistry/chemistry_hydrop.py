@@ -87,7 +87,11 @@ def test_subset_whitelist_guess_perm(self, seq, expected_seq):
 ('TGTAGCAAGTGCAGTAGCTGTTAGTTGGACAGGGTACTCGTGACCGT', None, None, None, "SUBSET:SEQLEN<50"), # Sequence is too short
 ('TGTAGCAAGTGCAGTAGCTGTTAGTTGGACAGTGTACTCGTGACCGTACT', None, None, None, "SUBSET:SPC1_NOTFND"), # Spacer 1 cant be found
 ('TGTAGCAAGTGCAGTTGCTGTTAGTTGGACAGGGTACTCGTGACCGTACT', None, None, None, "SUBSET:SPC2_NOTFND"), # Spacer 2 cant be found
-('TGTAGCAAGTGCAGTAGCTGTTAGTTGGACAGGGTACTCGTGACCGTACT', None, ['TEST', 'TEST', 'TEST'], ['TEST', 'TEST', 'TEST'], ""), # Perfect with no indels
+('GGTTAATCACAGGGTACTCGAATAGCGTGGGCAGTAGCTGCCGTTCGTCCGT', None, ['CCGTTCGTCC', 'AATAGCGTGG', 'GGTTAATCAC'], [np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]),np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]),np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30])], "SUBSET:OK"), # Perfect with no indels
+('CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', None, ['GAACAGTAGT', 'ACGGTGGACT', 'CAGTGTGGAA'], [np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]),np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]),np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30])], "SUBSET:OK"), # Perfect with no indels 2
+('TCCTGATAAGAGGGTACTCGACCAAGAGAGCAGTAGCTGCTCCTCATCCGTA', None, ['CTCCTCATCCG', 'ACCAAGAGA', 'TCCTGATAAG'], [np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]),np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]),np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30])], "SUBSET:INDL"), # Indel 1
+('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', None, ['TTGAGATCGT', 'GGAGCTTGTC', 'GAACTTGTAG'], [np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]),np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]),np.array([30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30])], "SUBSET:OK"), # 52 bp seq but no indel
+('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', [0,0,0,0,0,0,0,0,0,0,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,0,0,0,0,0,0,0,0,0,0], ['TTGAGATCGT', 'GGAGCTTGTC', 'GAACTTGTAG'], [[0,0,0,0,0,0,0,0,0,0],[30,30,30,30,30,30,30,30,30,30],[0,0,0,0,0,0,0,0,0,0]], "SUBSET:OK"), # Check QS subset
 ]) 
 def test_hydrop_subset_barcodes_perm(self, seq, qs, expected_seq, expected_qs, expected_msg):
     """Test subsetting barcodes from sequence for hydrop chemistry with variable permitations"""
@@ -98,11 +102,12 @@ def test_hydrop_subset_barcodes_perm(self, seq, qs, expected_seq, expected_qs, e
         qs = np.full(len(seq), 30)
 
     chemistry = ChemistryFactory.get_chemistry('hydrop')
-    barcode_chunks, qs_chunks = chemistry.subset_barcode_chunks(seq, qs)
+    barcode_chunks, qs_chunks, msg = chemistry.subset_barcode_chunks(seq, qs)
         
-    print("")
-    print(barcode_chunks)
-    print(qs_chunks)
+    # print("")
+    # print(barcode_chunks)
+    # print(qs_chunks)
+    # print(msg)
 
     if expected_seq is None:
         assert barcode_chunks is None
@@ -113,8 +118,10 @@ def test_hydrop_subset_barcodes_perm(self, seq, qs, expected_seq, expected_qs, e
     if expected_qs is None:
         assert qs_chunks is None
     else:
-        for idx, bc in enumerate(qs_chunks):
-            assert bc == expected_qs[idx]
+        for idx, qs in enumerate(qs_chunks):
+            np.testing.assert_array_equal(qs, expected_qs[idx])
+
+    assert msg == expected_msg
 
 
 @with_temporary_folder

@@ -72,26 +72,41 @@ class ChemistryHydrop(ChemistryBase):
     def subset_barcode_chunks(self, seq: str, qs: np.ndarray) -> list:
         """Subset barcodes from sequence for given chemistry where they are supposed to be found using locator sequences"""
 
+        # Init
+        msg = "SUBSET:OK"
+
         # Return nothing if the sequence is too short for hydrop chemistry
         if(len(seq) < 50):
             return None, None, "SUBSET:SEQLEN<50"
         
-        # Return nothing if the sequence is too short for hydrop chemistry
-        if(len(seq) < 50):
-            return None, None, "SUBSET:SEQLEN<50"
+                # Subset seq if more than 50 to the left most 50 bases
+        if(len(seq) > 50):
+            seq = seq[:50]
 
-        #             idx_rep_seq1 = seq.find(rep_seq_1)
-        #     idx_rep_seq2 = seq.find(rep_seq_2)
+        # Try to find spacer seqs
+        idx_spcr_1 = seq.find(self.SPACER_1)
+        idx_spcr_2 = seq.find(self.SPACER_2)
 
-        # # Subset sequences
-        # bc3 = seq[:-42]
-        # bc2 = seq[20:-22]
-        # bc1 = seq[40:-2]
+        # Error if we cant find them
+        if idx_spcr_1 == -1:
+            return None, None, "SUBSET:SPC1_NOTFND"
+        if idx_spcr_2 == -1:
+            return None, None, "SUBSET:SPC2_NOTFND"
+        
+        # Set message to indel if detected
+        if idx_spcr_1 != 10:
+            msg = "SUBSET:INDL"
+        if idx_spcr_2 != 30:
+            msg = "SUBSET:INDL"
 
-        # # Subset qs
-        # qs1 = qs[:-42]
-        # qs2 = qs[20:-22]
-        # qs3 = qs[40:-2]
+        # Subset the barcodes
+        bc1 = seq[idx_spcr_2+10:]
+        bc2 = seq[idx_spcr_1+10:(-50 + idx_spcr_2)]
+        bc3 = seq[:(-50 + idx_spcr_1)]
 
-        # return [ bc1, bc2, bc3 ], [ qs1, qs2, qs3 ]
-        return None, None
+        # Subset the qs scores
+        qs1 = qs[idx_spcr_2+10:]
+        qs2 = qs[idx_spcr_1+10:(-50 + idx_spcr_2)]
+        qs3 = qs[:(-50 + idx_spcr_1)]
+
+        return [ bc1, bc2, bc3 ], [ qs1, qs2, qs3 ], msg
