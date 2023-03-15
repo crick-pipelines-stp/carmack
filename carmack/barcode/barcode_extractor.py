@@ -241,4 +241,5 @@ class BarcodeExtractor:
         return corr_seq, match_candidates, unnorm_posterior, posterior
 
     # @staticmethod
-    # def correct_barcode_():
+    # def correct_barcode(seq, qs, barcode_wl, barcode_chunk_set, bc_dists):
+

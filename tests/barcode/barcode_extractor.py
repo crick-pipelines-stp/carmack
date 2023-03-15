@@ -234,4 +234,4 @@ def test_correct_barcode_chunk(self, seq, qs, max_corrections, target_len, dist_
     # print(unnorm_posterior)
     # print(posterior)
     # print(corr_seq)
-    #assert corr_seq == expected_seq
+    assert corr_seq == expected_seq

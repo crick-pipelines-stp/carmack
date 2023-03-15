@@ -3,7 +3,8 @@ Defines base class for all chemistry classes.
 """
 
 from abc import ABC, abstractmethod
- 
+import numpy as np
+
 class ChemistryBase(ABC):
     """Base class for chemistry objects."""
  
@@ -16,6 +17,17 @@ class ChemistryBase(ABC):
         pass
 
     @abstractmethod
-    def subset_barcodes(self, seq: str) -> list:
-        """Subset barcodes from sequence for given chemistry."""
+    def construct_whitelist(self, barcode_set: list) -> list:
+        """Construct full whitelist from barcode set"""
         pass
+
+    @abstractmethod
+    def subset_whitelist_guess(self, seq: list) -> str:
+        """Make best guess sequence subset based on protocol chemistry for a whitelist match"""
+        pass
+
+    @abstractmethod
+    def subset_barcode_chunks(self, seq: str, qs: np.ndarray) -> list:
+        """Subset barcodes locations from sequence for given chemistry."""
+        pass
+
