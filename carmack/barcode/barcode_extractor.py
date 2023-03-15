@@ -4,13 +4,16 @@ import itertools
 import numpy as np
 
 from..chemistry.chemistry_factory import ChemistryFactory
+from..chemistry.chemistry_base import ChemistryBase
 from ..io.fastq_file import FastqFile
 
 DNA_ALPHABET = 'AGCT'
 ALPHABET_MINUS = {char: {c for c in DNA_ALPHABET if c != char} for char in DNA_ALPHABET} # This is a set of alternative bases given a base
 ALPHABET_MINUS['N'] = set(DNA_ALPHABET)
-QS_SCORE_THRESHOLD = 50
+QS_SCORE_THRESHOLD = 24
 BC_CONFIDENCE_THRESHOLD = 0.9
+ILLUMINA_QUAL_MIN_SCORE = 2
+ILLUMINA_QUAL_MAX_SCORE = 30
 
 log = logging.getLogger(__name__)
 class BarcodeExtractor:
@@ -44,12 +47,13 @@ class BarcodeExtractor:
         fq_file = FastqFile(self.cell_barcode)
         stream = fq_file.open_read_iterator(as_string=True)
         for (name, seq, qual) in stream:
-            barcodes = self.chemistry.subset_barcodes(seq)
- 
-            for idx, bc_set in enumerate(barcode_set):
-                ext_bc = barcodes[idx]
-                if barcodes[idx] in bc_set:
-                    bc_counts[idx][ext_bc] = bc_counts[idx][ext_bc] + 1
+            barcodes, qs, msg = self.chemistry.subset_barcode_chunks(seq, qual)
+
+            if barcodes is not None and msg == "SUBSET:OK":
+                for idx, bc_set in enumerate(barcode_set):
+                    ext_bc = barcodes[idx]
+                    if barcodes[idx] in bc_set:
+                        bc_counts[idx][ext_bc] = bc_counts[idx][ext_bc] + 1
 
         self.bc_counts = bc_counts
         return bc_counts
@@ -240,6 +244,24 @@ class BarcodeExtractor:
         
         return corr_seq, match_candidates, unnorm_posterior, posterior
 
-    # @staticmethod
-    # def correct_barcode(seq, qs, barcode_wl, barcode_chunk_set, bc_dists):
+    @staticmethod
+    def correct_barcode(seq: str, qs: np.ndarray, barcode_wl: list, barcode_set: list, bc_dists: dict, chemistry: ChemistryBase):
+        # Init
+        corr_bc = None
+        corr_qs = None
+        msg = "{UNPROCESSED}"
 
+        # First scale qs scores into a range so that the statistics dont get ruined by outliers
+        qs[qs < ILLUMINA_QUAL_MIN_SCORE] = ILLUMINA_QUAL_MIN_SCORE
+        qs[qs > ILLUMINA_QUAL_MAX_SCORE] = ILLUMINA_QUAL_MAX_SCORE
+
+        # Generate a white list guess match
+        wl_guess = chemistry.subset_whitelist_guess(seq)
+
+        print(wl_guess)
+
+        if wl_guess in barcode_wl:
+            msg = "WL_MATCH"
+            return wl_guess, qs, msg
+
+        return corr_bc, corr_qs, msg

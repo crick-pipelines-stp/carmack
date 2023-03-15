@@ -193,7 +193,6 @@ def test_gen_indel_set_qs_deletions(self, seq, target_len):
 # correct_barcode_chunk
 # ------------------------------------------------------------------------------ #
 
-# Refactoring testing
 @pytest.mark.parametrize("seq, qs, max_corrections, target_len, dist_updates, expected_seq", [
 ('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a high quality score - should return the original sequence
 ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 1, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a low quality score - should return the original sequence as the max dist is not high enough to generate other possible barcodes
@@ -204,7 +203,7 @@ def test_gen_indel_set_qs_deletions(self, seq, target_len):
 ('TGTAGCAAGTTT', [30,30,30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGTT'), # Insertion
 ('TGTAGCAGT', [30,30,30,30,30,30,30,30,30], 3, 10, {}, None), # Deletion - no real dominating prior means we cant decide with confidence
 ('TGTAGCGT', [30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGT') # Deletion 
-]) 
+])
 def test_correct_barcode_chunk(self, seq, qs, max_corrections, target_len, dist_updates, expected_seq):
     """Test generation of barcode correction."""
 
@@ -235,3 +234,39 @@ def test_correct_barcode_chunk(self, seq, qs, max_corrections, target_len, dist_
     # print(posterior)
     # print(corr_seq)
     assert corr_seq == expected_seq
+
+# ------------------------------------------------------------------------------ #
+# correct_barcode
+# ------------------------------------------------------------------------------ #
+
+# Refactoring testing
+@pytest.mark.parametrize("seq, expected_seq", [
+('CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', 'TEST'),
+# ('TCCTGATAAGAGGGTACTCGACCAAGAGAGCAGTAGCTGCTCCTCATCCGTA', ''),
+# ('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', ''),
+# ('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', ''),
+]) 
+def test_correct_barcode_perm(self, seq, expected_seq):
+    """Test correct of whole barcode read"""
+
+    # Init
+    qs = np.full(len(seq), 30)
+    chemistry = ChemistryFactory.get_chemistry('hydrop')
+    barcode_set = chemistry.load_barcode_set()
+    barcode_wl = chemistry.load_barcode_set()
+
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    bc_dist = barcode_ext.calc_raw_barcode_match_dist()
+
+    # Test
+    bc, qs, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry)
+
+    # Log
+    print("")
+    print(bc)
+    print(qs)
+    print(msg)
+
+    # Assert
+
+# def test_correct_barcode_md5(self, seq, qs, max_corrections, target_len, dist_updates, expected_seq):
