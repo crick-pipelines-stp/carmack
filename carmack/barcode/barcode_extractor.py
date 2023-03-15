@@ -196,7 +196,7 @@ class BarcodeExtractor:
         return output_set, output_qs
 
     @staticmethod
-    def correct_barcode(seq, qs, barcode_set, max_corrections, target_len, bc_dist):
+    def correct_barcode_chunk(seq, qs, barcode_set, max_corrections, target_len, bc_dist):
         # Init
         match_candidates = []
         unnorm_posterior = []
@@ -239,3 +239,6 @@ class BarcodeExtractor:
                 corr_seq =  match_candidates[np.argmax(posterior)]
         
         return corr_seq, match_candidates, unnorm_posterior, posterior
+
+    # @staticmethod
+    # def correct_barcode_():

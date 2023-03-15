@@ -190,7 +190,7 @@ def test_gen_indel_set_qs_deletions(self, seq, target_len):
         assert not all([a == b for a, b in zip(qs_seq, expected_qs)])
 
 # ------------------------------------------------------------------------------ #
-# correct_barcode
+# correct_barcode_chunk
 # ------------------------------------------------------------------------------ #
 
 # Refactoring testing
@@ -205,7 +205,7 @@ def test_gen_indel_set_qs_deletions(self, seq, target_len):
 ('TGTAGCAGT', [30,30,30,30,30,30,30,30,30], 3, 10, {}, None), # Deletion - no real dominating prior means we cant decide with confidence
 ('TGTAGCGT', [30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGT') # Deletion 
 ]) 
-def test_correct_barcode(self, seq, qs, max_corrections, target_len, dist_updates, expected_seq):
+def test_correct_barcode_chunk(self, seq, qs, max_corrections, target_len, dist_updates, expected_seq):
     """Test generation of barcode correction."""
 
     # Init
@@ -228,7 +228,7 @@ def test_correct_barcode(self, seq, qs, max_corrections, target_len, dist_update
     # print(bc_dist[0])
 
     # Correct barcode
-    corr_seq, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist[0])
+    corr_seq, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist[0])
     # print("")
     # print(match_candidates)
     # print(unnorm_posterior)
