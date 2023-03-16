@@ -44,9 +44,11 @@ class ChemistryHydrop(ChemistryBase):
     def construct_whitelist(self, barcode_set):
         whitelist = []
 
-        for idx, bc in enumerate(barcode_set[0]):
-            curr_wl = bc + barcode_set[1][idx] + barcode_set[2][idx]
-            whitelist.append(curr_wl)
+        for bc1 in barcode_set[0]:
+            for bc2 in barcode_set[1]:
+                for bc3 in barcode_set[2]:
+                    curr_wl = bc1 + bc2 + bc3
+                    whitelist.append(curr_wl)
 
         return whitelist
     

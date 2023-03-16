@@ -53,7 +53,7 @@ def test_hydrop_construct_whitelist_model_case(self):
 
 @with_temporary_folder
 def test_hydrop_construct_whitelist_md5(self, temp_path):
-    expected_hash = 'c0126c596b5a3cef10a50195ddc8e224'
+    expected_hash = 'd8ac24821209e56ab7442d73d35ea107'
     test_file = os.path.join(temp_path, 'barcodes.txt')
 
     chemistry = ChemistryFactory.get_chemistry('hydrop')
@@ -128,7 +128,7 @@ def test_hydrop_subset_barcodes_perm(self, seq, qs, expected_seq, expected_qs, e
 def test_hydrop_subset_barcodes_md5(self, temp_path):
     """Test subsetting barcodes from sequence for hydrop chemistry."""
 
-    expected_hash = 'a36c5ce249da5d081a469017700c2066'
+    expected_hash = '79ef6c4886a11509e93929c67aed1e7e'
 
     test_file = os.path.join(temp_path, 'barcodes.txt')
     fq_file = FastqFile(BC_READS_PATH)
@@ -138,15 +138,10 @@ def test_hydrop_subset_barcodes_md5(self, temp_path):
     with open(test_file, 'w') as out_file:
         for (name, seq, qual) in stream:
             qs = np.full(len(seq), 30)
-            barcode_chunks, qs_chunks = chemistry.subset_barcode_chunks(seq, qs)
-            line = ','.join(barcode_chunks)
-            out_file.write(line + '\n')
+            barcode_chunks, qs_chunks, msg = chemistry.subset_barcode_chunks(seq, qs)
+            
+            if barcode_chunks is not None:
+                line = ','.join(barcode_chunks)
+                out_file.write(line + '\n')
 
     utils.validate_file_md5(test_file, expected_hash)
-
-def test_hydrop_subset_barcodes_qs_subset(self):
-    seq = 'TGTAGCAAGTGCAGTAGCTGTTAGTTGGACAGGGTACTCGTGACCGTACT'
-    qs = np.full(len(seq), 30)
-
-    barcode_chunks, qs_chunks = ChemistryHydrop.subset_barcode_chunks(seq, qs)
-    print(barcode_chunks)

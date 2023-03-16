@@ -14,8 +14,7 @@ class TestChemistry(unittest.TestCase):
         test_hydrop_load_barcode_set_with_factory,\
         test_hydrop_construct_whitelist_model_case,\
         test_hydrop_construct_whitelist_md5,\
-        test_hydrop_subset_barcodes_md5,\
-        test_hydrop_subset_barcodes_qs_subset
+        test_hydrop_subset_barcodes_md5
 
 
 class TestBarcodeFixtures():

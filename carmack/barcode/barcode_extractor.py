@@ -245,11 +245,12 @@ class BarcodeExtractor:
         return corr_seq, match_candidates, unnorm_posterior, posterior
 
     @staticmethod
-    def correct_barcode(seq: str, qs: np.ndarray, barcode_wl: list, barcode_set: list, bc_dists: dict, chemistry: ChemistryBase):
+    def correct_barcode(seq: str, qs: np.ndarray, barcode_wl: list, barcode_set: list, bc_dists: dict, chemistry: ChemistryBase, max_corrections: int):
         # Init
         corr_bc = None
         corr_qs = None
         msg = "{UNPROCESSED}"
+        target_len = len(barcode_set[0])
 
         # First scale qs scores into a range so that the statistics dont get ruined by outliers
         qs[qs < ILLUMINA_QUAL_MIN_SCORE] = ILLUMINA_QUAL_MIN_SCORE
@@ -258,10 +259,22 @@ class BarcodeExtractor:
         # Generate a white list guess match
         wl_guess = chemistry.subset_whitelist_guess(seq)
 
-        print(wl_guess)
-
+        # Match to whitelist and exit if we have an immediate match accross all barcode chunks
         if wl_guess in barcode_wl:
             msg = "WL_MATCH"
             return wl_guess, qs, msg
+        else:
+            msg = "NIM"
+
+        # Subset the barcode chunks
+        bc_chunks, qs_chunks, sub_msg = chemistry.subset_barcode_chunks(seq, qs)
+        msg = msg + "_" + sub_msg
+
+        print(bc_chunks[0])
+
+        # Correct each barcode chunk
+        corr_bc1, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(bc_chunks[0], qs_chunks[0], barcode_set[0], max_corrections, target_len, bc_dists)
+        print(corr_bc1)
+        print(match_candidates)
 
         return corr_bc, corr_qs, msg

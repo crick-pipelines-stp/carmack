@@ -20,7 +20,7 @@ CB_PATH = 'tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz'
 def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
     """Test calculation of raw barcode match counts."""
 
-    expected_hash = '777cf483afbc2db0408f151baa693037'
+    expected_hash = '5a150d2473fbf0b0bb7993dfa4e4063a'
 
     # Init
     test_file = os.path.join(temp_path, 'barcode_counts.txt')
@@ -28,6 +28,8 @@ def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
 
     # Calc distribution
     bc_counts = barcode_ext.calc_raw_barcode_match_counts()
+
+    # print(bc_counts)
 
     with open(test_file, 'w') as out_file:
        for bc_count_set in bc_counts:
@@ -42,7 +44,7 @@ def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
 def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
     """Test calculation of raw barcode match distribution."""
 
-    expected_hash = '18d6549067432e6ca3d7d7843f02059c'
+    expected_hash = '4f28f158699d07bf0a790a130a61d2a2'
 
     # Init
     test_file = os.path.join(temp_path, 'barcode_dist.txt')
@@ -199,8 +201,8 @@ def test_gen_indel_set_qs_deletions(self, seq, target_len):
 ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a low quality score - should return the original sequence as the prior distribution is weighted to the matched barcode 
 ('TGTAGCAAGT', [10,10,10,10,10,10,10,10,10,10], 5, 10, {'TGAATCCACC': 1000000}, None), # Sequence matches barcode and has a low quality score - should nothing as the qual score is so poor
 ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 4, 10, {'CATTGCGAGT': 10000000000, 'TGTAGCAAGT': 0}, 'CATTGCGAGT'), # Sequence matches barcode and has a low quality score - should return the a diff sequence as the prior distribution is weighted to another sequence
-('TGTAGCAAGTT', [30,30,30,30,30,30,30,30,30,30], 2, 10, {}, 'TGTAGCAAGTT'), # Insertion - ends up with 3 copies of the same barcode generated in different ways
-('TGTAGCAAGTTT', [30,30,30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGTT'), # Insertion
+('TGTAGCAAGTT', [30,30,30,30,30,30,30,30,30,30], 2, 10, {}, 'TGTAGCAAGT'), # Insertion - ends up with 3 copies of the same barcode generated in different ways
+('TGTAGCAAGTTT', [30,30,30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGT'), # Insertion
 ('TGTAGCAGT', [30,30,30,30,30,30,30,30,30], 3, 10, {}, None), # Deletion - no real dominating prior means we cant decide with confidence
 ('TGTAGCGT', [30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGT') # Deletion 
 ])
@@ -224,8 +226,6 @@ def test_correct_barcode_chunk(self, seq, qs, max_corrections, target_len, dist_
     barcode_ext.bc_counts = bc_counts
     bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
-    # print(bc_dist[0])
-
     # Correct barcode
     corr_seq, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist[0])
     # print("")
@@ -241,32 +241,38 @@ def test_correct_barcode_chunk(self, seq, qs, max_corrections, target_len, dist_
 
 # Refactoring testing
 @pytest.mark.parametrize("seq, expected_seq", [
-('CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', 'TEST'),
-# ('TCCTGATAAGAGGGTACTCGACCAAGAGAGCAGTAGCTGCTCCTCATCCGTA', ''),
+# ('CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', 'GAACAGTAGTACGGTGGACTCAGTGTGGAA'),
+('TCCTGATAAGAGGGTACTCGACCAAGAGAGCAGTAGCTGCTCCTCATCCGTA', ''),
 # ('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', ''),
 # ('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', ''),
 ]) 
 def test_correct_barcode_perm(self, seq, expected_seq):
     """Test correct of whole barcode read"""
+    print("")
 
     # Init
     qs = np.full(len(seq), 30)
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_set = chemistry.load_barcode_set()
-    barcode_wl = chemistry.load_barcode_set()
+    barcode_wl = chemistry.construct_whitelist(barcode_set)
 
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
     bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
-    # Test
-    bc, qs, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry)
+    # # Test
+    # bc, qs, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry, 2)
 
-    # Log
-    print("")
-    print(bc)
-    print(qs)
-    print(msg)
+    # # Log
+
+    # print(bc)
+    # print(qs)
+    # print(msg)
 
     # Assert
 
 # def test_correct_barcode_md5(self, seq, qs, max_corrections, target_len, dist_updates, expected_seq):
+
+
+# GAACAGTAGT ACGGTGGACT CAGTGTGGAA
+
+# AATCTGCACACTCGATCAACTGGTCTACTC
