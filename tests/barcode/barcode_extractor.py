@@ -259,14 +259,13 @@ def test_correct_barcode_perm(self, seq, expected_seq):
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
     bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
-    # # Test
-    # bc, qs, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry, 2)
+    # Test
+    bc, qs, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry, 2)
 
-    # # Log
-
-    # print(bc)
-    # print(qs)
-    # print(msg)
+    # Log
+    print(bc)
+    print(qs)
+    print(msg)
 
     # Assert
 
