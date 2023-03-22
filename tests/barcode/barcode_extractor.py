@@ -12,11 +12,15 @@ R1_PATH = 'tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz'
 R2_PATH = 'tests/data/hydrop_scatac_1_S1_R3_001.fastq.gz'
 CB_PATH = 'tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz'
 
+# ------------------------------------------------------------------------------ #
+# calc_raw_barcode_match_counts
+# ------------------------------------------------------------------------------ #
+
 @with_temporary_folder
 def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
     """Test calculation of raw barcode match counts."""
 
-    expected_hash = '777cf483afbc2db0408f151baa693037'
+    expected_hash = '5a150d2473fbf0b0bb7993dfa4e4063a'
 
     # Init
     test_file = os.path.join(temp_path, 'barcode_counts.txt')
@@ -24,6 +28,8 @@ def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
 
     # Calc distribution
     bc_counts = barcode_ext.calc_raw_barcode_match_counts()
+
+    # print(bc_counts)
 
     with open(test_file, 'w') as out_file:
        for bc_count_set in bc_counts:
@@ -38,7 +44,7 @@ def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
 def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
     """Test calculation of raw barcode match distribution."""
 
-    expected_hash = '18d6549067432e6ca3d7d7843f02059c'
+    expected_hash = '4f28f158699d07bf0a790a130a61d2a2'
 
     # Init
     test_file = os.path.join(temp_path, 'barcode_dist.txt')
@@ -55,6 +61,9 @@ def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
     
     utils.validate_file_md5(test_file, expected_hash)
 
+# ------------------------------------------------------------------------------ #
+# gen_nearby_seqs
+# ------------------------------------------------------------------------------ #
 
 # TODO: GEN BARCODE SET ONLY ONCE
 
@@ -113,6 +122,10 @@ def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
         assert seq in barcode_sets[0]
     
     assert len(seqs) == expected
+
+# ------------------------------------------------------------------------------ #
+# gen_indel_set
+# ------------------------------------------------------------------------------ #
 
 @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGN', 10, 0), ('NNTAGCAAGC', 10, 0), ('NNTAGCAAGC', 8, 0)])
 def test_gen_indel_set_n_in_seq(self, seq, target_len, expected):
@@ -178,272 +191,22 @@ def test_gen_indel_set_qs_deletions(self, seq, target_len):
     for qs_seq in qs_set:
         assert not all([a == b for a, b in zip(qs_seq, expected_qs)])
 
+# ------------------------------------------------------------------------------ #
+# correct_barcode_chunk
+# ------------------------------------------------------------------------------ #
 
-# First test
-# # Testing correct_barcode_set
-# @pytest.mark.parametrize("seq, expected", [('TGTAGCAAGT', 'TGTAGCAAGT'), ('NNNNNNNNNN', None)]) 
-# def test_correct_barcode(self, seq, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     # qs = np.full(len(seq), 30)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-#     #print(barcode_sets[0])
-
-#     # Correct barcode
-#     val = BarcodeExtractor.correct_barcode(seq, barcode_sets[0])
-#     print(val)
-#     assert val == expected
-
-# Second test
-# Testing correct_barcode_set
-# @pytest.mark.parametrize("seq, qs, expected", [('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 'TGTAGCAAGT'), 
-#                                                ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], None), 
-#                                                ('TGTAGCAAGT', [22,30,22,30,22,30,22,30,22,30], None), 
-#                                                ('NNNNNNNNNN', [30,30,30,30,30,30,30,30,30,30], None)]) 
-# def test_correct_barcode(self, seq, qs, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     val = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0])
-#     print(val)
-#     assert val == expected
-
-# # Third test
-# # Testing correct_barcode_set
-# @pytest.mark.parametrize("seq, qs, max_corrections, expected", [('TGTAGNAAGT', [30,30,30,30,30,30,30,30,30,30], 1, [('TGTAGCAAGT', 30)]), 
-#                                                                 ('TGTAGCACGT', [22,22,22,22,22,22,22,22,22,22], 1, [('TGTAGCAAGT', 22)]), 
-#                                                                 ('TGTAGCCCGT', [22,30,22,30,22,30,22,30,22,30], 2, [('TGTAGCAAGT', 52)]), 
-#                                                                 ('NNNNNNNNNN', [30,30,30,30,30,30,30,30,30,30], 1, [])]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     val = list(BarcodeExtractor.gen_nearby_seqs(seq, np_qs, barcode_sets[0], max_corrections))
-#     print(val)
-#     assert val == expected
-
-
-# Fourth test
-# Testing correct_barcode_set
-# @pytest.mark.parametrize("seq, qs, max_corrections, expected", [('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 'TGTAGCAAGT'), 
-#                                                                 ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 4, [('CATTGCGAGT', 88)]), 
-#                                                                 ('TGTAGCAAGT', [22,30,22,30,22,30,22,30,22,30], 4, [('CATTGCGAGT', 104)]), 
-#                                                                 ('NNNNNNNNNN', [30,30,30,30,30,30,30,30,30,30], 1, None)]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     output = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections)
-#     #print(output)
-#     assert output == expected
-
-# Sixth test
-# Testing correct_barcode_set
-# @pytest.mark.parametrize("seq, qs, max_corrections, expected", [('TGTAGCANGT', [30,30,30,30,30,30,30,50,30,30], 1, None), 
-#                                                                 ('TGTAGAGT'  , [22,22,22,22,22,22,22,22,22,22], 4, None), 
-#                                                                 ('TGTAGCCAGT', [22,30,22,30,22,30,22,30,22,30], 4, None), 
-#                                                                 ('NNNNNNNNNN', [30,30,30,30,30,30,30,30,30,30], 1, None)]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     output = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections)
-#     #print(output)
-#     assert output == expected
-
-# Seventh test
-# Testing correct_barcode_set
-# @pytest.mark.parametrize("seq, qs, max_corrections, expected", [('TGTAGCANGT', [30,30,30,30,30,30,30,50,30,30], 1, ('TGTAGCAAGT', 50)), 
-#                                                                 ('TGTAGAGT'  , [22,22,22,22,22,22,22,22,22,22], 4, None), 
-#                                                                 ('TGTAGCCAGT', [22,30,22,30,22,30,22,30,22,30], 1, ('TGTAGCAAGT', 22)),
-#                                                                 ('NNNNNNNNNN', [30,30,30,30,30,30,30,30,30,30], 1, None)]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     output = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections)
-#     assert output == expected
-
-# # Eighth test
-# # Testing correct_barcode_set
-# @pytest.mark.parametrize("seq, qs, max_corrections, expected", [('TGTAGCCAGT', [22,30,22,30,22,30,22,30,22,30], 4, [('TGTAGCAAGT', 22), ('CATTGCGAGT', 104), ('AATAGGCAGG', 112), ('TGAATCCACC', 96)])]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     output = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections)
-#     # print(output)
-#     assert output == expected
-
-
-#WIP
-# Ninth test
-# @pytest.mark.parametrize("seq, qs, max_corrections, expected", [('TGTAGCANGT', [30,30,30,30,30,30,30,50,30,30], 1, ('TGTAGCAAGT', 50)), 
-#                                                                 ('TGTAGCCAGT', [22,30,22,30,22,30,22,30,22,30], 1, ('TGTAGCAAGT', 22)), 
-#                                                                 ('TGTAGCCAGT', [22,30,22,30,22,30,22,30,22,30], 4, [('TGTAGCAAGT', 22), ('CATTGCGAGT', 104), ('AATAGGCAGG', 112), ('TGAATCCACC', 96)])]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-    # Correct barcode
-    # a,b = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections)
-    # print(a)
-    # print(b)
-
-
-# Tenth test: Shorter sequence
-# @pytest.mark.parametrize("seq, qs, max_corrections, target_len, expected", [('TGTAGCAAG', [30,30,30,30,30,30,30,30,30], 1, 10, [])]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, target_len, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     # seq_set, qs_set = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len)
-#     seq_set, qs_set = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len)
-#     print(seq_set)
-#     print(qs_set)
-
-# Testing gen_indel_set output
-#         seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)        
-# @pytest.mark.parametrize("seq, qs, max_corrections, target_len, expected", [('TGTAGCAAG', [30,30,30,30,30,30,30,30,30], 1, 10, [])]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, target_len, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     seq_set, qs_set = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len)
-#     print(seq_set)
-#     print(qs_set)
-
-
-#  New tests
-# @pytest.mark.parametrize("seq, qs, max_corrections, target_len, expected_seq", [('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, 'TGTAGCAAGT'), 
-#                                                                                 ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 1, 10, 'TGTAGCAAGT')]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, target_len, expected_seq):
-#     """Test generation of barcode correction."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     seq = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len)
-#     print(seq)
-
-#     assert seq == expected_seq  
-        
-# @pytest.mark.parametrize("seq, qs, max_corrections, target_len, expected_seq", [('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, 'TGTAGCAAGT'), 
-#                                                                                 ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 1, 10, 'TGTAGCAAGT')]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, target_len, expected_seq):
-#     """Test generation of barcode correction."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-#     bc_dist = { 'TGTAGCAAGT': 0.8,
-#                 'TGTAGCCAGT': 0.2}
-#     bc_threshold = 0.1
-
-#     # Correct barcode
-#     seq = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist, bc_threshold)
-#     #print(seq)
-
-#     assert seq == expected_seq  
-
-# THIS TEST IS FOR WHEN THE BC_THRESHOLD WAS SET TO 0.1 POSTERIOR PROBABILITY
-# @pytest.mark.parametrize("seq, qs, max_corrections, target_len, bc_dist, expected_seq", 
-# [('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT'), 
-# ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 1, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT'),
-# ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 4, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 0.9999999999}, 'CATTGCGAGT'),
-# ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 0.999999999, 'GCAAGCGTGT': 1e-10, 'CATCTCAGGT': 1e-10, 'AATAGGCAGG': 1e-10, 'CTTAGCACTC': 1e-10, 'CGTTATACGT': 1e-10, 'CGTAGTTACA': 1e-10, 'TTCATGAGGT': 1e-10, 'TGCGACAATG': 1e-10, 'TGAATCCACC': 1e-10}, 'CATTGCGAGT'),
-# ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 0.4999999995, 'GCAAGCGTGT': 0.4999999995, 'CATCTCAGGT': 1e-10, 'AATAGGCAGG': 1e-10, 'CTTAGCACTC': 1e-10, 'CGTTATACGT': 1e-10, 'CGTAGTTACA': 1e-10, 'TTCATGAGGT': 1e-10, 'TGCGACAATG': 1e-10, 'TGAATCCACC': 1e-10}, 'CATTGCGAGT'),
-# ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 1e-10, 'GCAAGCGTGT': 1e-10, 'CATCTCAGGT': 1e-10, 'AATAGGCAGG': 1e-10, 'CTTAGCACTC': 1e-10, 'CGTTATACGT': 1e-10, 'CGTAGTTACA': 1e-10, 'TTCATGAGGT': 1e-10, 'TGCGACAATG': 0.4999999995, 'TGAATCCACC': 0.4999999995}, 'TGTAGCAAGT'),
-# ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 1e-10, 'GCAAGCGTGT': 0.4999999995, 'CATCTCAGGT': 0.4999999995, 'AATAGGCAGG': 1e-10, 'CTTAGCACTC': 1e-10, 'CGTTATACGT': 1e-10, 'CGTAGTTACA': 1e-10, 'TTCATGAGGT': 1e-10, 'TGCGACAATG': 1e-10, 'TGAATCCACC': 1e-10}, 'TGTAGCAAGT')]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, target_len, bc_dist, expected_seq):
-#     """Test generation of barcode correction."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-#     bc_threshold = 0.1
-
-#     # Correct barcode
-#     seq = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist, bc_threshold)
-#     assert seq == expected_seq  
-
-# Test for when input seq is not in the barcode set, because it has indels or has been mutated 
-# @pytest.mark.parametrize("seq, qs, max_corrections, target_len, bc_dist, expected_seq", 
-# [('TGTAGCAAT', [30,30,30,30,30,30,30,30,30], 1, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT'),
-# ('TGTAGCAAT', [22,22,22,22,22,22,22,22,22], 1, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT'),
-# ('TGTAGCAAGTC', [22,22,22,22,22,22,22,22,22,22,22], 1, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT'),
-# ('TGTCAGCAAGTC', [22,22,22,22,22,22,22,22,22,22,22,22], 2, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT'),
-# ('TGTAGCAAGTC', [22,22,22,22,22,22,22,22,22,22,22], 3, 10, {'TGTAGCAAGT': 0.9999999992, 'GTGGAAGGTC': 1e-10, 'AGAGAATGTC': 1e-10, 'TGTGCGATTA': 1e-10, 'CTTAGCACTC': 1e-10, 'TGTAGCAAGT': 1e-10, 'TGTAGCAAGT': 1e-10, 'CTTAGCACTC': 1e-10, 'TGTAGCAAGT': 1e-10}, 'TGTAGCAAGT')]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, target_len, bc_dist, expected_seq):
-#     """Test generation of barcode correction."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     seq = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist)
-#     # print(seq)
-#     assert seq == expected_seq  
-
-# Refactoring testing
-@pytest.mark.parametrize("seq, qs, max_corrections, target_len, bc_dist, expected_seq", 
-[('TGTAGCAT', [30,30,30,30,30,30,30,30], 2, 10, {'TGTAGCAAGT': 1, 'TGTAGCAAGT': 0}, 'TGTAGCAAGT'),
-('TGTAGCAAT', [22,22,22,22,22,22,22,22,22], 1, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT'),
-('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT')]) 
-def test_correct_barcode(self, seq, qs, max_corrections, target_len, bc_dist, expected_seq):
+@pytest.mark.parametrize("seq, qs, max_corrections, target_len, dist_updates, expected_seq", [
+('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a high quality score - should return the original sequence
+('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 1, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a low quality score - should return the original sequence as the max dist is not high enough to generate other possible barcodes
+('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a low quality score - should return the original sequence as the prior distribution is weighted to the matched barcode 
+('TGTAGCAAGT', [10,10,10,10,10,10,10,10,10,10], 5, 10, {'TGAATCCACC': 1000000}, None), # Sequence matches barcode and has a low quality score - should nothing as the qual score is so poor
+('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 4, 10, {'CATTGCGAGT': 10000000000, 'TGTAGCAAGT': 0}, 'CATTGCGAGT'), # Sequence matches barcode and has a low quality score - should return the a diff sequence as the prior distribution is weighted to another sequence
+('TGTAGCAAGTT', [30,30,30,30,30,30,30,30,30,30], 2, 10, {}, 'TGTAGCAAGT'), # Insertion - ends up with 3 copies of the same barcode generated in different ways
+('TGTAGCAAGTTT', [30,30,30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGT'), # Insertion
+('TGTAGCAGT', [30,30,30,30,30,30,30,30,30], 3, 10, {}, None), # Deletion - no real dominating prior means we cant decide with confidence
+('TGTAGCGT', [30,30,30,30,30,30,30,30], 3, 10, {}, 'TGTAGCAAGT') # Deletion 
+])
+def test_correct_barcode_chunk(self, seq, qs, max_corrections, target_len, dist_updates, expected_seq):
     """Test generation of barcode correction."""
 
     # Init
@@ -451,147 +214,64 @@ def test_correct_barcode(self, seq, qs, max_corrections, target_len, bc_dist, ex
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_sets = chemistry.load_barcode_set()
 
+    # Get bc counts
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    bc_counts = barcode_ext.calc_raw_barcode_match_counts()
+
+    # Set either very high or very low counts for target barcodes
+    for key in dist_updates.keys():
+        bc_counts[0][key] = dist_updates[key]
+
+    # Inject the altered numbers and calc the distribution
+    barcode_ext.bc_counts = bc_counts
+    bc_dist = barcode_ext.calc_raw_barcode_match_dist()
+
     # Correct barcode
-    seq = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist)
-    print(seq)
-    #assert seq == expected_seq  
+    corr_seq, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist[0])
+    # print("")
+    # print(match_candidates)
+    # print(unnorm_posterior)
+    # print(posterior)
+    # print(corr_seq)
+    assert corr_seq == expected_seq
 
-# @pytest.mark.parametrize("seq, qs, max_corrections, target_len, bc_dist, expected_seq", [('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT'), 
-#                                                                                          ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 1, 10, {'TGTAGCAAGT': 1, 'CATTGCGAGT': 0}, 'TGTAGCAAGT'),
-#                                                                                          ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 4, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 0.9999999999}, 'CATTGCGAGT'),
-#                                                                                          ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 0.999999999, 'GCAAGCGTGT': 1e-10, 'CATCTCAGGT': 1e-10, 'AATAGGCAGG': 1e-10, 'CTTAGCACTC': 1e-10, 'CGTTATACGT': 1e-10, 'CGTAGTTACA': 1e-10, 'TTCATGAGGT': 1e-10, 'TGCGACAATG': 1e-10, 'TGAATCCACC': 1e-10}, 'CATTGCGAGT'),
-#                                                                                          ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 0.4999999995, 'GCAAGCGTGT': 0.4999999995, 'CATCTCAGGT': 1e-10, 'AATAGGCAGG': 1e-10, 'CTTAGCACTC': 1e-10, 'CGTTATACGT': 1e-10, 'CGTAGTTACA': 1e-10, 'TTCATGAGGT': 1e-10, 'TGCGACAATG': 1e-10, 'TGAATCCACC': 1e-10}, 'CATTGCGAGT'),
-#                                                                                          ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 1e-10, 'GCAAGCGTGT': 1e-10, 'CATCTCAGGT': 1e-10, 'AATAGGCAGG': 1e-10, 'CTTAGCACTC': 1e-10, 'CGTTATACGT': 1e-10, 'CGTAGTTACA': 1e-10, 'TTCATGAGGT': 1e-10, 'TGCGACAATG': 0.4999999995, 'TGAATCCACC': 0.4999999995}, 'TGTAGCAAGT'),
-#                                                                                          ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1e-10, 'CATTGCGAGT': 1e-10, 'GCAAGCGTGT': 0.4999999995, 'CATCTCAGGT': 0.4999999995, 'AATAGGCAGG': 1e-10, 'CTTAGCACTC': 1e-10, 'CGTTATACGT': 1e-10, 'CGTAGTTACA': 1e-10, 'TTCATGAGGT': 1e-10, 'TGCGACAATG': 1e-10, 'TGAATCCACC': 1e-10}, 'TGTAGCAAGT')]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, target_len, bc_dist, expected_seq):
-#     """Test generation of barcode correction."""
+# ------------------------------------------------------------------------------ #
+# correct_barcode
+# ------------------------------------------------------------------------------ #
 
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-#     bc_threshold = 0.1
+# Refactoring testing
+@pytest.mark.parametrize("seq, expected_seq", [
+# ('CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', 'GAACAGTAGTACGGTGGACTCAGTGTGGAA'),
+('TCCTGATAAGAGGGTACTCGACCAAGAGAGCAGTAGCTGCTCCTCATCCGTA', ''),
+# ('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', ''),
+# ('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', ''),
+]) 
+def test_correct_barcode_perm(self, seq, expected_seq):
+    """Test correct of whole barcode read"""
+    print("")
 
-#     # for seq, error_sum in BarcodeExtractor.gen_nearby_seqs(seq, np_qs, barcode_sets[0], max_corrections):
-#     #     print(seq)
+    # Init
+    qs = np.full(len(seq), 30)
+    chemistry = ChemistryFactory.get_chemistry('hydrop')
+    barcode_set = chemistry.load_barcode_set()
+    barcode_wl = chemistry.construct_whitelist(barcode_set)
 
-#     # Correct barcode
-#     seq = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist, bc_threshold)
-#     #print(seq)
-#     assert seq == expected_seq  
-        
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
-# Testing correct_barcode_set
-# @pytest.mark.parametrize("seq, qs, max_corrections, expected", [('TGTAGCCAGT', [22,30,22,30,22,30,22,30,22,30], 4, [('TGTAGCAAGT', 22), ('CATTGCGAGT', 104), ('AATAGGCAGG', 112), ('TGAATCCACC', 96)])]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
+    # Test
+    bc, qs, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry, 2)
 
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
+    # Log
+    print(bc)
+    print(qs)
+    print(msg)
 
-#     # Correct barcode
-#     seqs, error = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections)
-#     print(seq)
-    # for seq in list(seqs):
-    #     print(seq) 
+    # Assert
 
-    # for seq in list(seqs):
-    #     assert seq in barcode_sets[0]
-    #output = )
-    # print(output)
-    #assert output == expected
-
-# ('TGTAGCCAGT', [22,30,22,30,22,30,22,30,22,30], 4, [('TGTAGCAAGT', 22), ('CATTGCGAGT', 104), ('AATAGGCAGG', 112), ('TGAATCCACC', 96)]), 
-# Eight test
-# Testing correct_barcode_set
-# @pytest.mark.parametrize("seq, qs, max_corrections, target_len, expected", [('TGTAGAGT', [22,22,22,22,22,22,22,22,22,22], 4, 10, [])]) 
-# def test_correct_barcode(self, seq, qs, max_corrections, target_len, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     np_qs = np.asarray(qs)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-
-#     # Correct barcode
-#     seq_set, qs_set = BarcodeExtractor.correct_barcode(seq, np_qs, barcode_sets[0], max_corrections, target_len)
-#     print(seq_set)
-    # assert output == expected
+# def test_correct_barcode_md5(self, seq, qs, max_corrections, target_len, dist_updates, expected_seq):
 
 
-# # Testing correct_barcode_set
-# @pytest.mark.parametrize("maxdist,seq,expected", [(1, 'TGTAGCAAGN', 1)])
-# def test_correct_barcode(self, maxdist, seq, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
+# GAACAGTAGT ACGGTGGACT CAGTGTGGAA
 
-#     # Init
-#     qs = np.full(len(seq), 30)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-#     # print(barcode_sets[0])
-
-#     # Correct barcode 
-#     seqs, error = BarcodeExtractor.correct_barcode(seq, qs, barcode_sets[0], maxdist)
-#     print(seqs)
-#     print(error)
-    
-#     assert len([seqs[0]]) == expected
-
-# # Testing correct_barcode_set
-# @pytest.mark.parametrize("seq,target_len,max_corrections,expected", [('TGTAGCAGC', 10, 10)])
-# def test_correct_barcode(self,seq, target_len, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     qs = np.full(len(seq), 30)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-#     # print(barcode_sets[0])
-
-#     # Correct barcode 
-#     seqs, qs_set = BarcodeExtractor.correct_barcode(seq, qs, barcode_sets[0], target_len)
-#     print(seqs)
-#     print(qs_set)
-    
-#     assert len(seqs) == expected
-#     assert len(qs_set) == expected
-
-# Testing correct_barcode_set
-# @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGC', 10, 10)])
-# def test_correct_barcode(self,seq, target_len, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     qs = np.full(len(seq), 30)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-#     # print(barcode_sets[0])
-
-#     # Correct barcode 
-#     seqs, qs_set = BarcodeExtractor.correct_barcode(seq, qs, barcode_sets[0], target_len)
-#     print(seqs)
-#     print(qs_set)
-    
-#     assert len(seqs) == expected
-#     assert len(qs_set) == expected
-
-# # Testing correct_barcode_set
-# @pytest.mark.parametrize("seq,target_len, max_corrections,expected", [('TGTAGCAGC', 10, 1, 10)])
-# def test_correct_barcode(self,seq, target_len, max_corrections, expected):
-#     """Test generation of barcode correction when barcode matches perfectly with a barcode in the barcode set."""
-
-#     # Init
-#     qs = np.full(len(seq), 30)
-#     chemistry = ChemistryFactory.get_chemistry('hydrop')
-#     barcode_sets = chemistry.load_barcode_set()
-#     # print(barcode_sets[0])
-
-#     # Correct barcode 
-#     new_seq, error_probs_sum = zip(*BarcodeExtractor.correct_barcode(seq, qs, barcode_sets[0], target_len, max_corrections))
-#     # print(seqs)
-#     # print(qs_set)
-    
-#     # assert len(seqs) == expected
-#     # assert len(qs_set) == expected
+# AATCTGCACACTCGATCAACTGGTCTACTC
