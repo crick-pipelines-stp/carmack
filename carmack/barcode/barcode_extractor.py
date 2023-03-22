@@ -285,3 +285,16 @@ class BarcodeExtractor:
             
 
         return corr_bc, corr_qs, msg
+       
+    def get_corrected_barcodes(fastq_path, barcode_wl: list, barcode_set: list, bc_dists: dict, chemistry: ChemistryBase, max_corrections: int):
+        fq_file = FastqFile(fastq_path)
+        fastq_iter = fq_file.open_read_iterator(as_string=True)
+
+        for (name, seq, qual) in fastq_iter:
+            qual = qual.decode('UTF-8') # needs to be a numpy array 
+
+            # Match and correct the barcode
+            corr_bc, corr_qs, msg = BarcodeExtractor.correct_barcode(seq, qual, barcode_wl, barcode_set, bc_dists, chemistry, max_corrections)
+            yield (name, corr_bc, corr_qs, msg)
+ 
+    # Write to an output file (and evt. further stats)
