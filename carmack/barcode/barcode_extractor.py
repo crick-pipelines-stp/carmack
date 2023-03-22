@@ -14,6 +14,7 @@ QS_SCORE_THRESHOLD = 24
 BC_CONFIDENCE_THRESHOLD = 0.9
 ILLUMINA_QUAL_MIN_SCORE = 2
 ILLUMINA_QUAL_MAX_SCORE = 30
+ILLUMINA_QUAL_OFFSET = 33
 
 log = logging.getLogger(__name__)
 class BarcodeExtractor:
@@ -269,26 +270,27 @@ class BarcodeExtractor:
         bc_chunks, qs_chunks, sub_msg = chemistry.subset_barcode_chunks(seq, qs)
         msg = msg + "|" + sub_msg
 
-        # For each barcode chunk, correct
         corr_chunks = []
-        for idx, bc_chunk in enumerate(bc_chunks):
-            # Logging
-            if len(bc_chunk) != target_len:
-                msg = msg + "|BC" + str(idx + 1) + ":INDL_" + str(len(bc_chunk))
-            else:
-                msg = msg + "|BC" + str(idx + 1)
+        if bc_chunks is not None:
+            # For each barcode chunk, correct
+            for idx, bc_chunk in enumerate(bc_chunks):
+                # Logging
+                if len(bc_chunk) != target_len:
+                    msg = msg + "|BC" + str(idx + 1) + ":INDL_" + str(len(bc_chunk))
+                else:
+                    msg = msg + "|BC" + str(idx + 1)
 
-            # Correct  barcode chunk
-            curr_corr_bc, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(bc_chunk, qs_chunks[idx], barcode_set[idx], max_corrections, target_len, bc_dists[idx])
-            corr_chunks.append(curr_corr_bc)
+                # Correct  barcode chunk
+                curr_corr_bc, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(bc_chunk, qs_chunks[idx], barcode_set[idx], max_corrections, target_len, bc_dists[idx])
+                corr_chunks.append(curr_corr_bc)
 
-            if curr_corr_bc is None:
-                msg = msg + ":CORRFAIL"
-            else:
-                msg = msg + ":CORROK"
+                if curr_corr_bc is None:
+                    msg = msg + ":CORRFAIL"
+                else:
+                    msg = msg + ":CORROK"
 
         # Assign corrected BC if the correction has not failed
-        if "CORRFAIL" not in msg:
+        if "CORRFAIL" not in msg and ("SUBSET:OK" in msg or "SUBSET:INDL" in msg):
             corr_bc = ''.join(corr_chunks)
             msg = "OK|" + msg
         else:
