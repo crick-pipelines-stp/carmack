@@ -240,14 +240,14 @@ def test_correct_barcode_chunk(self, seq, qs, max_corrections, target_len, dist_
 # ------------------------------------------------------------------------------ #
 
 # Refactoring testing
-@pytest.mark.parametrize("seq, expected_seq", [
-# ('CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', 'GAACAGTAGTACGGTGGACTCAGTGTGGAA'),
-('TCCTGATAAGAGGGTACTCGACCAAGAGAGCAGTAGCTGCTCCTCATCCGTA', ''),
-# ('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', ''),
-# ('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', ''),
+@pytest.mark.parametrize("seq, expected_seq, expected_msg", [
+('CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', 'GAACAGTAGTACGGTGGACTCAGTGTGGAA', 'OK|WL_MATCH'), # Full whitelist match
+('TCCTGATAAGAGGGTACTCGACCAAGAGAGCAGTAGCTGCTCCTCATCCGTA', None, 'FAIL|NIM|SUBSET:INDL|BC1:INDL_11:CORROK|BC2:INDL_9:CORRFAIL|BC3:CORROK'), # Correction fail on chunk 3
+('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', None, 'FAIL|NIM|SUBSET:OK|BC1:CORRFAIL|BC2:CORROK|BC3:CORROK'), # Correction fail on chunk 1 but no indels
+('CATGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', 'GAACAGTAGTACGGTGGACTCAGTGTGGAA', 'OK|NIM|SUBSET:INDL|BC1:INDL_11:CORROK|BC2:CORROK|BC3:INDL_9:CORROK'), # Indel but correction ok
 ]) 
-def test_correct_barcode_perm(self, seq, expected_seq):
-    """Test correct of whole barcode read"""
+def test_correct_barcode_perm(self, seq, expected_seq, expected_msg):
+    """Test correction of whole barcode read"""
     print("")
 
     # Init
@@ -260,14 +260,15 @@ def test_correct_barcode_perm(self, seq, expected_seq):
     bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
     # Test
-    bc, qs, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry, 2)
+    bc, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry, 2)
 
     # Log
-    print(bc)
-    print(qs)
-    print(msg)
+    # print(bc)
+    # print(msg)
 
     # Assert
+    assert bc == expected_seq
+    assert msg == expected_msg
 
 # def test_correct_barcode_md5(self, seq, qs, max_corrections, target_len, dist_updates, expected_seq):
 
