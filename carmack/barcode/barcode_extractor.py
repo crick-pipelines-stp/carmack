@@ -270,7 +270,18 @@ class BarcodeExtractor:
         bc_chunks, qs_chunks, sub_msg = chemistry.subset_barcode_chunks(seq, qs)
         msg = msg + "_" + sub_msg
 
-        # Correct each barcode chunk
-        corr_bc1, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(bc_chunks[0], qs_chunks[0], barcode_set[0], max_corrections, target_len, bc_dists[0])
+        # For each barcode chunk, correct
+        for idx, bc_chunk in enumerate(bc_chunks):
+            # Logging
+            if len(bc_chunk) != target_len:
+                msg = msg + "_BC" + str(idx + 1) + ":INDL|" + str(len(bc_chunk))
+
+            # Correct  barcode chunk
+            curr_corr_bc, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(bc_chunk, qs_chunks[idx], barcode_set[idx], max_corrections, target_len, bc_dists[idx])
+            if curr_corr_bc is None:
+                msg = msg + "_BC" + str(idx + 1) + ":CORRFAIL"
+            else:
+                msg = msg + "_BC" + str(idx + 1) + ":CORROK"
+            
 
         return corr_bc, corr_qs, msg
