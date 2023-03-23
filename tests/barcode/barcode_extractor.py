@@ -310,3 +310,39 @@ def test_correct_barcode_md5(self, temp_path):
             count = count + 1
 
     utils.validate_file_md5(test_file, expected_hash)
+
+# ------------------------------------------------------------------------------ #
+# get_corrected_barcode
+# ------------------------------------------------------------------------------ #
+
+@pytest.mark.parametrize("expected_read_name, expected_corr_bc, expected_msg, line", [
+('NB501505:171:H3KMGAFX3:4:21612:13641:20150 2:N:0:CTATAGTCTT', 'CCGTTCGTCCAATAGCGTGGGGTTAATCAC', 'OK|WL_MATCH', 0), # Full whitelist match
+('NB501505:171:H3KMGAFX3:3:21601:7618:10703 2:N:0:CTATAGTCTT', None, 'FAIL|NIM|SUBSET:SPC2_NOTFND', 5), # Fail because spacer not found
+('NB501505:171:H3KMGAFX3:3:11402:13723:5588 2:N:0:CTATAGTCTT', None, 'FAIL|NIM|SUBSET:INDL|BC1:INDL_11:CORROK|BC2:INDL_9:CORRFAIL|BC3:CORROK', 6), # Correction fail on chunk 3
+('NB501505:171:H3KMGAFX3:2:21203:12986:2165 2:N:0:CTATAGTCTT', 'TTGCAGTTCTACACGTTGTGAGTTGGAAGA', 'OK|NIM|SUBSET:OK|BC1:CORROK|BC2:CORROK|BC3:CORROK', 13) # No immediate match, but no indels
+]) 
+def test_corrected_barcode_messages(self, expected_read_name, expected_corr_bc, expected_msg, line): #, seq, expected_seq, expected_msg
+    """Test barcode messaging"""
+    # Init
+    chemistry = ChemistryFactory.get_chemistry('hydrop')
+    barcode_set = chemistry.load_barcode_set()
+    barcode_wl = chemistry.construct_whitelist(barcode_set)
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    bc_dist = barcode_ext.calc_raw_barcode_match_dist()
+
+    count = 0
+    # Yield barcode name, corrected barcode and message
+    for name, corr_bc, msgs in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
+        # print(name)
+        # print(corr_bc)
+        # print(msgs)
+        # print(count)
+
+        if count == line:
+            # Assert
+            assert name == expected_read_name
+            assert corr_bc == expected_corr_bc
+            assert msgs == expected_msg
+            break
+        
+        count = count + 1

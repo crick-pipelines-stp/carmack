@@ -202,6 +202,12 @@ class BarcodeExtractor:
 
     @staticmethod
     def correct_barcode_chunk(seq, qs, barcode_set, max_corrections, target_len, bc_dist):
+        """Given an input barcode chunk, generate a collection of nearby sequences for that chunk 
+        that are at most max_corrections away from the input chunk. Use the summed error probabilities 
+        for all added or modified indices to calculate the unnormalised posterior probability for 
+        each nearby sequence. Return the nearby sequence with the highest posterior probability if 
+        it exceeds the minimum barcode confidence threshold, or otherwise return None.             
+        """
         # Init
         match_candidates = []
         unnorm_posterior = []
@@ -247,6 +253,12 @@ class BarcodeExtractor:
 
     @staticmethod
     def correct_barcode(seq: str, qs: np.ndarray, barcode_wl: list, barcode_set: list, bc_dists: dict, chemistry: ChemistryBase, max_corrections: int):
+        """Given a barcode sequence, correct each barcode chunk individually if it is not 
+        immediately matched in the barcode whitelist. Join the corrected chunks and return 
+        the entire corrected barcode sequence along with a message describing whether the 
+        barcode the correction was succesfull or not, which corrections were applied to 
+        each barcode chunk and potentially the cause of failed correction.    
+        """
         # Init
         corr_bc = None
         msg = "{UNPROCESSED}"
@@ -298,16 +310,22 @@ class BarcodeExtractor:
 
         return corr_bc, msg
 
-    def get_corrected_barcodes(self, barcode_wl: list, barcode_set: list, bc_dists: dict, max_corrections: int):
+    def get_corrected_barcode(self, barcode_wl: list, barcode_set: list, bc_dists: dict, max_corrections: int):
+        """Given a FASTQ file containing cell barcodes, evaluate each barcode and correct it 
+        if required. Return the read name, the original or corrected barcode and a message 
+        describing the correction process. 
+        """
+
+        # 
         fq_file = FastqFile(self.cell_barcode)
         fastq_iter = fq_file.open_read_iterator(as_string=True)
 
         for (name, seq, qual) in fastq_iter:
             # Conver the quality score to a numpy array 
-            np_qual = np.asarray(qual) 
+            dqs = np.frombuffer(qual.encode('UTF-8'), dtype=np.byte) - ILLUMINA_QUAL_OFFSET
 
             # Match and correct the barcode
-            corr_bc, msg = BarcodeExtractor.correct_barcode(seq, np_qual, barcode_wl, barcode_set, bc_dists, self.chemistry, max_corrections)
+            corr_bc, msg = BarcodeExtractor.correct_barcode(seq, dqs, barcode_wl, barcode_set, bc_dists, self.chemistry, max_corrections)
             yield (name, corr_bc, msg)
 
     # Second wrapper function to write to an output file (and evt. further stats)

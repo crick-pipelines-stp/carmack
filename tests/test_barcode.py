@@ -27,4 +27,5 @@ class TestBarcodeFixtures():
         test_gen_indel_set_insertions,\
         test_gen_indel_set_qs_deletions,\
         test_correct_barcode_chunk,\
-        test_correct_barcode_perm
+        test_correct_barcode_perm,\
+        test_corrected_barcode_messages
