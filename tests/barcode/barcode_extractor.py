@@ -321,7 +321,7 @@ def test_correct_barcode_md5(self, temp_path):
 ('NB501505:171:H3KMGAFX3:3:11402:13723:5588 2:N:0:CTATAGTCTT', None, 'FAIL|NIM|SUBSET:INDL|BC1:INDL_11:CORROK|BC2:INDL_9:CORRFAIL|BC3:CORROK', 6), # Correction fail on chunk 3
 ('NB501505:171:H3KMGAFX3:2:21203:12986:2165 2:N:0:CTATAGTCTT', 'TTGCAGTTCTACACGTTGTGAGTTGGAAGA', 'OK|NIM|SUBSET:OK|BC1:CORROK|BC2:CORROK|BC3:CORROK', 13) # No immediate match, but no indels
 ]) 
-def test_corrected_barcode_messages(self, expected_read_name, expected_corr_bc, expected_msg, line): #, seq, expected_seq, expected_msg
+def test_get_corrected_barcode_messages(self, expected_read_name, expected_corr_bc, expected_msg, line): #, seq, expected_seq, expected_msg
     """Test barcode messaging"""
     # Init
     chemistry = ChemistryFactory.get_chemistry('hydrop')
@@ -347,4 +347,5 @@ def test_corrected_barcode_messages(self, expected_read_name, expected_corr_bc, 
         
         count = count + 1
 
-# Hash testing
+# md5 hash testing
+#def test_get_corrected_barcode_
