@@ -297,3 +297,17 @@ class BarcodeExtractor:
             msg = "FAIL|" + msg
 
         return corr_bc, msg
+
+    def get_corrected_barcodes(self, barcode_wl: list, barcode_set: list, bc_dists: dict, max_corrections: int):
+        fq_file = FastqFile(self.cell_barcode)
+        fastq_iter = fq_file.open_read_iterator(as_string=True)
+
+        for (name, seq, qual) in fastq_iter:
+            # Conver the quality score to a numpy array 
+            np_qual = np.asarray(qual) 
+
+            # Match and correct the barcode
+            corr_bc, msg = BarcodeExtractor.correct_barcode(seq, np_qual, barcode_wl, barcode_set, bc_dists, self.chemistry, max_corrections)
+            yield (name, corr_bc, msg)
+
+    # Second wrapper function to write to an output file (and evt. further stats)
