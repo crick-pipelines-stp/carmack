@@ -12,7 +12,9 @@ class TestBarcode(unittest.TestCase):
     from .barcode.barcode_extractor import\
         test_calc_raw_barcode_match_counts_hydrop,\
         test_calc_raw_barcode_match_distribution_hydrop,\
-        test_correct_barcode_md5
+        test_correct_barcode_md5,\
+        test_get_corrected_barcode_md5
+
 
 class TestBarcodeFixtures():
     """Class for barcode tests with param fixtures"""

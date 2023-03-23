@@ -332,7 +332,7 @@ def test_get_corrected_barcode_messages(self, expected_read_name, expected_corr_
 
     count = 0
     # Yield barcode name, corrected barcode and message
-    for name, corr_bc, msgs in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
+    for name, corr_bc, msg in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
         # print(name)
         # print(corr_bc)
         # print(msgs)
@@ -342,10 +342,42 @@ def test_get_corrected_barcode_messages(self, expected_read_name, expected_corr_
             # Assert
             assert name == expected_read_name
             assert corr_bc == expected_corr_bc
-            assert msgs == expected_msg
+            assert msg == expected_msg
             break
         
         count = count + 1
 
-# md5 hash testing
-#def test_get_corrected_barcode_
+
+#import hashlib
+
+@with_temporary_folder
+def test_get_corrected_barcode_md5(self, temp_path):
+    """Test barcode barcode correction"""
+
+    # expected_hash = 
+
+    # Init
+    test_file = os.path.join(temp_path, 'barcodes_corrected.txt')
+    chemistry = ChemistryFactory.get_chemistry('hydrop')
+    barcode_set = chemistry.load_barcode_set()
+    barcode_wl = chemistry.construct_whitelist(barcode_set)
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    bc_dist = barcode_ext.calc_raw_barcode_match_dist()
+
+
+    # Iterate over all cell barcodes, correct them and write the output to a file
+    with open(test_file, 'w') as out_file:
+        for name, corr_bc, msg in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
+                if corr_bc is None:
+                    corr_bc = ""
+
+                line = name + ',' + corr_bc + ',' + msg
+                out_file.write(line + '\n')
+
+                print(line)
+    
+    print("Done")
+    # print(hashlib.md5(out_file).hexdigest())
+    # utils.validate_file_md5(test_file, expected_hash)
+
+
