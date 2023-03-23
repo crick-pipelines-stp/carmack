@@ -11,10 +11,11 @@ class TestBarcode(unittest.TestCase):
     from .barcode.whitelist import test_load_barcode_whitelist
     from .barcode.barcode_extractor import\
         test_calc_raw_barcode_match_counts_hydrop,\
-        test_calc_raw_barcode_match_distribution_hydrop
+        test_calc_raw_barcode_match_distribution_hydrop,\
+        test_correct_barcode_md5
 
 class TestBarcodeFixtures():
-    """Class for barcode tests with fixtures"""
+    """Class for barcode tests with param fixtures"""
 
     from .barcode.barcode_extractor import test_gen_nearby_seqs_withn,\
         test_gen_nearby_seqs_withn_none,\

@@ -14,6 +14,7 @@ QS_SCORE_THRESHOLD = 24
 BC_CONFIDENCE_THRESHOLD = 0.9
 ILLUMINA_QUAL_MIN_SCORE = 2
 ILLUMINA_QUAL_MAX_SCORE = 30
+ILLUMINA_QUAL_OFFSET = 33
 
 log = logging.getLogger(__name__)
 class BarcodeExtractor:
@@ -248,7 +249,6 @@ class BarcodeExtractor:
     def correct_barcode(seq: str, qs: np.ndarray, barcode_wl: list, barcode_set: list, bc_dists: dict, chemistry: ChemistryBase, max_corrections: int):
         # Init
         corr_bc = None
-        corr_qs = None
         msg = "{UNPROCESSED}"
         target_len = len(barcode_set[0][0])
 
@@ -261,40 +261,39 @@ class BarcodeExtractor:
 
         # Match to whitelist and exit if we have an immediate match accross all barcode chunks
         if wl_guess in barcode_wl:
-            msg = "WL_MATCH"
-            return wl_guess, qs, msg
+            msg = "OK|WL_MATCH"
+            return wl_guess, msg
         else:
             msg = "NIM"
 
         # Subset the barcode chunks
         bc_chunks, qs_chunks, sub_msg = chemistry.subset_barcode_chunks(seq, qs)
-        msg = msg + "_" + sub_msg
+        msg = msg + "|" + sub_msg
 
-        # For each barcode chunk, correct
-        for idx, bc_chunk in enumerate(bc_chunks):
-            # Logging
-            if len(bc_chunk) != target_len:
-                msg = msg + "_BC" + str(idx + 1) + ":INDL|" + str(len(bc_chunk))
+        corr_chunks = []
+        if bc_chunks is not None:
+            # For each barcode chunk, correct
+            for idx, bc_chunk in enumerate(bc_chunks):
+                # Logging
+                if len(bc_chunk) != target_len:
+                    msg = msg + "|BC" + str(idx + 1) + ":INDL_" + str(len(bc_chunk))
+                else:
+                    msg = msg + "|BC" + str(idx + 1)
 
-            # Correct  barcode chunk
-            curr_corr_bc, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(bc_chunk, qs_chunks[idx], barcode_set[idx], max_corrections, target_len, bc_dists[idx])
-            if curr_corr_bc is None:
-                msg = msg + "_BC" + str(idx + 1) + ":CORRFAIL"
-            else:
-                msg = msg + "_BC" + str(idx + 1) + ":CORROK"
-            
+                # Correct  barcode chunk
+                curr_corr_bc, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(bc_chunk, qs_chunks[idx], barcode_set[idx], max_corrections, target_len, bc_dists[idx])
+                corr_chunks.append(curr_corr_bc)
 
-        return corr_bc, corr_qs, msg
-       
-    def get_corrected_barcodes(fastq_path, barcode_wl: list, barcode_set: list, bc_dists: dict, chemistry: ChemistryBase, max_corrections: int):
-        fq_file = FastqFile(fastq_path)
-        fastq_iter = fq_file.open_read_iterator(as_string=True)
+                if curr_corr_bc is None:
+                    msg = msg + ":CORRFAIL"
+                else:
+                    msg = msg + ":CORROK"
 
-        for (name, seq, qual) in fastq_iter:
-            qual = qual.decode('UTF-8') # needs to be a numpy array 
+        # Assign corrected BC if the correction has not failed
+        if "CORRFAIL" not in msg and ("SUBSET:OK" in msg or "SUBSET:INDL" in msg):
+            corr_bc = ''.join(corr_chunks)
+            msg = "OK|" + msg
+        else:
+            msg = "FAIL|" + msg
 
-            # Match and correct the barcode
-            corr_bc, corr_qs, msg = BarcodeExtractor.correct_barcode(seq, qual, barcode_wl, barcode_set, bc_dists, chemistry, max_corrections)
-            yield (name, corr_bc, corr_qs, msg)
- 
-    # Write to an output file (and evt. further stats)
+        return corr_bc, msg
