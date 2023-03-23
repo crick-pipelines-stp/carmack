@@ -346,3 +346,5 @@ def test_corrected_barcode_messages(self, expected_read_name, expected_corr_bc, 
             break
         
         count = count + 1
+
+# Hash testing

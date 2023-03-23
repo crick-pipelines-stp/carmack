@@ -315,17 +315,16 @@ class BarcodeExtractor:
         if required. Return the read name, the original or corrected barcode and a message 
         describing the correction process. 
         """
-
-        # 
+        # Get the FASTQ file containing cell barcodes and create an iterator
         fq_file = FastqFile(self.cell_barcode)
         fastq_iter = fq_file.open_read_iterator(as_string=True)
 
-        for (name, seq, qual) in fastq_iter:
+        # Iterate over each line in the FASTQ file and correct the barcode in necessary
+        for (name, seq, qs) in fastq_iter:
             # Conver the quality score to a numpy array 
-            dqs = np.frombuffer(qual.encode('UTF-8'), dtype=np.byte) - ILLUMINA_QUAL_OFFSET
+            dqs = np.frombuffer(qs.encode('UTF-8'), dtype=np.byte) - ILLUMINA_QUAL_OFFSET
 
             # Match and correct the barcode
             corr_bc, msg = BarcodeExtractor.correct_barcode(seq, dqs, barcode_wl, barcode_set, bc_dists, self.chemistry, max_corrections)
             yield (name, corr_bc, msg)
-
-    # Second wrapper function to write to an output file (and evt. further stats)
+    
