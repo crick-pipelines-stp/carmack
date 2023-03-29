@@ -133,7 +133,7 @@ class BarcodeExtractor:
                         yield new_seq, error_probs_sum
 
     @staticmethod
-    def gen_indel_set(seq, qs, target_len):
+    def gen_indel_set(seq, qs, target_len, maxdist):
         """Given an input sequence and a desired length, generate an exhaustive combinatorial 
         set of potential sequences with N in place of insertions. For qs, the indels are given
         a high qs as we are 100% sure about their letter given that we have inserted the N ourselves. 
@@ -154,6 +154,12 @@ class BarcodeExtractor:
         # Return if seq is correct length
         if seq_len == target_len:
             return [seq],[qs]
+        
+        # Return if absolute difference between seq and   
+        # target length is larger than max_corrections 
+        diff =  seq_len - target_len
+        if abs(diff) > maxdist:
+            return [], []
 
         # DELETION
         if seq_len < target_len:
@@ -224,7 +230,7 @@ class BarcodeExtractor:
         # If the input sequence doesn't perfectly match an existing barcode, this can be either due to indels or mutations.
         # If there are indels, gen_indel_set will generate a set of sequences with the correct length containing N in each possible position and their associated qs
         # If the original sequence already had the correct length or or is already in the barcode_set but has low qs, it will just return the input sequence and qs 
-        for indel_seq, indel_qs in zip(*BarcodeExtractor.gen_indel_set(seq, qs, target_len)):
+        for indel_seq, indel_qs in zip(*BarcodeExtractor.gen_indel_set(seq, qs, target_len, max_corrections)):
             # For each indel sequence, generate all possible nearby sequences that are at most max_corrections (Hamming distance) away from the input sequence
             for curr_seq, error_sum in BarcodeExtractor.gen_nearby_seqs(indel_seq, indel_qs, barcode_set, max_corrections):
                 # Find the posterior for each seq

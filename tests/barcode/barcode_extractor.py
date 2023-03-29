@@ -128,7 +128,9 @@ def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
 # gen_indel_set
 # ------------------------------------------------------------------------------ #
 
-@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGN', 10, 0), ('NNTAGCAAGC', 10, 0), ('NNTAGCAAGC', 8, 0)])
+@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGN', 10, 0), 
+                                                     ('NNTAGCAAGC', 10, 0), 
+                                                     ('NNTAGCAAGC', 8, 0)])
 def test_gen_indel_set_n_in_seq(self, seq, target_len, expected):
     """Test generation of indel sets with N in input sequence raises a ValueError."""
     with pytest.raises(ValueError):
@@ -137,9 +139,11 @@ def test_gen_indel_set_n_in_seq(self, seq, target_len, expected):
         qs = np.full(len(seq), 30)
 
         # Generate indels
-        seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)        
+        seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)        
 
-@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGC', 10, 1), ('TGTAGCAAGCG', 11, 1), ('TGTAGCAAGCGG', 12, 1)])
+@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGC', 10, 1), 
+                                                     ('TGTAGCAAGCG', 11, 1), 
+                                                     ('TGTAGCAAGCGG', 12, 1)])
 def test_gen_indel_set_correct_length(self, seq, target_len, expected):
     """Test generation of indel sets when input sequence has correct length."""
 
@@ -147,12 +151,15 @@ def test_gen_indel_set_correct_length(self, seq, target_len, expected):
     qs = np.full(len(seq), 30)
 
     # Generate indels
-    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
+    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)
         
     assert len(seq_set) == expected
     assert len(qs_set) == expected
 
-@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGC', 10, 10), ('TGTAGCAAGC', 11, 11), ('TGTAGCAGC', 11, 55)])
+@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGC', 10, 10), 
+                                                     ('TGTAGCAAGC', 11, 11), 
+                                                     ('TGTAGCAGC', 11, 55),
+                                                     ('TGTGC', 10, 0)])
 def test_gen_indel_set_deletions(self, seq, target_len, expected):
     """Test generation of indel sets when input sequence has one or more deletions."""
 
@@ -160,12 +167,15 @@ def test_gen_indel_set_deletions(self, seq, target_len, expected):
     qs = np.full(len(seq), 30)
 
     # Generate indels
-    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
-        
+    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)
+
     assert len(seq_set) == expected
     assert len(qs_set) == expected
 
-@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGCGC', 10, 11), ('TGTAGCAGCCC', 10, 9), ('TGTAGCAGCGCA', 10, 63)])
+@pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGCGC', 10, 11), 
+                                                     ('TGTAGCAGCCC', 10, 9), 
+                                                     ('TGTAGCAGCGCA', 10, 63),
+                                                     ('TGTAGCACGCCCGCGCA', 10, 0)])
 def test_gen_indel_set_insertions(self, seq, target_len, expected):
     """Test generation of indel sets when input sequence has one or more insertions."""
 
@@ -173,12 +183,14 @@ def test_gen_indel_set_insertions(self, seq, target_len, expected):
     qs = np.full(len(seq), 30)
 
     # Generate indels
-    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
+    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)
         
     assert len(seq_set) == expected
     assert len(qs_set) == expected
 
-@pytest.mark.parametrize("seq,target_len", [('TGTAGCAGC', 10), ('TGTAGCAAGC', 11), ('TGTAGCAGC', 11)])
+@pytest.mark.parametrize("seq,target_len", [('TGTAGCAGC', 10), 
+                                            ('TGTAGCAAGC', 11), 
+                                            ('TGTAGCAGC', 11)])
 def test_gen_indel_set_qs_deletions(self, seq, target_len):
     """Test generation of indel sets with high quality score for position N."""
 
@@ -187,7 +199,7 @@ def test_gen_indel_set_qs_deletions(self, seq, target_len):
     expected_qs = np.full(target_len, 30)
 
     # Generate indels
-    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len)
+    seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)
 
     for qs_seq in qs_set:
         assert not all([a == b for a, b in zip(qs_seq, expected_qs)])
@@ -247,6 +259,7 @@ def test_correct_barcode_chunk(self, seq, qs, max_corrections, target_len, dist_
 ('GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC', None, 'FAIL|NIM|SUBSET:OK|BC1:CORRFAIL|BC2:CORROK|BC3:CORROK'), # Correction fail on chunk 1 but no indels
 ('CATGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', 'GAACAGTAGTACGGTGGACTCAGTGTGGAA', 'OK|NIM|SUBSET:INDL|BC1:INDL_11:CORROK|BC2:CORROK|BC3:INDL_9:CORROK'), # Indel but correction ok
 ('TGTCACAACAAGGGTACTCGGTCCAGGCTTGCAGGAGCGGGACTTGTGGCGT', None, 'FAIL|NIM|SUBSET:SPC2_NOTFND'), # Fail because spacer not found
+('TTGTCCGCCAAGGGTACTCGTATGCAGTAGCTGCGTCAGACAAGTACTCTGC', None, 'FAIL|NIM|SUBSET:INDL|BC1:INDL_17:CORRFAIL|BC2:INDL_3:CORRFAIL|BC3:CORROK') # Fail because too many indels
 ]) 
 def test_correct_barcode_perm(self, seq, expected_seq, expected_msg):
     """Test correction of whole barcode read"""
@@ -332,7 +345,7 @@ def test_get_corrected_barcode_messages(self, expected_read_name, expected_corr_
 
     count = 0
     # Yield barcode name, corrected barcode and message
-    for name, corr_bc, msg in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
+    for (name, corr_bc, msg) in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
         # print(name)
         # print(corr_bc)
         # print(msgs)
@@ -348,13 +361,11 @@ def test_get_corrected_barcode_messages(self, expected_read_name, expected_corr_
         count = count + 1
 
 
-#import hashlib
-
 @with_temporary_folder
 def test_get_corrected_barcode_md5(self, temp_path):
     """Test barcode barcode correction"""
 
-    # expected_hash = 
+    expected_hash = 'b5a7aa8b036fee4e2dddeb2eee9a45ea'
 
     # Init
     test_file = os.path.join(temp_path, 'barcodes_corrected.txt')
@@ -367,17 +378,13 @@ def test_get_corrected_barcode_md5(self, temp_path):
 
     # Iterate over all cell barcodes, correct them and write the output to a file
     with open(test_file, 'w') as out_file:
-        for name, corr_bc, msg in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
-                if corr_bc is None:
-                    corr_bc = ""
+        for (name, corr_bc, msg) in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
+            if corr_bc is None:
+                corr_bc = ""
 
-                line = name + ',' + corr_bc + ',' + msg
-                out_file.write(line + '\n')
+            line = name + ',' + corr_bc + ',' + msg
+            out_file.write(line + '\n')
 
-                print(line)
-    
-    print("Done")
-    # print(hashlib.md5(out_file).hexdigest())
-    # utils.validate_file_md5(test_file, expected_hash)
-
-
+            # print(line)
+        
+    utils.validate_file_md5(test_file, expected_hash)

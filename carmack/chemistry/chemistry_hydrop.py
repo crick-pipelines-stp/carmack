@@ -81,7 +81,7 @@ class ChemistryHydrop(ChemistryBase):
         if(len(seq) < 50):
             return None, None, "SUBSET:SEQLEN<50"
         
-                # Subset seq if more than 50 to the left most 50 bases
+        # Subset seq if more than 50 to the left most 50 bases
         if(len(seq) > 50):
             seq = seq[:50]
 
