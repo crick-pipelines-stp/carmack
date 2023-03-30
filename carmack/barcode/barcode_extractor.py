@@ -1,4 +1,4 @@
-
+import os
 import logging
 import itertools
 import numpy as np
@@ -333,4 +333,34 @@ class BarcodeExtractor:
             # Match and correct the barcode
             corr_bc, msg = BarcodeExtractor.correct_barcode(seq, dqs, barcode_wl, barcode_set, bc_dists, self.chemistry, max_corrections)
             yield (name, corr_bc, msg)
-    
+
+    def extract_cell_barcodes(self, max_corrections: int):
+        """Given a FASTQ file containing cell barcodes, extract the corrected cell barcodes.
+        Write output to separate files containing all barcodes, all matched barcodes, and stats
+        for downstream visualisation.
+        """
+        # Init
+        barcode_set = self.chemistry.load_barcode_set()
+        barcode_wl = self.chemistry.construct_whitelist(barcode_set)
+        barcode_ext = BarcodeExtractor(self.read1, self.read2, self.cell_barcode, self.chemistry)
+        bc_dist = barcode_ext.calc_raw_barcode_match_dist()
+
+        # Process the barcodes
+        bc_iter = barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, max_corrections)
+
+        # evt. initiate counts
+
+        # Open files and write
+        with open(os.path.join(self.prefix, '.bc_all.csv'), "w") as file_all: # Prefix? parsed_args.prefix, self.prefix, input
+            with open(os.path.join(self.prefix + '.bc_valid.csv'), "w") as file_valid: # parsed_args.output, parsed_args.prefix + '.bc_valid.csv'
+                for (name, corr_bc, msg) in bc_iter:
+                    if corr_bc is None:
+                        corr_bc = ""
+                    
+                    # Write barcodes to file
+                    file_all.write(name + ',' + corr_bc + ',' + msg '\n')
+                    if corr_bc != "":
+                        file_valid.write(name + "," + bc + "," + qs + "," + bc_code + '\n')
+
+        
+        # Stats
