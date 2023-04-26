@@ -436,7 +436,7 @@ def test_report_logging(self):
             # Calculate percentage of different categories of failed matches
             total_fail_count = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], msg_dict.items())).values())
             fail_spc_notfnd_fraction = sum(dict(filter(lambda x: 'NOTFND' in x[0], msg_dict.items())).values())/total_fail_count
-            fail_corr_indl_fraction = sum(dict(filter(lambda x: re.search('INDL_*:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
+            fail_corr_indl_fraction = sum(dict(filter(lambda x: re.search('INDL_.*:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
             fail_corr_mut_fraction = sum(dict(filter(lambda x: re.search('BC.:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
 
             # Calculate percentage total barcodes that belong to the 10 most frequent barcodes

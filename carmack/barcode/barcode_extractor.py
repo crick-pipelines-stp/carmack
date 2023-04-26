@@ -358,9 +358,6 @@ class BarcodeExtractor:
         barcode_ext = BarcodeExtractor(self.read1, self.read2, self.cell_barcode, self.chemistry)
         bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
-        # Process the barcodes
-        bc_iter = barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, max_corrections)
-
         # Init
         line_index = 0
         bc_dict = {}
@@ -368,8 +365,8 @@ class BarcodeExtractor:
 
         # Open files and write
         with open(os.path.join(parsed_args.output, parsed_args.prefix +  '.bc_all.csv'), "w") as file_all: # parsed_args.output, parsed_args.prefix +  '.bc_all.csv'
-            with open(os.path.join(parsed_args.output, parsed_args.prefix +'.bc_valid.csv'), "w") as file_valid: # pparsed_args.output, parsed_args.prefix +'.bc_valid.csv'
-                for (name, corr_bc, msg) in bc_iter:
+            with open(os.path.join(parsed_args.output, parsed_args.prefix +'.bc_valid.csv'), "w") as file_valid: # parsed_args.output, parsed_args.prefix +'.bc_valid.csv'
+                for (name, corr_bc, msg) in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, max_corrections):
                     if corr_bc is None:
                         corr_bc = "NO-MATCH"
                     
@@ -397,14 +394,14 @@ class BarcodeExtractor:
                     if line_index % k == 0:
                         # Calculate percentage of full match, corrected match and failed match
                         total_msg_count = sum(msg_dict.values())
-                        full_match_fraction = sum(dict(filter(lambda x: x[0] =='OK|WL_MATCH', msg_dict.items())).values())/total_msg_count
+                        full_match_fraction = sum(dict(filter(lambda x: x[0] == 'OK|WL_MATCH', msg_dict.items())).values())/total_msg_count
                         corr_match_fraction = sum(dict(filter(lambda x: 'OK|NIM' in x[0], msg_dict.items())).values())/total_msg_count
                         fail_match_fraction = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], msg_dict.items())).values())/total_msg_count
 
                         # Calculate percentage of different categories of failed matches
                         total_fail_count = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], msg_dict.items())).values())
                         fail_spc_notfnd_fraction = sum(dict(filter(lambda x: 'NOTFND' in x[0], msg_dict.items())).values())/total_fail_count
-                        fail_corr_indl_fraction = sum(dict(filter(lambda x: re.search('INDL_*:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
+                        fail_corr_indl_fraction = sum(dict(filter(lambda x: re.search('INDL_.*:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
                         fail_corr_mut_fraction = sum(dict(filter(lambda x: re.search('BC.:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
 
                         # Calculate percentage total barcodes that belong to the 10 most frequent barcodes
