@@ -476,6 +476,8 @@ def test_extract_cell_barcodes_prefix(self, temp_path):
 
     # Get files
     files = os.listdir(temp_path)
+
+    # assert prefix in all filenames
     assert all('hydrop_scatac_1_S2_R2_001' in filename for filename in files)
 
 @with_temporary_folder
@@ -494,6 +496,6 @@ def test_extract_cell_barcodes_no_prefix(self, temp_path):
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
     prefix = barcode_ext.read1.rsplit("/", 1)[-1].split(".", 1)[0]
     
-    # assert file_name in files
+    # assert prefix in all filenames
     assert all(prefix in filename for filename in files)
 
