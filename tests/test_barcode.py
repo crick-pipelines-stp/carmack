@@ -14,7 +14,9 @@ class TestBarcode(unittest.TestCase):
         test_calc_raw_barcode_match_distribution_hydrop,\
         test_correct_barcode_md5,\
         test_get_corrected_barcode_md5 ,\
-        test_extract_cell_barcodes_md5
+        test_extract_cell_barcodes_md5,\
+        test_extract_cell_barcodes_prefix,\
+        test_extract_cell_barcodes_no_prefix
 
 
 class TestBarcodeFixtures():

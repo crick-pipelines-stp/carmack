@@ -448,18 +448,52 @@ def test_extract_cell_barcodes_md5(self, temp_path):
     max_corrections = 2
     count = 100
     prefix = ''
-    test_file_all = os.path.join(temp_path, prefix, '.bc_all.csv')
-    test_file_valid = os.path.join(temp_path, prefix, '.bc_valid.csv')
-    test_file_bc_stats = os.path.join(temp_path, prefix, '.bc_counts_stats.csv')
-    test_file_bc_counts = os.path.join(temp_path, prefix, '.bc_counts.csv')
+    test_file_all = os.path.join(temp_path, prefix + '.bc_all.csv')
+    test_file_valid = os.path.join(temp_path, prefix +'.bc_valid.csv')
+    test_file_bc_stats = os.path.join(temp_path, prefix + '.bc_counts_stats.csv')
+    test_file_bc_counts = os.path.join(temp_path, prefix + '.bc_counts.csv')
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
 
     # Run extract_cell_barcodes
-    barcode_ext.extract_cell_barcodes(max_corrections, count, prefix, temp_path)
+    barcode_ext.extract_cell_barcodes(max_corrections, count, temp_path, prefix)
 
     # Check md5
     utils.validate_file_md5(test_file_all, expected_hash_file_all)
     utils.validate_file_md5(test_file_valid, expected_hash_file_valid)
     utils.validate_file_md5(test_file_bc_stats, expected_hash_file_bc_stats)
     utils.validate_file_md5(test_file_bc_counts, expected_hash_file_bc_counts)
+
+@with_temporary_folder
+def test_extract_cell_barcodes_prefix(self, temp_path):
+    """Test barcode extraction using either no or a user-specified prefix"""
+    # Init
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    max_corrections = 2
+    count = 100
+
+    # Run extract_cell_barcodes
+    barcode_ext.extract_cell_barcodes(max_corrections, count, temp_path, prefix='hydrop_scatac_1_S2_R2_001')
+
+    # Get files
+    files = os.listdir(temp_path)
+    assert all('hydrop_scatac_1_S2_R2_001' in filename for filename in files)
+
+@with_temporary_folder
+def test_extract_cell_barcodes_no_prefix(self, temp_path):
+    """Test barcode extraction using either no or a user-specified prefix"""
+    # Init
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    max_corrections = 2
+    count = 100
+
+    # Run extract_cell_barcodes
+    barcode_ext.extract_cell_barcodes(max_corrections, count, temp_path)
+
+    # Get files
+    files = os.listdir(temp_path)
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+    prefix = barcode_ext.read1.rsplit("/", 1)[-1].split(".", 1)[0]
+    
+    # assert file_name in files
+    assert all(prefix in filename for filename in files)
 

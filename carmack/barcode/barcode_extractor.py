@@ -367,7 +367,7 @@ class BarcodeExtractor:
         logging.info(f"FAIL_SPC_NOTFND_FRACT: {round(stats_dict['fail_spc_notfnd_fraction'], 3)}, FAIL_INDL_FRACT: {round(stats_dict['fail_corr_indl_fraction'], 3)}, FAIL_CORR_BASE_SUB_FRACT: {round(stats_dict['fail_corr_base_sub_fraction'], 3)}")
         logging.info(f"FRACT_TOP10_BCS: {np.round(stats_dict['top_10_fractions'], 4)}")
 
-    def extract_cell_barcodes(self, max_corrections, count, prefix, output_dir):
+    def __extract_cell_barcodes(self, max_corrections, count, output_dir, prefix):
         """Given a FASTQ file containing cell barcodes, extract the corrected cell barcodes.
         Write output to separate files containing all barcodes, all matched barcodes, and stats
         for downstream visualisation.
@@ -381,8 +381,8 @@ class BarcodeExtractor:
         bc_dict = {}
        
         # Open files and write
-        with open(os.path.join(output_dir, prefix, '.bc_all.csv'), "w") as file_all: 
-            with open(os.path.join(output_dir, prefix, '.bc_valid.csv'), "w") as file_valid: 
+        with open(os.path.join(output_dir, prefix + '.bc_all.csv'), "w") as file_all: 
+            with open(os.path.join(output_dir, prefix + '.bc_valid.csv'), "w") as file_valid: 
                 for (name, corr_bc, msg) in self.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, max_corrections):
                     if corr_bc is None:
                         corr_bc = "NO-MATCH"
@@ -422,10 +422,16 @@ class BarcodeExtractor:
         BarcodeExtractor.report_extraction(line_index, stats_dict)
 
         # Write barcode stats and counts to separate output files 
-        with open(os.path.join(output_dir, prefix, '.bc_counts_stats.csv'), "w") as bc_counts_stats_file: 
+        with open(os.path.join(output_dir, prefix + '.bc_counts_stats.csv'), "w") as bc_counts_stats_file: 
             bc_counts_stats_file.write('full_match_fraction,corr_match_fraction,fail_match_fraction,fail_spc_notfnd_fraction,fail_corr_indl_fraction,fail_corr_base_sub_fraction,top_10_fractions\n')
             bc_counts_stats_file.write(f"{round(stats_dict['full_match_fraction'], 3)},{round(stats_dict['corr_match_fraction'], 3)},{round(stats_dict['fail_match_fraction'] , 3)},{round(stats_dict['fail_spc_notfnd_fraction'], 3)},{round(stats_dict['fail_corr_indl_fraction'], 3)},{round(stats_dict['fail_corr_base_sub_fraction'], 3)},{np.round(stats_dict['top_10_fractions'], 4)}")
 
-        with open(os.path.join(output_dir, prefix, '.bc_counts.csv'), "w") as bc_counts_file: 
+        with open(os.path.join(output_dir, prefix + '.bc_counts.csv'), "w") as bc_counts_file: 
             for i, (k, v) in enumerate(bc_dict.items()):
                 bc_counts_file.write(f"{k},{str(v)}\n")
+    
+    def extract_cell_barcodes(self, max_corrections, count, output_dir, prefix=None):
+        if prefix == None:
+            prefix = self.read1.rsplit("/", 1)[-1].split(".", 1)[0]
+
+        self.__extract_cell_barcodes(max_corrections, count, output_dir, prefix)
