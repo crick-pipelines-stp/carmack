@@ -334,7 +334,7 @@ def test_correct_barcode_md5(self, temp_path):
 ('NB501505:171:H3KMGAFX3:3:11402:13723:5588 2:N:0:CTATAGTCTT', None, 'FAIL|NIM|SUBSET:INDL|BC1:INDL_11:CORROK|BC2:INDL_9:CORRFAIL|BC3:CORROK', 6), # Correction fail on chunk 3
 ('NB501505:171:H3KMGAFX3:2:21203:12986:2165 2:N:0:CTATAGTCTT', 'TTGCAGTTCTACACGTTGTGAGTTGGAAGA', 'OK|NIM|SUBSET:OK|BC1:CORROK|BC2:CORROK|BC3:CORROK', 13) # No immediate match, but no indels
 ]) 
-def test_get_corrected_barcode_messages(self, expected_read_name, expected_corr_bc, expected_msg, line): #, seq, expected_seq, expected_msg
+def test_get_corrected_barcode_messages(self, expected_read_name, expected_corr_bc, expected_msg, line):
     """Test barcode messaging"""
     # Init
     chemistry = ChemistryFactory.get_chemistry('hydrop')
@@ -363,7 +363,7 @@ def test_get_corrected_barcode_messages(self, expected_read_name, expected_corr_
 
 @with_temporary_folder
 def test_get_corrected_barcode_md5(self, temp_path):
-    """Test barcode barcode correction"""
+    """Test barcode correction"""
 
     expected_hash = 'b5a7aa8b036fee4e2dddeb2eee9a45ea'
 
@@ -389,23 +389,21 @@ def test_get_corrected_barcode_md5(self, temp_path):
         
     utils.validate_file_md5(test_file, expected_hash)
 
-import re
-import operator
-import itertools
-
-def test_report_logging(self):
-    # Get all possible failure instances
+@pytest.mark.parametrize("expected_full_match_fraction, expected_corr_match_fraction, expected_fail_match_fraction, expected_fail_spc_notfnd_fraction, expected_fail_corr_indl_fraction, expected_fail_corr_base_sub_fraction, expected_top_10_fractions", [
+(0.8651, 0.0692, 0.0657, 0.6605783866057838, 0.091324200913242, 0.2480974124809741, [0.0088, 0.007 , 0.0065, 0.0058, 0.0055, 0.0034, 0.0029, 0.0028, 0.0026, 0.0025])
+]) 
+def test_stats_calc(self, expected_full_match_fraction, expected_corr_match_fraction, expected_fail_match_fraction, expected_fail_spc_notfnd_fraction, expected_fail_corr_indl_fraction, expected_fail_corr_base_sub_fraction, expected_top_10_fractions):
+    """Test stats calculation"""
     # Init
-    line_index = 0
     bc_dict = {}
     msg_dict = {}
+    stats_dict = {}
 
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_set = chemistry.load_barcode_set()
     barcode_wl = chemistry.construct_whitelist(barcode_set)
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
     bc_dist = barcode_ext.calc_raw_barcode_match_dist()
-    k = 100
 
     # Iterate over all cell barcodes, correct them and write the output to a file
     for (name, corr_bc, msg) in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
@@ -424,30 +422,44 @@ def test_report_logging(self):
         else:
             msg_dict[msg] = 1
 
-        # Stats logging
-        line_index += 1
-        if line_index % k == 0:
-            # Calculate percentage of full match, corrected match and failed match
-            total_msg_count = sum(msg_dict.values())
-            full_match_fraction = sum(dict(filter(lambda x: x[0] =='OK|WL_MATCH', msg_dict.items())).values())/total_msg_count
-            corr_match_fraction = sum(dict(filter(lambda x: 'OK|NIM' in x[0], msg_dict.items())).values())/total_msg_count
-            fail_match_fraction = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], msg_dict.items())).values())/total_msg_count
+    # Stats logging
+    stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
+    # print(stats_dict)
 
-            # Calculate percentage of different categories of failed matches
-            total_fail_count = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], msg_dict.items())).values())
-            fail_spc_notfnd_fraction = sum(dict(filter(lambda x: 'NOTFND' in x[0], msg_dict.items())).values())/total_fail_count
-            fail_corr_indl_fraction = sum(dict(filter(lambda x: re.search('INDL_.*:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
-            fail_corr_mut_fraction = sum(dict(filter(lambda x: re.search('BC.:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
+    # assert output in stats_dict with expected values
+    assert stats_dict['full_match_fraction'] == expected_full_match_fraction
+    assert stats_dict['corr_match_fraction'] == expected_corr_match_fraction
+    assert stats_dict['fail_match_fraction'] == expected_fail_match_fraction
+    assert stats_dict['fail_spc_notfnd_fraction'] == expected_fail_spc_notfnd_fraction
+    assert stats_dict['fail_corr_indl_fraction'] == expected_fail_corr_indl_fraction
+    assert stats_dict['fail_corr_base_sub_fraction'] == expected_fail_corr_base_sub_fraction
+    assert all([a == b for a, b in zip(stats_dict['top_10_fractions'], expected_top_10_fractions)])
 
-            # Calculate percentage total barcodes that belong to the 10 most frequent barcodes
-            total_bc_count = sum(bc_dict.values())
-            bc_dict_matched = dict(filter(lambda x: x[0] != "NO-MATCH", bc_dict.items()))
-            bc_dict_sorted = dict(sorted(bc_dict_matched.items(), key=operator.itemgetter(1),reverse=True))
-            top_10_bcs = dict(itertools.islice(bc_dict_sorted.items(), 10))
-            top_10_counts = np.array(list(top_10_bcs.values()), dtype=float)
-            top_10_fractions = top_10_counts / total_bc_count
+@with_temporary_folder
+def test_extract_cell_barcodes_md5(self, temp_path):
+    """Test cell barcode extraction"""
 
-            # Report logging information
-            print(line_index, full_match_fraction, corr_match_fraction, fail_match_fraction, fail_spc_notfnd_fraction, fail_corr_indl_fraction, fail_corr_mut_fraction, top_10_fractions)
-            # barcode_ext.report_extraction(line_index, full_match_fraction, corr_match_fraction, fail_match_fraction, fail_spc_notfnd_fraction, fail_corr_indl_fraction, fail_corr_mut_fraction, top_10_percentages)
-            
+    expected_hash_file_all = '880f4312a753e63d9d8a81f1e7010f6a'
+    expected_hash_file_valid = '55a3edbc0adf3a4552f9cdf5cfaeeb4d'
+    expected_hash_file_bc_stats = '78bbdffef6690227bd8bc28b95646480'
+    expected_hash_file_bc_counts = 'b49cdb0ad6b3fc4178a10f4e75e8b4be'
+
+    # Init
+    max_corrections = 2
+    count = 100
+    prefix = ''
+    test_file_all = os.path.join(temp_path, prefix, '.bc_all.csv')
+    test_file_valid = os.path.join(temp_path, prefix, '.bc_valid.csv')
+    test_file_bc_stats = os.path.join(temp_path, prefix, '.bc_counts_stats.csv')
+    test_file_bc_counts = os.path.join(temp_path, prefix, '.bc_counts.csv')
+    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+
+    # Run extract_cell_barcodes
+    barcode_ext.extract_cell_barcodes(max_corrections, count, prefix, temp_path)
+
+    # Check md5
+    utils.validate_file_md5(test_file_all, expected_hash_file_all)
+    utils.validate_file_md5(test_file_valid, expected_hash_file_valid)
+    utils.validate_file_md5(test_file_bc_stats, expected_hash_file_bc_stats)
+    utils.validate_file_md5(test_file_bc_counts, expected_hash_file_bc_counts)
+

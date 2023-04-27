@@ -1,6 +1,5 @@
 import os
 import re
-import operator
 import logging
 import itertools
 import numpy as np
@@ -336,18 +335,39 @@ class BarcodeExtractor:
             corr_bc, msg = BarcodeExtractor.correct_barcode(seq, dqs, barcode_wl, barcode_set, bc_dists, self.chemistry, max_corrections)
             yield (name, corr_bc, msg)
     
-    def report_extraction(line_index, full_match_fraction, corr_match_fraction, fail_match_fraction, fail_spc_notfnd_fraction, fail_corr_indl_fraction, fail_corr_mut_fraction, top_10_fractions):
-        logging.info("SUMMARY")
-        logging.info(f'{line_index:,}')
-        logging.info("FULL-MATCH: " + str(full_match_fraction))
-        logging.info("CORRECTED MATCH: " + str(corr_match_fraction))
-        logging.info("FAILED MATCH: " + str(fail_match_fraction))
-        logging.info("FAIL SPACER NOT FOUND: " + str(fail_spc_notfnd_fraction))
-        logging.info("FAIL INDEL: " + str(fail_corr_indl_fraction))
-        logging.info("FAIL MUTATION: " + str(fail_corr_mut_fraction))
-        logging.info("PERCENTAGES TOP 10 BARCODES: " + str(top_10_fractions))
+    def stats_calc(messages_dict, barcodes_dict):
+        # Init
+        stats_dict = {}
 
-    def extract_cell_barcodes(self, max_corrections: int, k: int):
+        # Calculate percentage of full match, corrected match and failed match
+        total_msg_count = sum(messages_dict.values())
+        stats_dict['full_match_fraction'] = sum(dict(filter(lambda x: x[0] =='OK|WL_MATCH', messages_dict.items())).values())/total_msg_count
+        stats_dict['corr_match_fraction'] = sum(dict(filter(lambda x: 'OK|NIM' in x[0], messages_dict.items())).values())/total_msg_count
+        stats_dict['fail_match_fraction'] = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], messages_dict.items())).values())/total_msg_count
+        
+        # Calculate percentage of different categories of failed matches
+        total_fail_count = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], messages_dict.items())).values())
+        stats_dict['fail_spc_notfnd_fraction'] = sum(dict(filter(lambda x: 'NOTFND' in x[0], messages_dict.items())).values())/total_fail_count
+        stats_dict['fail_corr_indl_fraction'] = sum(dict(filter(lambda x: re.search('INDL_.*:CORRFAIL', x[0]), messages_dict.items())).values())/total_fail_count
+        stats_dict['fail_corr_base_sub_fraction'] = sum(dict(filter(lambda x: re.search('BC.:CORRFAIL', x[0]), messages_dict.items())).values())/total_fail_count
+        
+        # Calculate percentage total barcodes that belong to the 10 most frequent barcodes
+        total_bc_count = sum(barcodes_dict.values())
+        bc_dict_sorted = dict(sorted(((k, v) for k, v in barcodes_dict.items() if k != "NO-MATCH"), key=lambda x: x[1], reverse=True)) 
+        top_10_bcs = dict(itertools.islice(bc_dict_sorted.items(), 10))
+        top_10_counts = np.array(list(top_10_bcs.values()), dtype=float)
+        stats_dict['top_10_fractions'] = np.divide(top_10_counts, total_bc_count)
+
+        return(stats_dict)
+
+    def report_extraction(line_index, stats_dict):
+        logging.info("SUMMARY")
+        logging.info(f"LINES_PROCESSED: {line_index:,}")
+        logging.info(f"FULL-MATCH_FRACT: {round(stats_dict['full_match_fraction'], 3)}, CORR_MATCH_FRACT: {round(stats_dict['corr_match_fraction'], 3)}, FAIL_MATCH_FRACT: {round(stats_dict['fail_match_fraction'] , 3)}")
+        logging.info(f"FAIL_SPC_NOTFND_FRACT: {round(stats_dict['fail_spc_notfnd_fraction'], 3)}, FAIL_INDL_FRACT: {round(stats_dict['fail_corr_indl_fraction'], 3)}, FAIL_CORR_BASE_SUB_FRACT: {round(stats_dict['fail_corr_base_sub_fraction'], 3)}")
+        logging.info(f"FRACT_TOP10_BCS: {np.round(stats_dict['top_10_fractions'], 4)}")
+
+    def extract_cell_barcodes(self, max_corrections, count, prefix, output_dir):
         """Given a FASTQ file containing cell barcodes, extract the corrected cell barcodes.
         Write output to separate files containing all barcodes, all matched barcodes, and stats
         for downstream visualisation.
@@ -355,20 +375,23 @@ class BarcodeExtractor:
         # Init
         barcode_set = self.chemistry.load_barcode_set()
         barcode_wl = self.chemistry.construct_whitelist(barcode_set)
-        barcode_ext = BarcodeExtractor(self.read1, self.read2, self.cell_barcode, self.chemistry)
-        bc_dist = barcode_ext.calc_raw_barcode_match_dist()
-
-        # Init
+        bc_dist = self.calc_raw_barcode_match_dist()
         line_index = 0
-        bc_dict = {}
         msg_dict = {}
-
+        bc_dict = {}
+       
         # Open files and write
-        with open(os.path.join(parsed_args.output, parsed_args.prefix +  '.bc_all.csv'), "w") as file_all: # parsed_args.output, parsed_args.prefix +  '.bc_all.csv'
-            with open(os.path.join(parsed_args.output, parsed_args.prefix +'.bc_valid.csv'), "w") as file_valid: # parsed_args.output, parsed_args.prefix +'.bc_valid.csv'
-                for (name, corr_bc, msg) in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, max_corrections):
+        with open(os.path.join(output_dir, prefix, '.bc_all.csv'), "w") as file_all: 
+            with open(os.path.join(output_dir, prefix, '.bc_valid.csv'), "w") as file_valid: 
+                for (name, corr_bc, msg) in self.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, max_corrections):
                     if corr_bc is None:
                         corr_bc = "NO-MATCH"
+
+                    # Add to a dictionary of unique barcode messages for counting
+                    if msg in msg_dict:
+                        msg_dict[msg] += 1
+                    else:
+                        msg_dict[msg] = 1
                     
                     # Add to a dictionary of unique barcodes for counting
                     if corr_bc in bc_dict:
@@ -376,43 +399,33 @@ class BarcodeExtractor:
                     else:
                         bc_dict[corr_bc] = 1
 
-                    # Add to a dictionary of unique barcode messages for counting
-                    if msg in msg_dict:
-                        msg_dict[msg] += 1
-                    else:
-                        msg_dict[msg] = 1
-
                     # Write all barcodes to file_all
-                    file_all.write(name + ',' + corr_bc + ',' + msg + '\n')
+                    file_all.write(f"{name},{corr_bc},{msg}\n")
 
                     # Write all matched barcodes to file_valid
                     if corr_bc != "NO-MATCH":
-                        file_valid.write(name + ',' + corr_bc + ',' + msg + '\n')
+                        file_valid.write(f"{name},{corr_bc},{msg}\n")
                     
                     # Stats logging
                     line_index += 1
-                    if line_index % k == 0:
-                        # Calculate percentage of full match, corrected match and failed match
-                        total_msg_count = sum(msg_dict.values())
-                        full_match_fraction = sum(dict(filter(lambda x: x[0] == 'OK|WL_MATCH', msg_dict.items())).values())/total_msg_count
-                        corr_match_fraction = sum(dict(filter(lambda x: 'OK|NIM' in x[0], msg_dict.items())).values())/total_msg_count
-                        fail_match_fraction = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], msg_dict.items())).values())/total_msg_count
-
-                        # Calculate percentage of different categories of failed matches
-                        total_fail_count = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], msg_dict.items())).values())
-                        fail_spc_notfnd_fraction = sum(dict(filter(lambda x: 'NOTFND' in x[0], msg_dict.items())).values())/total_fail_count
-                        fail_corr_indl_fraction = sum(dict(filter(lambda x: re.search('INDL_.*:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
-                        fail_corr_mut_fraction = sum(dict(filter(lambda x: re.search('BC.:CORRFAIL', x[0]), msg_dict.items())).values())/total_fail_count
-
-                        # Calculate percentage total barcodes that belong to the 10 most frequent barcodes
-                        total_bc_count = sum(bc_dict.values())
-                        bc_dict_matched = dict(filter(lambda x: x[0] != "NO-MATCH", bc_dict.items()))
-                        bc_dict_sorted = dict(sorted(bc_dict_matched.items(), key=operator.itemgetter(1),reverse=True))
-                        top_10_bcs = dict(itertools.islice(bc_dict_sorted.items(), 10))
-                        top_10_counts = np.array(list(top_10_bcs.values()), dtype=float)
-                        top_10_fractions = top_10_counts / total_bc_count
+                    if line_index % count == 0:
+                        # Calculate stats
+                        stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
 
                         # Report logging information
-                        barcode_ext.report_extraction(line_index, full_match_fraction, corr_match_fraction, fail_match_fraction, fail_spc_notfnd_fraction, fail_corr_indl_fraction, fail_corr_mut_fraction, top_10_fractions)
+                        BarcodeExtractor.report_extraction(line_index, stats_dict)
 
-        # Update stats and write to stats files
+        # Update stats 
+        stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
+
+        # Report logging information
+        BarcodeExtractor.report_extraction(line_index, stats_dict)
+
+        # Write barcode stats and counts to separate output files 
+        with open(os.path.join(output_dir, prefix, '.bc_counts_stats.csv'), "w") as bc_counts_stats_file: 
+            bc_counts_stats_file.write('full_match_fraction,corr_match_fraction,fail_match_fraction,fail_spc_notfnd_fraction,fail_corr_indl_fraction,fail_corr_base_sub_fraction,top_10_fractions\n')
+            bc_counts_stats_file.write(f"{round(stats_dict['full_match_fraction'], 3)},{round(stats_dict['corr_match_fraction'], 3)},{round(stats_dict['fail_match_fraction'] , 3)},{round(stats_dict['fail_spc_notfnd_fraction'], 3)},{round(stats_dict['fail_corr_indl_fraction'], 3)},{round(stats_dict['fail_corr_base_sub_fraction'], 3)},{np.round(stats_dict['top_10_fractions'], 4)}")
+
+        with open(os.path.join(output_dir, prefix, '.bc_counts.csv'), "w") as bc_counts_file: 
+            for i, (k, v) in enumerate(bc_dict.items()):
+                bc_counts_file.write(f"{k},{str(v)}\n")
