@@ -1,8 +1,8 @@
 import os
 import pytest
 import numpy as np
-
 import carmack.utils as utils
+
 from carmack.io.fastq_file import FastqFile
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.barcode.barcode_extractor import BarcodeExtractor
