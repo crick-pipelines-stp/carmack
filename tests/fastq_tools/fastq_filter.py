@@ -10,31 +10,21 @@ from ..utils import with_temporary_folder
 R1_PATH = 'tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz'
 R2_PATH = 'tests/data/hydrop_scatac_1_S1_R3_001.fastq.gz'
 CB_PATH = 'tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz'
+BC_VALID_PATH = 'tests/data/bc_valid.csv'
 
 @with_temporary_folder
 def test_filter_valid_reads(self, temp_path):
-
-    expected_hash_r1 = '5823bb4932ab8f16f06069c8d0205a59'
-    expected_hash_r2 = '13d623f4ed59adf4ab75d7ae69b33093'
-
     # Init
-    barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
-    max_corrections = 2
-    count = 100
     prefix = ''
     line_count_r1 = 0
     line_count_r2 = 0
     exp_line_count = 9343
-    test_file_valid_bc = os.path.join(temp_path, prefix + '.bc_valid.csv')
     test_file_valid_r1 = os.path.join(temp_path, prefix + '.r1_valid.fastq.gz')
     test_file_valid_r2 = os.path.join(temp_path, prefix + '.r2_valid.fastq.gz')
 
-    # Run extract_cell_barcodes
-    barcode_ext.extract_cell_barcodes(max_corrections, count, temp_path, prefix)
-
     # Run filter_valid_reads
     fastq_filter = FastqFilter(R1_PATH, R2_PATH)
-    fastq_filter.filter_valid_reads(test_file_valid_bc, temp_path, prefix)
+    fastq_filter.filter_valid_reads(BC_VALID_PATH, temp_path, prefix)
 
     # check files exist
     files = os.listdir(temp_path)
