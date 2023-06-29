@@ -11,6 +11,7 @@ BC_VALID_PATH = 'tests/data/bc_valid.csv'
 
 @with_temporary_folder
 def test_filter_valid_reads(self, temp_path):
+
     # Init
     prefix = ''
     line_count_r1 = 0
@@ -23,12 +24,12 @@ def test_filter_valid_reads(self, temp_path):
     fastq_filter = FastqFilter(R1_PATH, R2_PATH)
     fastq_filter.filter_valid_reads(BC_VALID_PATH, temp_path, prefix)
 
-    # check files exist
+    # Check files exist
     files = os.listdir(temp_path)
     assert (test_file_valid_r1 in filename for filename in files)
     assert (test_file_valid_r2 in  filename for filename in files)
 
-    # count nr of lines and check they are expected and equal
+    # Count nr of lines and check they are expected and equal
     r1_fq_file = FastqFile(test_file_valid_r1)
     for (name, seq, qual) in r1_fq_file.open_read_iterator(as_string=True):
         line_count_r1 += 1

@@ -1,6 +1,5 @@
 import tempfile
 import unittest
-import pytest
 from unittest import mock
 
 from click.testing import CliRunner

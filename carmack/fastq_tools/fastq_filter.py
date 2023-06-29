@@ -1,23 +1,18 @@
 import os
 import logging
 
-# import rich_click as click # or import click
 from ..io.fastq_file import FastqFile
-from ..barcode.barcode_extractor import BarcodeExtractor
 
 class FastqFilter:
     """
     Class that filters fastq files for valid reads
     """
 
-    def __init__(self, read1: str, read2: str) -> None: #  cell_barcode: str, chemistry: str, paired_end: bool = False
+    def __init__(self, read1: str, read2: str) -> None: 
         self.read1 = read1
         self.read2 = read2
-        # self.cell_barcode = cell_barcode
-        # self.paired_end = paired_end
-        # self.chemistry = ChemistryFactory.get_chemistry(chemistry)
 
-    def filter_valid_reads(self, bc_valid, output_dir, prefix=None): # is_index=False
+    def filter_valid_reads(self, bc_valid, output_dir, prefix=None): 
         logging.info("VALID BARCODE READ FILTER")
 
         # Init
@@ -44,7 +39,6 @@ class FastqFilter:
             
             if name_split_read[0] in bc_dict:
                 FastqFile.write_read(wstream_r1, name, seq, qual)
-                # evt. if else statement using is_index argument.
         wstream_r1.close()
         
         wstream_r2 = fq_r2_file.open_write_stream()
@@ -53,5 +47,4 @@ class FastqFilter:
             
             if name_split_read[0] in bc_dict:
                 FastqFile.write_read(wstream_r2, name, seq, qual)
-                # evt. if else statement using is_index argument.
         wstream_r2.close()

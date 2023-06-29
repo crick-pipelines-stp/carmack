@@ -30,8 +30,8 @@ click.rich_click.COMMAND_GROUPS = {
     ]
 }
 # click.rich_click.OPTION_GROUPS = {
-#     "carmack extract-cell-barcodes": [{"options": ["--dir", "--json", "--help"]}],
-#     "carmack fastq-filter": [{"options": ["--dir", "--json", "--help"]}]
+#     "carmack extract-cell-barcodes": [{"options": ["--chemistry", "--maxdist", "--line_count", "--output_dir", "--prefix"]}],
+#     "carmack fastq-filter": [{"options": ["--output_dir", "--prefix"]}]
 # }
 
 # Set up rich stderr console

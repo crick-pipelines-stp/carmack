@@ -498,4 +498,3 @@ def test_extract_cell_barcodes_no_prefix(self, temp_path):
     
     # assert prefix in all filenames
     assert all(prefix in filename for filename in files)
-
