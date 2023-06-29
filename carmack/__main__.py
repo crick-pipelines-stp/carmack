@@ -78,7 +78,7 @@ def run_carmack():
 @click.option("--hide-progress", is_flag=True, default=False, help="Don't show progress bars.")
 @click.option("-l", "--log-file", help="Save a verbose log to a file.", metavar="<filename>")
 @click.pass_context
-def carmack_cli(ctx, help, verbose, hide_progress, log_file): 
+def carmack_cli(ctx, verbose, hide_progress, log_file): 
     """
     carmack provides helper tools for the analysis of single-cell mutli-omic data.
 
@@ -106,7 +106,6 @@ def carmack_cli(ctx, help, verbose, hide_progress, log_file):
         log.addHandler(log_fh)
 
     ctx.obj = {
-        "help": help,
         "verbose": verbose,
         "hide_progress": hide_progress or verbose,  # Always hide progress bar with verbose logging
     }
