@@ -49,21 +49,20 @@ def test_hydrop_construct_whitelist_model_case(self):
     # KEEP UPDATED WITH MODEL SEQUENCE CONSTRUCTION
     test_wl = barcode_set[0][0] + barcode_set[1][0] + barcode_set[2][0]
     
-    assert barcode_wl[0] == test_wl
+    assert test_wl in barcode_wl
 
 @with_temporary_folder
 def test_hydrop_construct_whitelist_md5(self, temp_path):
-    expected_hash = 'd8ac24821209e56ab7442d73d35ea107'
+    expected_hash = 'fa1805f3bd180de020eb7e6c6512ffeb'
     test_file = os.path.join(temp_path, 'barcodes.txt')
 
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_set = chemistry.load_barcode_set()
-    barcode_wl = chemistry.construct_whitelist(barcode_set)
+    barcode_wl = sorted(chemistry.construct_whitelist(barcode_set))
 
     with open(test_file, 'w') as out_file:
         for bc_wl in barcode_wl:
             out_file.write(bc_wl + '\n')
-
     utils.validate_file_md5(test_file, expected_hash)
 
 @pytest.mark.parametrize("seq, expected_seq", [

@@ -40,15 +40,15 @@ class ChemistryHydrop(ChemistryBase):
         stream3.close()
 
         return [ bc1, bc2, bc3 ]
-    
+
     def construct_whitelist(self, barcode_set):
-        whitelist = []
+        whitelist = set()
 
         for bc1 in barcode_set[0]:
             for bc2 in barcode_set[1]:
                 for bc3 in barcode_set[2]:
                     curr_wl = bc1 + bc2 + bc3
-                    whitelist.append(curr_wl)
+                    whitelist.add(curr_wl)
 
         return whitelist
     

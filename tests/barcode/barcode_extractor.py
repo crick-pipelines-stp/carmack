@@ -9,6 +9,13 @@ from carmack.barcode.barcode_extractor import BarcodeExtractor
 
 from ..utils import with_temporary_folder
 
+import cProfile as profile
+import pstats
+from line_profiler import LineProfiler
+from timeit import Timer
+import concurrent.futures
+
+
 R1_PATH = 'tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz'
 R2_PATH = 'tests/data/hydrop_scatac_1_S1_R3_001.fastq.gz'
 CB_PATH = 'tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz'
@@ -27,7 +34,6 @@ def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
     test_file = os.path.join(temp_path, 'barcode_counts.txt')
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
 
-    # Calc distribution
     bc_counts = barcode_ext.calc_raw_barcode_match_counts()
 
     # print(bc_counts)
@@ -39,7 +45,6 @@ def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
                 out_file.write(line + '\n')
     
     utils.validate_file_md5(test_file, expected_hash)
-
 
 @with_temporary_folder
 def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
@@ -104,6 +109,14 @@ def test_gen_nearby_seqs_no_n(self, maxdist, seq):
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_sets = chemistry.load_barcode_set()
 
+    # t = Timer(lambda: BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+    # print(t.timeit(number=1))
+
+    # barcode_set = set(barcode_sets[0])
+
+    # t2 = Timer(lambda: BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, maxdist))
+    # print(t2.timeit(number=1))
+
     # Generate nearby sequences
     seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
 
@@ -116,6 +129,20 @@ def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_sets = chemistry.load_barcode_set()
 
+    # Barcode chunks set
+    # t = Timer(lambda: BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+    # print(t.timeit(number=1))
+
+    # barcode_set = set(barcode_sets[0])
+
+    # t2 = Timer(lambda: BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, maxdist))
+    # print(t2.timeit(number=1))
+
+    # lp = LineProfiler()
+    # lp_wrapper = lp(BarcodeExtractor.gen_nearby_seqs)
+    # lp_wrapper(seq, qs, barcode_sets[0], maxdist)
+    # lp.print_stats()
+
     # Generate nearby sequences
     seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
 
@@ -123,7 +150,7 @@ def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
         assert seq in barcode_sets[0]
     
     assert len(seqs) == expected
-
+    
 # ------------------------------------------------------------------------------ #
 # gen_indel_set
 # ------------------------------------------------------------------------------ #
@@ -276,10 +303,6 @@ def test_correct_barcode_perm(self, seq, expected_seq, expected_msg):
 
     # Test
     bc, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry, 2)
-
-    # Log
-    # print(bc)
-    # print(msg)
 
     # Assert
     assert bc == expected_seq

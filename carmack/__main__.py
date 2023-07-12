@@ -14,6 +14,9 @@ import carmack
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.fastq_tools.fastq_filter import FastqFilter
 
+import cProfile as profile
+import pstats
+
 # Set up logging as the root logger
 # Submodules should all traverse back to this
 log = logging.getLogger()
@@ -116,7 +119,7 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
 @click.argument("barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<barcodes>")  
 @click.option("-c","--chemistry", required=True, type=str, help="<Chemistry class for barcode extraction>")
 @click.option("-d", "--max_dist", required=True, type=int, help="<Maximal Hamming distance for barcode extraction>")
-@click.option("-l", "--line_count", required=False, type=int, default=100, help="<Number of lines after which stats are logged during barcode extraction>")
+@click.option("-l", "--line_count", required=False, type=int, default=10000, help="<Number of lines after which stats are logged during barcode extraction>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="<Output directory to save generated files>")   
 @click.option("-p", "--prefix", required=False, type=str, default="", show_default=True, help="<Output directory to save generated files>")
 def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, line_count, output_dir, prefix): 
@@ -127,8 +130,17 @@ def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, line_coun
     Additional files containing barcode stats and counts are also saved to the output directory. 
     """
     
+    # prof = profile.Profile()
+    # prof.enable()
+    
     barcode_ext = BarcodeExtractor(read1, read2, barcodes, chemistry)
     barcode_ext.extract_cell_barcodes(max_dist, line_count, output_dir, prefix)
+
+    # prof.disable()
+    # print('Done!')
+    # # print profiling output
+    # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
+    # stats.print_stats() 
 
 @carmack_cli.command("fastq-filter")
 @click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
@@ -144,8 +156,18 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
     Additional files containing barcode stats and counts are also saved to the output directory. 
     """
 
+    # prof = profile.Profile()
+    # prof.enable()
+
+    # correct_barcode
     fastq_filter = FastqFilter(read1, read2)
     fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix)
+
+    # prof.disable()
+    # print('Done!')
+    # # print profiling output
+    # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
+    # stats.print_stats() 
 
 # Main script is being run - launch the CLI
 if __name__ == "__main__":
