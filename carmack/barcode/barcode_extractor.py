@@ -293,7 +293,7 @@ class BarcodeExtractor:
         # Init
         corr_bc = None
         msg = "{UNPROCESSED}"
-        target_len = len(barcode_set[0][0])
+        target_len = len(list(barcode_set[0])[0])
 
         # First scale qs scores into a range so that the statistics dont get ruined by outliers
         np.clip(qs, ILLUMINA_QUAL_MIN_SCORE, ILLUMINA_QUAL_MAX_SCORE, out=qs)

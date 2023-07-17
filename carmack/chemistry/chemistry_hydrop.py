@@ -28,15 +28,15 @@ class ChemistryHydrop(ChemistryBase):
         bc3_path = os.path.abspath(BC3_PATH)
 
         stream1 = GzipFile(bc1_path).open_read_iterator(as_string=True)
-        bc1 = [line.strip()[10:-10] for line in stream1]
+        bc1 = {line.strip()[10:-10] for line in stream1}
         stream1.close()
 
         stream2 = GzipFile(bc2_path).open_read_iterator(as_string=True)
-        bc2 = [line.strip()[10:-10] for line in stream2]
+        bc2 = {line.strip()[10:-10] for line in stream2}
         stream2.close()
 
         stream3 = GzipFile(bc3_path).open_read_iterator(as_string=True)
-        bc3 = [line.strip()[15:-10] for line in stream3]
+        bc3 = {line.strip()[15:-10] for line in stream3}
         stream3.close()
 
         return [ bc1, bc2, bc3 ]

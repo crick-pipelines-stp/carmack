@@ -19,10 +19,11 @@ def test_hydrop_load_barcode_set(self):
     """Test loading barcode set for hydrop chemistry."""
     chemistry = ChemistryHydrop()
     barcode_set = chemistry.load_barcode_set()
+    # print(barcode_set)
 
-    self.assertEqual(barcode_set[0][0], TEST_BC_1)
-    self.assertEqual(barcode_set[1][0], TEST_BC_2)
-    self.assertEqual(barcode_set[2][0], TEST_BC_3)
+    self.assertIn(TEST_BC_1, list(barcode_set[0]))
+    self.assertIn(TEST_BC_2, list(barcode_set[1]))
+    self.assertIn(TEST_BC_3, list(barcode_set[2]))
 
     self.assertEqual(len(barcode_set[0]), 96)
     self.assertEqual(len(barcode_set[1]), 96)
@@ -33,9 +34,9 @@ def test_hydrop_load_barcode_set_with_factory(self):
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_set = chemistry.load_barcode_set()
 
-    self.assertEqual(barcode_set[0][0], TEST_BC_1)
-    self.assertEqual(barcode_set[1][0], TEST_BC_2)
-    self.assertEqual(barcode_set[2][0], TEST_BC_3)
+    self.assertIn(TEST_BC_1, list(barcode_set[0]))
+    self.assertIn(TEST_BC_2, list(barcode_set[1]))
+    self.assertIn(TEST_BC_3, list(barcode_set[2]))
 
     self.assertEqual(len(barcode_set[0]), 96)
     self.assertEqual(len(barcode_set[1]), 96)
@@ -47,7 +48,7 @@ def test_hydrop_construct_whitelist_model_case(self):
     barcode_wl = chemistry.construct_whitelist(barcode_set)
 
     # KEEP UPDATED WITH MODEL SEQUENCE CONSTRUCTION
-    test_wl = barcode_set[0][0] + barcode_set[1][0] + barcode_set[2][0]
+    test_wl = list(barcode_set[0])[0] +  list(barcode_set[1])[0] +  list(barcode_set[2])[0]
     
     assert test_wl in barcode_wl
 

@@ -28,19 +28,19 @@ CB_PATH = 'tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz'
 def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
     """Test calculation of raw barcode match counts."""
 
-    expected_hash = '5a150d2473fbf0b0bb7993dfa4e4063a'
+    expected_hash = '21f54e9372a0b5b304064cb88cff39f6'
 
     # Init
     test_file = os.path.join(temp_path, 'barcode_counts.txt')
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
 
     bc_counts = barcode_ext.calc_raw_barcode_match_counts()
-
     # print(bc_counts)
 
     with open(test_file, 'w') as out_file:
        for bc_count_set in bc_counts:
-            for bc in bc_count_set:
+            sorted_bc_set = sorted(bc_count_set) 
+            for bc in sorted_bc_set:
                 line = bc + '-' + str(bc_count_set[bc])
                 out_file.write(line + '\n')
     
@@ -50,7 +50,7 @@ def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
 def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
     """Test calculation of raw barcode match distribution."""
 
-    expected_hash = '4f28f158699d07bf0a790a130a61d2a2'
+    expected_hash = '3b2ee579aaa8e472c635cfc04e6cdeca'
 
     # Init
     test_file = os.path.join(temp_path, 'barcode_dist.txt')
@@ -61,10 +61,11 @@ def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
 
     with open(test_file, 'w') as out_file:
        for bc_count_set in bc_dist:
-            for bc in bc_count_set:
+            sorted_bc_set = sorted(bc_count_set) 
+            for bc in sorted_bc_set:
                 line = bc + '-' + str(bc_count_set[bc])
                 out_file.write(line + '\n')
-    
+
     utils.validate_file_md5(test_file, expected_hash)
 
 # ------------------------------------------------------------------------------ #
@@ -109,14 +110,6 @@ def test_gen_nearby_seqs_no_n(self, maxdist, seq):
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_sets = chemistry.load_barcode_set()
 
-    # t = Timer(lambda: BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
-    # print(t.timeit(number=1))
-
-    # barcode_set = set(barcode_sets[0])
-
-    # t2 = Timer(lambda: BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, maxdist))
-    # print(t2.timeit(number=1))
-
     # Generate nearby sequences
     seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
 
@@ -128,20 +121,6 @@ def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
     qs = np.full(len(seq), 30)
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_sets = chemistry.load_barcode_set()
-
-    # Barcode chunks set
-    # t = Timer(lambda: BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
-    # print(t.timeit(number=1))
-
-    # barcode_set = set(barcode_sets[0])
-
-    # t2 = Timer(lambda: BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_set, maxdist))
-    # print(t2.timeit(number=1))
-
-    # lp = LineProfiler()
-    # lp_wrapper = lp(BarcodeExtractor.gen_nearby_seqs)
-    # lp_wrapper(seq, qs, barcode_sets[0], maxdist)
-    # lp.print_stats()
 
     # Generate nearby sequences
     seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
