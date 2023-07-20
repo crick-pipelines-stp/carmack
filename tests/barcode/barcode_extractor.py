@@ -9,13 +9,6 @@ from carmack.barcode.barcode_extractor import BarcodeExtractor
 
 from ..utils import with_temporary_folder
 
-import cProfile as profile
-import pstats
-from line_profiler import LineProfiler
-from timeit import Timer
-import concurrent.futures
-
-
 R1_PATH = 'tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz'
 R2_PATH = 'tests/data/hydrop_scatac_1_S1_R3_001.fastq.gz'
 CB_PATH = 'tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz'
@@ -290,7 +283,6 @@ def test_correct_barcode_perm(self, seq, expected_seq, expected_msg):
 @with_temporary_folder
 def test_correct_barcode_md5(self, temp_path):
     """Test calculation of raw barcode match distribution."""
-    print("")
 
     expected_hash = '81208771bc217c14628cc59bb886c6fd'
 

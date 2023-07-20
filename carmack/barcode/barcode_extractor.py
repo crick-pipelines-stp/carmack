@@ -90,11 +90,7 @@ class BarcodeExtractor:
         quality values of the bases at the changed positions. Automatically will target N's in a sequence as letters
         which must be changed. If there are more N's than allowed changes - we return nothing
         """
-        # pstats.f8 = BarcodeExtractor.f8_alt
         
-        # prof = profile.Profile()
-        # prof.enable()
-        # Init
         new_seq = set()
 
         # Find all index positions which are not N in seq as a list
@@ -108,20 +104,10 @@ class BarcodeExtractor:
 
         # If this is too far away then we just return nothing
         if mindist > maxdist:
-            # prof.disable()
-            # print('Done!')
-            # # print profiling output
-            # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
-            # stats.print_stats() 
             return [], 0
 
         # If the input sequence is in the barcode set, include the seq and qs in the output
         if seq in barcode_set:
-            # prof.disable()
-            # print('Done!')
-            # # print profiling output
-            # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
-            # stats.print_stats() 
             yield seq, 0
 
         # Combinations are generated in batches by changing n number of indices in the sequence, then n+1 and so on
@@ -151,11 +137,6 @@ class BarcodeExtractor:
                 
                     # If the new sequence is in the whitelist, sum the QS scores for the changed sequences and return 
                     if new_seq in barcode_set:
-                        # prof.disable()
-                        # print('Done!')
-                        # # print profiling output
-                        # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
-                        # stats.print_stats() 
                         yield new_seq, error_probs_sum
 
     @staticmethod

@@ -14,9 +14,6 @@ import carmack
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.fastq_tools.fastq_filter import FastqFilter
 
-import cProfile as profile
-import pstats
-
 # Set up logging as the root logger
 # Submodules should all traverse back to this
 log = logging.getLogger()
@@ -130,17 +127,9 @@ def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, line_coun
     Additional files containing barcode stats and counts are also saved to the output directory. 
     """
     
-    # prof = profile.Profile()
-    # prof.enable()
-    
     barcode_ext = BarcodeExtractor(read1, read2, barcodes, chemistry)
     barcode_ext.extract_cell_barcodes(max_dist, line_count, output_dir, prefix)
 
-    # prof.disable()
-    # print('Done!')
-    # # print profiling output
-    # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
-    # stats.print_stats() 
 
 @carmack_cli.command("fastq-filter")
 @click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
@@ -156,18 +145,10 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
     Additional files containing barcode stats and counts are also saved to the output directory. 
     """
 
-    # prof = profile.Profile()
-    # prof.enable()
-
     # correct_barcode
     fastq_filter = FastqFilter(read1, read2)
     fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix)
-
-    # prof.disable()
-    # print('Done!')
-    # # print profiling output
-    # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
-    # stats.print_stats() 
+    
 
 # Main script is being run - launch the CLI
 if __name__ == "__main__":
