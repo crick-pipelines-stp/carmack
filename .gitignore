@@ -119,3 +119,5 @@ pip-wheel-metadata
 
 # Devcontainers
 .devcontainer/container.env
+
+data/
