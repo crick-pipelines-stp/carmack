@@ -14,21 +14,24 @@ workflow CARMACK {
     .set { ch_fastq }
 
     // EXAMPLE CHANNEL STRUCT: [[META], [READS]]
-    ch_fastq | view
+    // ch_fastq | view
 
     // Run FASTQC
     ch_versions = Channel.empty()
-    ch_fastqc_zip  = Channel.empty()
 
     FASTQC ( ch_fastq )
-    fastqc_zip  = FASTQC.out.zip
-    ch_versions = ch_versions.mix(FASTQC.out.versions)
+    fastqc_html    = FASTQC.out.html              
+    fastqc_zip     = FASTQC.out.zip
+    ch_versions    = ch_versions.mix(FASTQC.out.versions)
+
+    // EXAMPLE CHANNEL STRUCT: [ val(meta), [ html ] ]
+    // fastqc_html | view
 
     // EXAMPLE CHANNEL STRUCT: [ val(meta), [ zip ] ]
-    fastqc_zip | view
+    // fastqc_zip | view
 
     // EXAMPLE CHANNEL STRUCT: [ versions.yml ]
-    ch_versions | view
+    // ch_versions | view
 
     // Run barcode extraction
     ch_fasta_read1.merge ( ch_fasta_read2 )
