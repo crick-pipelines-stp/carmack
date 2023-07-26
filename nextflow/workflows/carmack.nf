@@ -49,8 +49,9 @@ include { BOWTIE2_ALIGN } from '../modules/nf-core/bowtie2/align/main'
 ch_fastq_read1    = Channel.from( file(params.fastq_read1) )
 ch_fastq_read2    = Channel.from( file(params.fastq_read2) )
 ch_fastq_barcodes = Channel.from( file(params.fastq_barcodes) )
-// ch_fasta          = Channel.from( file(params.fasta) )
-// ch_bowtie2        = Channel.from( file(params.bowtie2) )
+
+ch_fastq_valid_read1 = Channel.from( file(params.fastq_valid_read1) )
+ch_fastq_valid_read2 = Channel.from( file(params.fastq_valid_read2) )
 
 meta = [id:'hydrop_scatac_1_S1_R1', group:'hydrop_scatac_1_S1', replicate:1, single_end:false]
 
@@ -92,7 +93,7 @@ workflow CARMACK {
     // fastqc_zip | view
 
     // EXAMPLE CHANNEL STRUCT: [ versions.yml ]
-    // ch_versions | view
+    // ch_software_versions | view
 
     // Run barcode extraction
     ch_fastq_read1.merge ( ch_fastq_read2 )
@@ -101,17 +102,31 @@ workflow CARMACK {
     .set { ch_bc_ext }
 
     // EXAMPLE CHANNEL STRUCT: [[META], [READS]]
-    ch_bc_ext | view
+    // ch_bc_ext | view
 
     // Run fastq filter
 
-    // Run bowtie2
-    // BOWTIE2_ALIGN (
-    //     // filtered_reads,
-    //     // ch_bowtie_index.collect{ it[1] },
-    //     // params.save_unaligned,
-    //     // false
-    // )
-    // ch_versions = ch_versions.mix(BOWTIE2_ALIGN.out.versions)
+    // Trim reads by running trimgalore (or fastq_trimgalore subworkflow)
+
+    // Run BOWTIE2
+    ch_fastq_valid_read1.merge ( ch_fastq_valid_read2 )
+    .map { valid_read1, valid_read2 -> [meta, [valid_read1, valid_read2]] }
+    .set { ch_valid_reads }
+    ch_valid_reads | view
+
+    ch_index = ch_bowtie2_index.map { [[id:it.baseName], it] }
+    ch_index | view
+    
+    BOWTIE2_ALIGN (
+        ch_valid_reads,
+        ch_index.collect{ it[1] },
+        params.save_unaligned,
+        false
+    )
+    ch_software_versions = ch_software_versions.mix(BOWTIE2_ALIGN.out.versions)
+    
+    ch_software_versions | view
+    BOWTIE2_ALIGN.out.bam | view
+
 
 }
