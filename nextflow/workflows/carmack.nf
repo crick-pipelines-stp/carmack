@@ -103,18 +103,23 @@ workflow CARMACK {
     // EXAMPLE CHANNEL STRUCT: [ versions.yml ]
     // ch_software_versions | view
 
-    // Run barcode extraction
+    // Create barcode extraction channel
     ch_fastq_read1.merge ( ch_fastq_read2 )
     .merge ( ch_fastq_barcodes )
     .map { read1, read2, barcodes -> [meta, [read1, read2, barcodes]] }
     .set { ch_bc_ext }
 
+    // Run barcode extraction
+    // ...
+
     // EXAMPLE CHANNEL STRUCT: [[META], [READS]]
     // ch_bc_ext | view
 
     // Run fastq filter
+    // ...
 
     // Trim reads by running trimgalore (or fastq_trimgalore subworkflow)
+    // ...
 
     // Run BOWTIE2
     ch_fastq_valid_read1.merge ( ch_fastq_valid_read2 )
@@ -143,6 +148,7 @@ workflow CARMACK {
     // BAM_SORT_STATS_SAMTOOLS.out.bai | view
 
     // Tagging bam files with cell barcodes
+    // ...
 
     // Run bedtools bam_to_bed
     // ch_tagged_bam with meta
