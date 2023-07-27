@@ -2,8 +2,7 @@ import os
 import logging
 import pysam
 import hashlib
-
-from .subprocess_stream import SubprocessStream
+import csv
 
 
 class DuplicateRemoval:
@@ -11,55 +10,41 @@ class DuplicateRemoval:
     Class that removes duplicate reads from bam files
     """
 
-    def __init__(self, bam: str) -> None: 
+    def __init__(self, bam: str, bai: str, bc_valid_csv: str) -> None: 
         self.bam = bam 
-        # self.bam_read1 = bam_read1 
-        # self.bam_read2 = bam_read2
+        self.bai = bai
+        self.bc_valid_csv = bc_valid_csv
     
-    def process_bam_file(self): # as_string: bool = False
-        """
-        Open a bam file for reading, and yield the start position, end position and barcode for each read.
-        """
-        line_index = 0
-        stream = None
+    def tag_barcodes(self, output_dir, prefix=None):
+        if prefix == None:
+            prefix = self.bam.rsplit("/", 1)[-1].split(".", 1)[0]
 
-        if self.compressor is not None:
-            stream = SubprocessStream([self.compressor, "-c", "-d", self.filename], mode="r")
-        else:
-            stream = open(self.bam, "r")
-        
-        with stream as bam_file:
-            for line in bam_file:
-                # for each read, strip terminal spaces, and 
-                # subset the start, end positions and barcode
-                read = 'CAAGGTCGATGATGCCTCAATTGAGTTCTC'
-                barcode = 'CTATAGTCTT'
+        out_bam = os.path.join(output_dir, prefix + ".tagged.bam")
 
-                start = 1
-                end = 30
-                # Adjust start and end positions for soft clipping
+        # Open the BAM file for reading
+        with pysam.AlignmentFile(self.bam, "rb", index_filename=self.bai) as bam_file:
+            # Open a new BAM file for writing with the barcode tag added
+            with pysam.AlignmentFile(out_bam, "wb", header=bam_file.header) as output_bam:
+                # Iterate over each read in the BAM file
+                for read in bam_file:
+                    # Get the read ID
+                    read_id = read.query_name
 
-                yield (read, start, end, barcode) # evt. return more data from the other columns
+                    # Check if the read ID is in the valid barcodes by iterating over the CSV file
+                    with open(self.bc_valid_csv, 'r') as valid_barcodes:
+                        csv_reader = csv.reader(valid_barcodes)
+                        for line in csv_reader:
+                            # get the barcode_id
+                            barcode_id = line[0] 
 
-
-    def label_unique_reads(self): 
-        # Init
-        unique_barcodes = set()
-
-        # Iterate over each line, and store the barcode in a set
-        # For all lines, the first instance of a unique barcode hash causes hat line to be labelled as unique, and the others as duplicates
-
-        for (read, start, end, barcode) in self.process_bam_file():
-
-            if barcode in unique_barcodes:
-                # Add barcode to set of unique barcodes (hashes)
-                unique_barcodes.add(barcode)
-                duplicate = False
-            else:
-                duplicate = True
+                            if read_id in barcode_id:
+                                # Get the barcode
+                                barcode = line[1]
+                                read.set_tag('BC', barcode)
+                                break
+                    
+                    # Write the read to the output BAM file
+                    output_bam.write(read)
 
 
-
-
-        # Return labelled reads
 
