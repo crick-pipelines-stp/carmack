@@ -141,7 +141,10 @@ workflow CARMACK {
     // BOWTIE2_ALIGN.out.bam | view
 
     // Sort, index BAM file and run samtools stats, flagstat and idxstats
-    BAM_SORT_STATS_SAMTOOLS ( BOWTIE2_ALIGN.out.bam, PREPARE_GENOME.out.fasta.collect{ it[1] } )
+    // (maybe should fo after tagging and duplicate removal as sorting destroys read pair order)
+    BAM_SORT_STATS_SAMTOOLS ( 
+        BOWTIE2_ALIGN.out.bam, 
+        PREPARE_GENOME.out.fasta.collect{ it[1] } )
     ch_software_versions = ch_software_versions.mix(BAM_SORT_STATS_SAMTOOLS.out.versions)
 
     // BAM_SORT_STATS_SAMTOOLS.out.bam | view
