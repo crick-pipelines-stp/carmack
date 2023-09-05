@@ -119,3 +119,7 @@ pip-wheel-metadata
 
 # Devcontainers
 .devcontainer/container.env
+
+# Data and results
+/data/
+/nextflow/tests/data
