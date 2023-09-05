@@ -21,8 +21,8 @@ COPY . /app
 RUN pip install --upgrade -r requirements.txt .
 
 # Build work folder
-RUN mkdir /home/work
-WORKDIR /home/work
+# RUN mkdir /home/work
+# WORKDIR /home/work
 
 # Disable autorun
 CMD ["/bin/bash"]
