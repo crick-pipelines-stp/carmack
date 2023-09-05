@@ -28,27 +28,27 @@ class ChemistryHydrop(ChemistryBase):
         bc3_path = os.path.abspath(BC3_PATH)
 
         stream1 = GzipFile(bc1_path).open_read_iterator(as_string=True)
-        bc1 = [line.strip()[10:-10] for line in stream1]
+        bc1 = {line.strip()[10:-10] for line in stream1}
         stream1.close()
 
         stream2 = GzipFile(bc2_path).open_read_iterator(as_string=True)
-        bc2 = [line.strip()[10:-10] for line in stream2]
+        bc2 = {line.strip()[10:-10] for line in stream2}
         stream2.close()
 
         stream3 = GzipFile(bc3_path).open_read_iterator(as_string=True)
-        bc3 = [line.strip()[15:-10] for line in stream3]
+        bc3 = {line.strip()[15:-10] for line in stream3}
         stream3.close()
 
         return [ bc1, bc2, bc3 ]
-    
+
     def construct_whitelist(self, barcode_set):
-        whitelist = []
+        whitelist = set()
 
         for bc1 in barcode_set[0]:
             for bc2 in barcode_set[1]:
                 for bc3 in barcode_set[2]:
                     curr_wl = bc1 + bc2 + bc3
-                    whitelist.append(curr_wl)
+                    whitelist.add(curr_wl)
 
         return whitelist
     

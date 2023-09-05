@@ -19,10 +19,11 @@ def test_hydrop_load_barcode_set(self):
     """Test loading barcode set for hydrop chemistry."""
     chemistry = ChemistryHydrop()
     barcode_set = chemistry.load_barcode_set()
+    # print(barcode_set)
 
-    self.assertEqual(barcode_set[0][0], TEST_BC_1)
-    self.assertEqual(barcode_set[1][0], TEST_BC_2)
-    self.assertEqual(barcode_set[2][0], TEST_BC_3)
+    self.assertIn(TEST_BC_1, list(barcode_set[0]))
+    self.assertIn(TEST_BC_2, list(barcode_set[1]))
+    self.assertIn(TEST_BC_3, list(barcode_set[2]))
 
     self.assertEqual(len(barcode_set[0]), 96)
     self.assertEqual(len(barcode_set[1]), 96)
@@ -33,9 +34,9 @@ def test_hydrop_load_barcode_set_with_factory(self):
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_set = chemistry.load_barcode_set()
 
-    self.assertEqual(barcode_set[0][0], TEST_BC_1)
-    self.assertEqual(barcode_set[1][0], TEST_BC_2)
-    self.assertEqual(barcode_set[2][0], TEST_BC_3)
+    self.assertIn(TEST_BC_1, list(barcode_set[0]))
+    self.assertIn(TEST_BC_2, list(barcode_set[1]))
+    self.assertIn(TEST_BC_3, list(barcode_set[2]))
 
     self.assertEqual(len(barcode_set[0]), 96)
     self.assertEqual(len(barcode_set[1]), 96)
@@ -47,23 +48,22 @@ def test_hydrop_construct_whitelist_model_case(self):
     barcode_wl = chemistry.construct_whitelist(barcode_set)
 
     # KEEP UPDATED WITH MODEL SEQUENCE CONSTRUCTION
-    test_wl = barcode_set[0][0] + barcode_set[1][0] + barcode_set[2][0]
+    test_wl = list(barcode_set[0])[0] +  list(barcode_set[1])[0] +  list(barcode_set[2])[0]
     
-    assert barcode_wl[0] == test_wl
+    assert test_wl in barcode_wl
 
 @with_temporary_folder
 def test_hydrop_construct_whitelist_md5(self, temp_path):
-    expected_hash = 'd8ac24821209e56ab7442d73d35ea107'
+    expected_hash = 'fa1805f3bd180de020eb7e6c6512ffeb'
     test_file = os.path.join(temp_path, 'barcodes.txt')
 
     chemistry = ChemistryFactory.get_chemistry('hydrop')
     barcode_set = chemistry.load_barcode_set()
-    barcode_wl = chemistry.construct_whitelist(barcode_set)
+    barcode_wl = sorted(chemistry.construct_whitelist(barcode_set))
 
     with open(test_file, 'w') as out_file:
         for bc_wl in barcode_wl:
             out_file.write(bc_wl + '\n')
-
     utils.validate_file_md5(test_file, expected_hash)
 
 @pytest.mark.parametrize("seq, expected_seq", [

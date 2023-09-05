@@ -1,13 +1,20 @@
 import os
 import pytest
 import numpy as np
-
 import carmack.utils as utils
+
 from carmack.io.fastq_file import FastqFile
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 
 from ..utils import with_temporary_folder
+
+import cProfile as profile
+import pstats
+from line_profiler import LineProfiler
+from timeit import Timer
+import concurrent.futures
+
 
 R1_PATH = 'tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz'
 R2_PATH = 'tests/data/hydrop_scatac_1_S1_R3_001.fastq.gz'
@@ -21,31 +28,29 @@ CB_PATH = 'tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz'
 def test_calc_raw_barcode_match_counts_hydrop(self, temp_path):
     """Test calculation of raw barcode match counts."""
 
-    expected_hash = '5a150d2473fbf0b0bb7993dfa4e4063a'
+    expected_hash = '21f54e9372a0b5b304064cb88cff39f6'
 
     # Init
     test_file = os.path.join(temp_path, 'barcode_counts.txt')
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
 
-    # Calc distribution
     bc_counts = barcode_ext.calc_raw_barcode_match_counts()
-
     # print(bc_counts)
 
     with open(test_file, 'w') as out_file:
        for bc_count_set in bc_counts:
-            for bc in bc_count_set:
+            sorted_bc_set = sorted(bc_count_set) 
+            for bc in sorted_bc_set:
                 line = bc + '-' + str(bc_count_set[bc])
                 out_file.write(line + '\n')
     
     utils.validate_file_md5(test_file, expected_hash)
 
-
 @with_temporary_folder
 def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
     """Test calculation of raw barcode match distribution."""
 
-    expected_hash = '4f28f158699d07bf0a790a130a61d2a2'
+    expected_hash = '3b2ee579aaa8e472c635cfc04e6cdeca'
 
     # Init
     test_file = os.path.join(temp_path, 'barcode_dist.txt')
@@ -56,10 +61,11 @@ def test_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
 
     with open(test_file, 'w') as out_file:
        for bc_count_set in bc_dist:
-            for bc in bc_count_set:
+            sorted_bc_set = sorted(bc_count_set) 
+            for bc in sorted_bc_set:
                 line = bc + '-' + str(bc_count_set[bc])
                 out_file.write(line + '\n')
-    
+
     utils.validate_file_md5(test_file, expected_hash)
 
 # ------------------------------------------------------------------------------ #
@@ -123,7 +129,7 @@ def test_gen_nearby_seqs_expected(self, maxdist, seq, expected):
         assert seq in barcode_sets[0]
     
     assert len(seqs) == expected
-
+    
 # ------------------------------------------------------------------------------ #
 # gen_indel_set
 # ------------------------------------------------------------------------------ #
@@ -276,10 +282,6 @@ def test_correct_barcode_perm(self, seq, expected_seq, expected_msg):
 
     # Test
     bc, msg = barcode_ext.correct_barcode(seq, qs, barcode_wl, barcode_set, bc_dist, chemistry, 2)
-
-    # Log
-    # print(bc)
-    # print(msg)
 
     # Assert
     assert bc == expected_seq
@@ -498,4 +500,3 @@ def test_extract_cell_barcodes_no_prefix(self, temp_path):
     
     # assert prefix in all filenames
     assert all(prefix in filename for filename in files)
-
