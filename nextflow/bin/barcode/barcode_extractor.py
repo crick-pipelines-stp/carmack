@@ -20,21 +20,6 @@ ILLUMINA_QUAL_MAX_SCORE = 30
 ILLUMINA_QUAL_OFFSET = 33
 
 log = logging.getLogger(__name__)
-
-def parse_args(args=None):
-        Description = "Extract cell barcodes"
-
-        parser = argparse.ArgumentParser(description=Description)
-        parser.add_argument("READ1", required=True)
-        parser.add_argument("READ2", required=True)
-        parser.add_argument("BARCODES", required=True)
-        parser.add_argument('-c', '--chemistry', required=True, help="Chemistry class for barcode extraction")
-        parser.add_argument('-d', '--max_dist', required=True, help="Maximal Hamming distance for barcode extraction")
-        parser.add_argument('-l', '--line_count', required=False, help="Number of lines after which stats are logged during barcode extraction")
-        parser.add_argument('-o', '--output_dir', required=False, help="Output directory to save generated files")
-        parser.add_argument('-p', '--prefix', required=False, default=None, help="Prefix for generated files")
-        return parser.parse_args(args)
-
 class BarcodeExtractor:
     """
     Class that handles barcode extraction/correction from fastq files
@@ -455,13 +440,3 @@ class BarcodeExtractor:
             prefix = self.read1.rsplit("/", 1)[-1].split(".", 1)[0]
 
         self.__extract_cell_barcodes(max_corrections, count, output_dir, prefix)
-
-
-def main(args=None):
-    args = parse_args(args)
-    barcode_ext = BarcodeExtractor(args.READ1, args.READ2, args.BARCODES, args.CHEMISTRY)
-    barcode_ext.extract_cell_barcodes(args.MAX_CORRECTIONS, args.LINE_COUNT, args.OUTDIR, args.PREFIX)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

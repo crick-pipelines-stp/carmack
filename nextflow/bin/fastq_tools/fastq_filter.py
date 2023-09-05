@@ -5,17 +5,6 @@ import argparse
 
 from ..io.fastq_file import FastqFile
 
-def parse_args(args=None):
-        Description = "Filter fastq files for reads with valid cell barcodes"
-
-        parser = argparse.ArgumentParser(description=Description)
-        parser.add_argument("READ1")
-        parser.add_argument("READ2")
-        parser.add_argument("VALID_BARCODES")
-        parser.add_argument('-o', '--output_dir', required=False, help="Output directory to save generated files")
-        parser.add_argument('-p', '--prefix', required=False, default=None, help="Prefix for generated files")
-        return parser.parse_args(args)
-
 class FastqFilter:
     """
     Class that filters fastq files for valid reads
@@ -63,12 +52,3 @@ class FastqFilter:
             if name_split_read[0] in valid_barcodes:
                 FastqFile.write_read(wstream_r2, name, seq, qual)
         wstream_r2.close()
-
-
-def main(args=None):
-    args = parse_args(args)
-    fastq_filter = FastqFilter(args.READ1, args.READ2)
-    fastq_filter.filter_valid_reads(args.VALID_BARCODES, args.OUTDIR, args.PREFIX)
-
-if __name__ == "__main__":
-    sys.exit(main())
