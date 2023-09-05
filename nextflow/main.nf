@@ -91,7 +91,7 @@ workflow {
     ch_software_versions = ch_software_versions.mix(PREPARE_GENOME.out.versions)
     ch_bowtie2_index     = PREPARE_GENOME.out.bowtie2_index
 
-    // EXAMPLE CHANNEL STRUCT: [ val(meta), [ path(bt2/index/) ] ]
+    // EXAMPLE CHANNEL STRUCT: [META, [INDEX] ]
     // ch_bowtie2_index | view
 
     /*
@@ -117,6 +117,13 @@ workflow {
     //     EXTRACT_BARCODES.valid
     // )
 
+    // Channnel with valid reads (after implementing EXTRACT_BARCODES and FILTER_FASTQ)
+    // ch_valid_reads = FILTER_FASTQ.out.read1_valid.merge ( FILTER_FASTQ.out.read2_valid )
+    //     .map { valid_read1, valid_read2 -> [meta, [valid_read1, valid_read2]] }
+
+    // EXAMPLE CHANNEL STRUCT: [META, [VALID_READ1, VALID_READ1]]
+    // ch_valid_reads | view
+
     /*
      * SUBWORKFLOW: Read QC, extract UMI and trim adapters with TrimGalore!
      */
@@ -126,7 +133,7 @@ workflow {
     ch_trim_log_multiqc    = Channel.empty()
     ch_trim_read_count     = Channel.empty()
     FASTQ_FASTQC_UMITOOLS_TRIMGALORE ( 
-        ch_fastq, 
+        // ch_valid_reads // TODO: Set only valid reads (ch_valid_reads) as input in FASTQ_FASTQC_UMITOOLS_TRIMGALORE, not ch_fastq
         params.skip_fastqc,
         params.with_umi,
         params.skip_umi_extract,
@@ -134,24 +141,19 @@ workflow {
         params.umi_discard_read,
         params.min_trimmed_reads
      )
-    ch_trimmed_reads       = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.reads
+    ch_valid_trimmed_reads = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.reads
     ch_fastqc_raw_multiqc  = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.fastqc_zip 
     ch_fastqc_trim_multiqc = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_zip
     ch_trim_log_multiqc    = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_log
     ch_trim_read_count     = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_read_count
     ch_software_versions   = ch_software_versions.mix(FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.versions)
 
-    // Channnel with valid reads (after implementing EXTRACT_BARCODES and FILTER_FASTQ)
-    // ch_valid_reads = ch_fastq_valid_read1.merge ( ch_fastq_valid_read2 )
-    //     .map { valid_read1, valid_read2 -> [meta, [valid_read1, valid_read2]] }
-    // ch_valid_reads | view
-
     // ch_index = ch_bowtie2_index.map { [[id:it.baseName], it] }
-    // // ch_index | view
+    // ch_index | view
     
     // // Run BOWTIE2_ALIGN
     // BOWTIE2_ALIGN (
-    //     ch_valid_reads,
+    //     ch_valid_trimmed_reads, // valid trimmed reads
     //     ch_index.collect{ it[1] },
     //     params.save_unaligned,
     //     false
