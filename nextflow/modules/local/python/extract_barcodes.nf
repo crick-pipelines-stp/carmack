@@ -1,7 +1,7 @@
 process EXTRACT_BARCODES {
     label 'process_medium'
 
-    container "luslab/carmack:latest"
+    container "docker.io/luslab/carmack:latest"
 
     input:
     tuple val(meta), path(read1), path(read2), path(barcodes)
