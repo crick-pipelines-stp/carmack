@@ -75,10 +75,9 @@ workflow {
      // Parse samplesheet
     ch_input_parsed = ch_input.splitCsv ( header:true, sep:"," )
         .map { 
-            it -> [it.sample_id, [file(it.fastq_1), file(it.fastq_2), file(it.cell_barcodes)]]
+            it -> [[id:it.id], file(it.fastq_1), file(it.fastq_2), file(it.cell_barcodes)]
         }
-
-    // EXAMPLE CHANNEL STRUCT: [META, [READ1, READ2, BARCODES]]
+    // EXAMPLE CHANNEL STRUCT: [META, READ1, READ2, BARCODES]
     // ch_input_parsed | view
 
     /*
@@ -90,30 +89,27 @@ workflow {
     )
     ch_software_versions = ch_software_versions.mix(PREPARE_GENOME.out.versions)
     ch_bowtie2_index     = PREPARE_GENOME.out.bowtie2_index
-
     // EXAMPLE CHANNEL STRUCT: [META, [INDEX] ]
     // ch_bowtie2_index | view
 
     /*
      * MODULE: Extract cell barcodes
      */
-    // EXTRACT_BARCODES (
-    //     ch_input_parsed 
-    //     params.max_corrections 
-    //     meta.chemistry
-    // )
+    EXTRACT_BARCODES (
+        ch_input_parsed, 
+        params.max_corrections, 
+        params.chemistry 
+    )
 
-    // remap ch_input_parsed    
-    ch_fastq = ch_input_parsed.map { it -> [it[0], [it[1][0], it[1][1]]] }
-    
+    ch_reads = ch_input_parsed.map { it -> [it[0], [it[1][0], it[1][1]]] }
     // EXAMPLE CHANNEL STRUCT: [META, [READ1, READ2]]
-    // ch_fastq | view
+    // ch_reads | view
 
     /*
      * MODULE: Filter valid reads
      */
     // FILTER_FASTQ (
-    //     ch_fastq
+    //     ch_reads,
     //     EXTRACT_BARCODES.valid
     // )
 
@@ -132,21 +128,21 @@ workflow {
     ch_fastqc_trim_multiqc = Channel.empty()
     ch_trim_log_multiqc    = Channel.empty()
     ch_trim_read_count     = Channel.empty()
-    FASTQ_FASTQC_UMITOOLS_TRIMGALORE ( 
-        // ch_valid_reads // TODO: Set only valid reads (ch_valid_reads) as input in FASTQ_FASTQC_UMITOOLS_TRIMGALORE, not ch_fastq
-        params.skip_fastqc,
-        params.with_umi,
-        params.skip_umi_extract,
-        params.skip_trimming,
-        params.umi_discard_read,
-        params.min_trimmed_reads
-     )
-    ch_valid_trimmed_reads = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.reads
-    ch_fastqc_raw_multiqc  = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.fastqc_zip 
-    ch_fastqc_trim_multiqc = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_zip
-    ch_trim_log_multiqc    = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_log
-    ch_trim_read_count     = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_read_count
-    ch_software_versions   = ch_software_versions.mix(FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.versions)
+    // FASTQ_FASTQC_UMITOOLS_TRIMGALORE ( 
+    //     // ch_valid_reads // TODO: Set only valid reads (ch_valid_reads) as input in FASTQ_FASTQC_UMITOOLS_TRIMGALORE, not ch_reads
+    //     params.skip_fastqc,
+    //     params.with_umi,
+    //     params.skip_umi_extract,
+    //     params.skip_trimming,
+    //     params.umi_discard_read,
+    //     params.min_trimmed_reads
+    //  )
+    // ch_valid_trimmed_reads = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.reads
+    // ch_fastqc_raw_multiqc  = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.fastqc_zip 
+    // ch_fastqc_trim_multiqc = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_zip
+    // ch_trim_log_multiqc    = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_log
+    // ch_trim_read_count     = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_read_count
+    // ch_software_versions   = ch_software_versions.mix(FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.versions)
 
     // ch_index = ch_bowtie2_index.map { [[id:it.baseName], it] }
     // ch_index | view
