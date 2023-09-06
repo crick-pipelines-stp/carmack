@@ -440,8 +440,9 @@ def test_extract_cell_barcodes_md5(self, temp_path):
 
     # Init
     max_corrections = 2
-    count = 100
+    log_freq = 100
     prefix = ''
+    print_stats = True
     test_file_all = os.path.join(temp_path, prefix + '.bc_all.csv')
     test_file_valid = os.path.join(temp_path, prefix +'.bc_valid.csv')
     test_file_bc_stats = os.path.join(temp_path, prefix + '.bc_counts_stats.csv')
@@ -449,7 +450,7 @@ def test_extract_cell_barcodes_md5(self, temp_path):
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
 
     # Run extract_cell_barcodes
-    barcode_ext.extract_cell_barcodes(max_corrections, count, temp_path, prefix)
+    barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path, prefix)
 
     # Check md5
     utils.validate_file_md5(test_file_all, expected_hash_file_all)
@@ -463,10 +464,11 @@ def test_extract_cell_barcodes_prefix(self, temp_path):
     # Init
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
     max_corrections = 2
-    count = 100
+    log_freq = 100
+    print_stats = True
 
     # Run extract_cell_barcodes
-    barcode_ext.extract_cell_barcodes(max_corrections, count, temp_path, prefix='hydrop_scatac_1_S2_R2_001')
+    barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path, prefix='hydrop_scatac_1_S2_R2_001')
 
     # Get files
     files = os.listdir(temp_path)
@@ -480,10 +482,11 @@ def test_extract_cell_barcodes_no_prefix(self, temp_path):
     # Init
     barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
     max_corrections = 2
-    count = 100
+    log_freq = 100
+    print_stats = True
 
     # Run extract_cell_barcodes
-    barcode_ext.extract_cell_barcodes(max_corrections, count, temp_path)
+    barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path)
 
     # Get files
     files = os.listdir(temp_path)

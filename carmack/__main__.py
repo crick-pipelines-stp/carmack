@@ -116,10 +116,11 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
 @click.argument("barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<barcodes>")  
 @click.option("-c","--chemistry", required=True, type=str, help="<Chemistry class for barcode extraction>")
 @click.option("-d", "--max_dist", required=True, type=int, help="<Maximal Hamming distance for barcode extraction>")
-@click.option("-l", "--line_count", required=False, type=int, default=10000, help="<Number of lines after which stats are logged during barcode extraction>")
+@click.option("-s", "--print_stats", required=False, type=bool, default=True, help="<Boolean describing whether or not to print summary stats during barcode extraction>")
+@click.option("-l", "--log_freq", required=False, type=int, default=10000, help="<Number of lines after which stats are logged during barcode extraction>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="<Output directory to save generated files>")   
 @click.option("-p", "--prefix", required=False, type=str, default="", show_default=True, help="<Prefix for generated files>")
-def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, line_count, output_dir, prefix): 
+def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_stats, log_freq, output_dir, prefix): 
     """
     Extracts valid cell barcodes by correcing for indels and sequencing errors, using a specified maximal Hamming distance and barcode chemistry.
 
@@ -128,7 +129,7 @@ def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, line_coun
     """
     
     barcode_ext = BarcodeExtractor(read1, read2, barcodes, chemistry)
-    barcode_ext.extract_cell_barcodes(max_dist, line_count, output_dir, prefix)
+    barcode_ext.extract_cell_barcodes(max_dist, print_stats, log_freq, output_dir, prefix)
 
 
 @carmack_cli.command("fastq-filter")
