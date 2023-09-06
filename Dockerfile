@@ -18,11 +18,12 @@ ENV PATH /app:$PATH
 COPY . /app
 
 # Install the lib
-RUN pip install --upgrade -r requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -e .
 
-# Build work folder
-# RUN mkdir /home/work
-# WORKDIR /home/work
+# Build work folder
+RUN mkdir /home/work
+WORKDIR /home/work
 
 # Disable autorun
 CMD ["/bin/bash"]
