@@ -75,7 +75,7 @@ workflow {
      // Parse samplesheet
     ch_input_parsed = ch_input.splitCsv ( header:true, sep:"," )
         .map { 
-            it -> [[id:it.id], file(it.fastq_1), file(it.fastq_2), file(it.cell_barcodes)]
+            it -> [[id:it.sample_id], file(it.fastq_1), file(it.fastq_2), file(it.cell_barcodes)]
         }
     // EXAMPLE CHANNEL STRUCT: [META, READ1, READ2, BARCODES]
     // ch_input_parsed | view
@@ -101,17 +101,17 @@ workflow {
         params.chemistry 
     )
 
-    ch_reads = ch_input_parsed.map { it -> [it[0], [it[1][0], it[1][1]]] }
-    // EXAMPLE CHANNEL STRUCT: [META, [READ1, READ2]]
+    ch_reads = ch_input_parsed.map { it -> [it[0], it[1], it[2]] }
+    // EXAMPLE CHANNEL STRUCT: [META, READ1, READ2]
     // ch_reads | view
 
     /*
      * MODULE: Filter valid reads
      */
-    // FILTER_FASTQ (
-    //     ch_reads,
-    //     EXTRACT_BARCODES.valid
-    // )
+    FILTER_FASTQ (
+        ch_reads,
+        EXTRACT_BARCODES.out.valid
+    )
 
     // Channnel with valid reads (after implementing EXTRACT_BARCODES and FILTER_FASTQ)
     // ch_valid_reads = FILTER_FASTQ.out.read1_valid.merge ( FILTER_FASTQ.out.read2_valid )
