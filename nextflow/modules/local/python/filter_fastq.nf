@@ -8,9 +8,8 @@ process FILTER_FASTQ {
     path valid_barcodes
     
     output:
-    path '*.r1_valid.fastq.gz', emit: read1_valid
-    path '*.r2_valid.fastq.gz', emit: read2_valid
-    path  "versions.yml"      , emit: versions
+    tuple val(meta), path("*_valid.fastq.gz"), emit: valid_reads
+    path  "versions.yml"                     , emit: versions
 
     script:
     def args = task.ext.args ?: ''
