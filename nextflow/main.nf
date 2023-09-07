@@ -15,7 +15,7 @@ else {
     ch_blacklist = Channel.empty()
 }
 
-if (params.samplesheet) { ch_input = Channel.from( file(params.samplesheet) ) } else { exit 1, "Input samplesheet not specified!" }
+if (params.samplesheet) { ch_input = Channel.from( file(params.samplesheet) ) } else { exit 1, 'Input samplesheet not specified!' }
 
 /*
 ========================================================================================
@@ -35,13 +35,14 @@ def prepare_tool_indices = ["bowtie2"]
 /*
 * MODULES
 */
-include { EXTRACT_BARCODES } from "./modules/local/python/extract_barcodes"
-include { FILTER_FASTQ     } from "./modules/local/python/filter_fastq"
+include { EXTRACT_BARCODES } from './modules/local/python/extract_barcodes'
+include { FILTER_FASTQ     } from './modules/local/python/filter_fastq'
 
 /*
 * SUBWORKFLOWS
 */
-include { PREPARE_GENOME } from "./subworkflows/local/prepare_genome"
+include { PREPARE_GENOME    } from './subworkflows/local/prepare_genome'
+include { FASTQC_TRIMGALORE } from './subworkflows/local/fastqc_trimgalore'
 
 /*
 ========================================================================================
@@ -54,13 +55,12 @@ include { PREPARE_GENOME } from "./subworkflows/local/prepare_genome"
 */
 include { FASTQC            } from './modules/nf-core/fastqc/main'
 include { BOWTIE2_ALIGN     } from './modules/nf-core/bowtie2/align/main'
-include { BEDTOOLS_BAMTOBED } from "./modules/nf-core/bedtools/bamtobed/main"
+include { BEDTOOLS_BAMTOBED } from './modules/nf-core/bedtools/bamtobed/main'
 
 /*
 * SUBWORKFLOWS
 */
 include { BAM_SORT_STATS_SAMTOOLS          } from './subworkflows/nf-core/bam_sort_stats_samtools/main'
-include { FASTQ_FASTQC_UMITOOLS_TRIMGALORE } from './subworkflows/nf-core/fastq_fastqc_umitools_trimgalore/main'
 
 /*
 ========================================================================================
@@ -88,7 +88,7 @@ workflow {
         ch_blacklist
     )
     ch_software_versions = ch_software_versions.mix(PREPARE_GENOME.out.versions)
-    ch_bowtie2_index     = PREPARE_GENOME.out.bowtie2_index
+    ch_bowtie2_index     = PREPARE_GENOME.out.bowtie2_index 
     // EXAMPLE CHANNEL STRUCT: [META, [INDEX] ]
     // ch_bowtie2_index | view
 
@@ -112,51 +112,35 @@ workflow {
         ch_reads,
         EXTRACT_BARCODES.out.valid
     )
-
-    // Channnel with valid reads (after implementing EXTRACT_BARCODES and FILTER_FASTQ)
-    // ch_valid_reads = FILTER_FASTQ.out.read1_valid.merge ( FILTER_FASTQ.out.read2_valid )
-    //     .map { valid_read1, valid_read2 -> [meta, [valid_read1, valid_read2]] }
-
-    // EXAMPLE CHANNEL STRUCT: [META, [VALID_READ1, VALID_READ1]]
-    // ch_valid_reads | view
+    // EXAMPLE CHANNEL STRUCT: [META, [VALID_READ1, VALID_READ2]]
+    // FILTER_FASTQ.out.valid_reads | view
 
     /*
-     * SUBWORKFLOW: Read QC, extract UMI and trim adapters with TrimGalore!
+     * SUBWORKFLOW: Read QC, trim adapters and perform post-trim read QC
      */
-    ch_trimmed_reads       = Channel.empty()
-    ch_fastqc_raw_multiqc  = Channel.empty()
-    ch_fastqc_trim_multiqc = Channel.empty()
-    ch_trim_log_multiqc    = Channel.empty()
-    ch_trim_read_count     = Channel.empty()
-    // FASTQ_FASTQC_UMITOOLS_TRIMGALORE ( 
-    //     // ch_valid_reads // TODO: Set only valid reads (ch_valid_reads) as input in FASTQ_FASTQC_UMITOOLS_TRIMGALORE, not ch_reads
-    //     params.skip_fastqc,
-    //     params.with_umi,
-    //     params.skip_umi_extract,
-    //     params.skip_trimming,
-    //     params.umi_discard_read,
-    //     params.min_trimmed_reads
-    //  )
-    // ch_valid_trimmed_reads = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.reads
-    // ch_fastqc_raw_multiqc  = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.fastqc_zip 
-    // ch_fastqc_trim_multiqc = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_zip
-    // ch_trim_log_multiqc    = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_log
-    // ch_trim_read_count     = FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.trim_read_count
-    // ch_software_versions   = ch_software_versions.mix(FASTQ_FASTQC_UMITOOLS_TRIMGALORE.out.versions)
+    FASTQC_TRIMGALORE (
+        FILTER_FASTQ.out.valid_reads, 
+        params.skip_fastqc, 
+        params.skip_trimming
+    )
+    ch_software_versions = ch_software_versions.mix(FASTQC_TRIMGALORE.out.versions)
+    ch_trimmed_reads     = FASTQC_TRIMGALORE.out.reads
+    // ch_trimmed_reads | view
 
-    // ch_index = ch_bowtie2_index.map { [[id:it.baseName], it] }
+    ch_index = ch_bowtie2_index.map { [[id:it.baseName], it] }
     // ch_index | view
     
-    // // Run BOWTIE2_ALIGN
-    // BOWTIE2_ALIGN (
-    //     ch_valid_trimmed_reads, // valid trimmed reads
-    //     ch_index.collect{ it[1] },
-    //     params.save_unaligned,
-    //     false
-    // )
-    // ch_software_versions = ch_software_versions.mix(BOWTIE2_ALIGN.out.versions)
-    // // ch_software_versions | view
-    // // BOWTIE2_ALIGN.out.bam | view
+    /*
+     * MODULE: Map reads with BOWTIE2 to target genome
+     */
+    BOWTIE2_ALIGN (
+        ch_trimmed_reads, 
+        ch_index.collect{ it[1] },
+        params.save_unaligned,
+        false
+    )
+    ch_software_versions = ch_software_versions.mix(BOWTIE2_ALIGN.out.versions)
+    // BOWTIE2_ALIGN.out.bam | view
 
     // // Sort, index BAM file and run samtools stats, flagstat and idxstats
     // // (maybe should do after barcode tagging and duplicate removal as sorting destroys read pair order)
