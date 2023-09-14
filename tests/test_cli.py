@@ -9,6 +9,8 @@ import carmack.__main__
 R1_PATH = 'tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz'
 R2_PATH = 'tests/data/hydrop_scatac_1_S1_R3_001.fastq.gz'
 CB_PATH = 'tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz'
+BAM_PATH = 'tests/data/hydrop_scatac_1_S1_R1.bam'
+BAI_PATH = 'tests/data/hydrop_scatac_1_S1_R1.target.sorted.bam.bai'
 BC_VALID_PATH = 'tests/data/bc_valid.csv'
 
 @mock.patch("carmack.__main__.carmack_cli")
@@ -109,4 +111,29 @@ class TestCli(unittest.TestCase):
         self.assertTrue(result.exit_code == 0)
         mock_fastq_filter.assert_called_once_with(R1_PATH, R2_PATH) 
         mock_fastq_filter.return_value.filter_valid_reads.assert_called_once_with(BC_VALID_PATH, params["output_dir"], params["prefix"])
+    
+    @mock.patch("carmack.__main__.DuplicateRemoval", autospec=True)
+    def test_cli_command_duplicate_removal(self, mock_duplicate_removal):
+        """Test duplicate_removal"""
+
+        # Init
+        params = {"log_progress": True,
+                  "output_dir": ".",
+                  "dedup": True,
+                  "prefix": ''}
+        
+        # Test
+        cmd = ["bam-tag-deduplicate"] + [BAM_PATH, BAI_PATH, BC_VALID_PATH] + self.assemble_params(params)
+        result = self.invoke_cli(cmd)
+
+        # print(mock_duplicate_removal.call_args)
+        # print(mock_duplicate_removal.return_value.tag_and_deduplicate_reads.call_args)
+        # print(result)
+        # print(result.output)
+        # print(result.exception)
+
+        # Assert
+        self.assertTrue(result.exit_code == 0)
+        mock_duplicate_removal.assert_called_once_with(BAM_PATH, BAI_PATH, BC_VALID_PATH) 
+        mock_duplicate_removal.return_value.tag_and_deduplicate_reads.assert_called_once_with(params["log_progress"], params["output_dir"], params["dedup"], params["prefix"])
     
