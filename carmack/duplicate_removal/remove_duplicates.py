@@ -3,6 +3,7 @@ import logging
 import pysam
 import csv
 
+log = logging.getLogger()
 class DuplicateRemoval:
     """
     Class that removes duplicate reads from bam files
