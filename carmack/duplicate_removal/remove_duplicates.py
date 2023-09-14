@@ -13,7 +13,7 @@ class DuplicateRemoval:
         self.bai = bai
         self.bc_valid_csv = bc_valid_csv
 
-    def tag_and_deduplicate_reads(self, log_stats, output_dir, dedup=True, prefix=None):
+    def tag_and_deduplicate_reads(self, log_progress, output_dir, dedup=True, prefix=None):
         if prefix == None:
             prefix = self.bam.rsplit("/", 1)[-1].split(".", 1)[0]
 
@@ -52,7 +52,7 @@ class DuplicateRemoval:
                     line_nr += 1
 
                     # Log progress
-                    if log_stats and line_nr % one_perc:
+                    if log_progress and line_nr % one_perc:
                         curr_perc = line_nr / valid_bc_count
                         
                         if curr_perc > curr_perc_thresh:
