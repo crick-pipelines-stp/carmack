@@ -7,4 +7,6 @@ import unittest
 class TestDuplicateRemoval(unittest.TestCase):
     """Class for duplicate removal test"""
 
-    from .duplicate_removal.remove_duplicates import        test_get_unique_readpairs
+    from .duplicate_removal.remove_duplicates import test_tag_reads,\
+        test_tag_and_deduplicate_reads
+        
