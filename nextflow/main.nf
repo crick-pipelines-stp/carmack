@@ -41,8 +41,10 @@ include { FILTER_FASTQ     } from './modules/local/python/filter_fastq'
 /*
 * SUBWORKFLOWS
 */
-include { PREPARE_GENOME    } from './subworkflows/local/prepare_genome'
-include { FASTQC_TRIMGALORE } from './subworkflows/local/fastqc_trimgalore'
+include { PREPARE_GENOME                           } from './subworkflows/local/prepare_genome'
+include { FASTQC_TRIMGALORE                        } from './subworkflows/local/fastqc_trimgalore'
+include { SAMTOOLS_VIEW_SORT_STATS as FILTER_READS } from "./subworkflows/local/samtools_view_sort_stats"
+
 
 /*
 ========================================================================================
@@ -140,7 +142,43 @@ workflow {
         false
     )
     ch_software_versions = ch_software_versions.mix(BOWTIE2_ALIGN.out.versions)
+    ch_samtools_bam      = BOWTIE2_ALIGN.out.bam
     // BOWTIE2_ALIGN.out.bam | view
+
+    /*
+     *  SUBWORKFLOW: Filter reads based some standard measures
+     *  - Unmapped reads 0x004
+     *  - Mate unmapped 0x0008
+     *  - Multi-mapped reads
+     *  - Filter out reads aligned to blacklist regions (if required)
+     *  - Filter out reads below a threshold q score
+     *  - Filter out mitochondrial reads (if required)
+     */
+     FILTER_READS (
+        ch_samtools_bam,
+        [], // PREPARE_GENOME.out.allowed_regions.collect{it[1]}.ifEmpty([]),
+        [] //PREPARE_GENOME.out.fasta
+    )
+    ch_samtools_bam      = FILTER_READS.out.bam
+    ch_samtools_bai      = FILTER_READS.out.bai
+    ch_samtools_stats    = FILTER_READS.out.stats
+    ch_samtools_flagstat = FILTER_READS.out.flagstat
+    ch_samtools_idxstats = FILTER_READS.out.idxstats
+    ch_software_versions = ch_software_versions.mix(FILTER_READS.out.versions)
+    
+    /*
+     * MODULE: Tag reads with cell barcodes and deduplication
+     */
+    // Tag reads with cell barcodes and deduplication
+    // TAG_BARCODES_DEDUP (
+    //
+    // )
+
+    // // Run bedtools bam_to_bed
+    // // ch_tagged_bam with meta
+    // // ch_tagged_bam_meta = ch_tagged_bam.map { bam -> [meta, bam] } (og channel from file in tests/data)
+    // // ch_tagged_bam_meta| view
+    // // [[id:hydrop_scatac_1_S1_R1, group:hydrop_scatac_1_S1, replicate:1, single_end:false], /Users/hodgett/dev/repos/carmack/nextflow/tests/data/output.bam]
 
     // // Sort, index BAM file and run samtools stats, flagstat and idxstats
     // // (maybe should do after barcode tagging and duplicate removal as sorting destroys read pair order)
@@ -151,21 +189,6 @@ workflow {
 
     // // BAM_SORT_STATS_SAMTOOLS.out.bam | view
     // // BAM_SORT_STATS_SAMTOOLS.out.bai | view
-
-    // // Filtering reads
-    // // ...
-
-    // // Tagging bam files with cell barcodes
-    // // ...
-
-    // // Deduplication
-    // // ...
-
-    // // Run bedtools bam_to_bed
-    // // ch_tagged_bam with meta
-    // // ch_tagged_bam_meta = ch_tagged_bam.map { bam -> [meta, bam] } (og channel from file in tests/data)
-    // // ch_tagged_bam_meta| view
-    // // [[id:hydrop_scatac_1_S1_R1, group:hydrop_scatac_1_S1, replicate:1, single_end:false], /Users/hodgett/dev/repos/carmack/nextflow/tests/data/output.bam]
 
     // BEDTOOLS_BAMTOBED (
     //     ch_tagged_bam_meta
