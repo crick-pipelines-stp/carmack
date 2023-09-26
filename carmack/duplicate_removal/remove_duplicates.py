@@ -14,7 +14,7 @@ class DuplicateRemoval:
         self.bai = bai
         self.bc_valid_csv = bc_valid_csv
 
-    def tag_and_deduplicate_reads(self, log_progress, output_dir, dedup=True, prefix=None):
+    def tag_and_deduplicate_reads(self, log_progress, output_dir, dedup, prefix=None):
         if prefix == None:
             prefix = self.bam.rsplit("/", 1)[-1].split(".", 1)[0]
 
@@ -100,7 +100,7 @@ class DuplicateRemoval:
                                     tagged_bam.write(prev_read)
                                     tagged_bam.write(read)
 
-                                # If in set of unique read_pair ids, mark as duplicate and don't write to file 
+                                # If in set of unique read_pair ids, don't write to file as it is a duplicate read pair 
                                 else:
                                     duplicate_count += 1
                                     
@@ -114,8 +114,14 @@ class DuplicateRemoval:
 
                     prev_read = read
         
-         # Write unique and duplicate read counts to a separate output file for multiqc reporting.
+        if dedup:
+            logging.info(f"Finished barcode tagging and deduplication!")
+        else: 
+            logging.info(f"Finished barcode tagging!")
+
+        # Write unique and duplicate read counts to a separate output file for multiqc reporting.
         if dedup:
             with open(os.path.join(output_dir, prefix + '.dedup.stats_mqc.log'), "w") as dedup_counts_stats_file: 
                 dedup_counts_stats_file.write('unique_read_count,duplicate_read_count\n')
-                dedup_counts_stats_file.write(f"{unique_count},{duplicate_count}")        
+                dedup_counts_stats_file.write(f"{unique_count},{duplicate_count}")
+        

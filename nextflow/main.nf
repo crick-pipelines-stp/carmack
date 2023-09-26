@@ -23,9 +23,6 @@ if (params.samplesheet) { ch_input = Channel.from( file(params.samplesheet) ) } 
 ========================================================================================
 */
 
-// Init aligners
-def prepare_tool_indices = ["bowtie2"]
-
 /*
 ========================================================================================
     IMPORT LOCAL MODULES/SUBWORKFLOWS
@@ -37,6 +34,7 @@ def prepare_tool_indices = ["bowtie2"]
 */
 include { EXTRACT_BARCODES } from './modules/local/python/extract_barcodes'
 include { FILTER_FASTQ     } from './modules/local/python/filter_fastq'
+include { BAM_TAG_DEDUP    } from './modules/local/python/remove_duplicates'
 
 /*
 * SUBWORKFLOWS
@@ -62,7 +60,7 @@ include { BEDTOOLS_BAMTOBED } from './modules/nf-core/bedtools/bamtobed/main'
 /*
 * SUBWORKFLOWS
 */
-include { BAM_SORT_STATS_SAMTOOLS          } from './subworkflows/nf-core/bam_sort_stats_samtools/main'
+include { BAM_SORT_STATS_SAMTOOLS } from './subworkflows/nf-core/bam_sort_stats_samtools/main'
 
 /*
 ========================================================================================
@@ -86,8 +84,8 @@ workflow {
      * SUBWORKFLOW: Uncompress and prepare reference genome files
      */
     PREPARE_GENOME (
-        prepare_tool_indices,
-        ch_blacklist
+        file(params.fasta),
+        params.bowtie2
     )
     ch_software_versions = ch_software_versions.mix(PREPARE_GENOME.out.versions)
     ch_bowtie2_index     = PREPARE_GENOME.out.bowtie2_index 
@@ -154,10 +152,13 @@ workflow {
      *  - Filter out reads below a threshold q score
      *  - Filter out mitochondrial reads (if required)
      */
+
+     PREPARE_GENOME.out.fasta | view
+
      FILTER_READS (
         ch_samtools_bam,
         [], // PREPARE_GENOME.out.allowed_regions.collect{it[1]}.ifEmpty([]),
-        [] //PREPARE_GENOME.out.fasta
+        PREPARE_GENOME.out.fasta.collect{it[1]}
     )
     ch_samtools_bam      = FILTER_READS.out.bam
     ch_samtools_bai      = FILTER_READS.out.bai
@@ -165,14 +166,23 @@ workflow {
     ch_samtools_flagstat = FILTER_READS.out.flagstat
     ch_samtools_idxstats = FILTER_READS.out.idxstats
     ch_software_versions = ch_software_versions.mix(FILTER_READS.out.versions)
+    // ch_samtools_bam | view
+    // ch_samtools_bai | view
     
     /*
      * MODULE: Tag reads with cell barcodes and deduplication
      */
-    // Tag reads with cell barcodes and deduplication
-    // TAG_BARCODES_DEDUP (
-    //
-    // )
+    BAM_TAG_DEDUP (
+        ch_samtools_bam, 
+        ch_samtools_bai,
+        EXTRACT_BARCODES.out.valid 
+    )
+    ch_software_versions = ch_software_versions.mix(BAM_TAG_DEDUP.out.versions)
+    ch_dedup_bam         = BAM_TAG_DEDUP.out.bam
+    ch_dedup_bam | view
+
+    BAM_TAG_DEDUP.out.mqc | view
+
 
     // // Run bedtools bam_to_bed
     // // ch_tagged_bam with meta
