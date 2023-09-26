@@ -69,7 +69,6 @@ class TestCli(unittest.TestCase):
         # Init
         params = {"chemistry": "hydrop", 
                   "max_dist": 2,
-                  "print_stats": True,
                   "log_freq": 100,
                   "output_dir": ".",
                   "prefix": ''}
@@ -87,7 +86,7 @@ class TestCli(unittest.TestCase):
         # Assert
         self.assertTrue(result.exit_code == 0)
         mock_barcode_ext.assert_called_once_with(R1_PATH, R2_PATH, CB_PATH, params["chemistry"]) 
-        mock_barcode_ext.return_value.extract_cell_barcodes.assert_called_once_with(params["max_dist"], params["print_stats"], params["log_freq"], params["output_dir"], params["prefix"])
+        mock_barcode_ext.return_value.extract_cell_barcodes.assert_called_once_with(params["max_dist"], False, params["log_freq"], params["output_dir"], params["prefix"])
         
     @mock.patch("carmack.__main__.FastqFilter", autospec=True)
     def test_cli_command_fastq_filter(self, mock_fastq_filter):
@@ -117,9 +116,7 @@ class TestCli(unittest.TestCase):
         """Test duplicate_removal"""
 
         # Init
-        params = {"log_progress": True,
-                  "output_dir": ".",
-                  "dedup": True,
+        params = {"output_dir": ".",
                   "prefix": ''}
         
         # Test
@@ -135,5 +132,5 @@ class TestCli(unittest.TestCase):
         # Assert
         self.assertTrue(result.exit_code == 0)
         mock_duplicate_removal.assert_called_once_with(BAM_PATH, BAI_PATH, BC_VALID_PATH) 
-        mock_duplicate_removal.return_value.tag_and_deduplicate_reads.assert_called_once_with(params["log_progress"], params["output_dir"], params["dedup"], params["prefix"])
+        mock_duplicate_removal.return_value.tag_and_deduplicate_reads.assert_called_once_with(False, params["output_dir"], False, params["prefix"])
     
