@@ -9,9 +9,9 @@ include { BOWTIE2_BUILD          } from '../../modules/nf-core/bowtie2/build/mai
 
 workflow PREPARE_GENOME {
     take:
-    prepare_tool_indices // list: tools to prepare indices for
-    blacklist            // channel: blacklist file or empty channel
-
+    fasta
+    bowtie2
+    
     main:
     ch_versions      = Channel.empty()
     ch_spikein_fasta = Channel.empty()
@@ -19,13 +19,13 @@ workflow PREPARE_GENOME {
     /*
     * Uncompress genome fasta file if required
     */
-    if (params.fasta.endsWith(".gz")) {
-        ch_fasta    = GUNZIP_FASTA ( [ [id:"target_fasta"], params.fasta ] ).gunzip
+    if (fasta.endsWith(".gz")) {
+        ch_fasta    = GUNZIP_FASTA ( [ [id:"target_fasta"], fasta ] ).gunzip
         ch_versions = ch_versions.mix(GUNZIP_FASTA.out.versions)
     } else {
-        ch_fasta = Channel.from( file(params.fasta) ).map { row -> [[id:"spikein_fasta"], row] }
+        ch_fasta = Channel.from( fasta ).map { row -> [[id:"target_fasta"], row ] } // row.baseName
     }
-
+    
     /*
     * Uncompress GTF annotation file
     */
@@ -49,19 +49,18 @@ workflow PREPARE_GENOME {
     ch_bt2_index         = Channel.empty()
     ch_bt2_spikein_index = Channel.empty()
     ch_bt2_versions      = Channel.empty()
-    if ("bowtie2" in prepare_tool_indices) {
-        if (params.bowtie2) {
-            if (params.bowtie2.endsWith(".tar.gz")) {
-                ch_bt2_index = UNTAR ( [ [], params.bowtie2 ] ).untar.map{ row -> [ [id:"target_index"], row[1] ] }
-                ch_versions  = ch_versions.mix(UNTAR.out.versions)
-            } else {
-                ch_bt2_index = [ [id:"target_index"], file(params.bowtie2) ]
-            }
+    if (bowtie2) {
+        if (bowtie2.endsWith(".tar.gz")) {
+            ch_bt2_index = UNTAR ( [ [], bowtie2 ] ).untar.map{ row -> [ [id:"target_index"], row[1] ] }
+            ch_versions  = ch_versions.mix(UNTAR.out.versions)
         } else {
-            ch_bt2_index = BOWTIE2_BUILD ( ch_fasta ).index.map{ row -> [ [id:"target_index"], row[1] ] }
-            ch_versions  = ch_versions.mix(BOWTIE2_BUILD.out.versions)
+            ch_bt2_index = [ [id:"target_index"], file(bowtie2) ]
         }
+    } else {
+        ch_bt2_index = BOWTIE2_BUILD ( ch_fasta ).index.map{ row -> [ [id:"target_index"], row[1] ] }
+        ch_versions  = ch_versions.mix(BOWTIE2_BUILD.out.versions)
     }
+
 
 
     emit:
