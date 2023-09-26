@@ -117,7 +117,7 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
 @click.argument("barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<barcodes>")  
 @click.option("-c","--chemistry", required=True, type=str, help="Chemistry class for barcode extraction")
 @click.option("-d", "--max_dist", required=True, type=int, help="Maximal Hamming distance for barcode extraction")
-@click.option("-s", "--print_stats", required=False, type=bool, default=True, help="Boolean describing whether or not to print summary stats during barcode extraction")
+@click.option("-s", "--print_stats", is_flag=True, default=False, help="Flag describing whether or not to print summary stats during barcode extraction")
 @click.option("-l", "--log_freq", required=False, type=int, default=10000, help="Number of lines after which stats are logged during barcode extraction")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")   
 @click.option("-p", "--prefix", required=False, type=str, default="", show_default=True, help="Prefix for generated files")
@@ -154,9 +154,9 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
 @click.argument("bai", required=True, nargs=1, type=click.Path(exists=True), metavar="<bai>")  
 @click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
-@click.option("-l", "--log_progress", required=False, type=bool, default=True, help="Boolean describing whether or not to log progress during barcode tagging and deduplication")
+@click.option("-l", "--log_progress", is_flag=True, default=False, help="Flag describing whether or not to log progress during barcode tagging and deduplication")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files") 
-@click.option("-d", "--dedup", required=False, type=bool, default=True, show_default=True, help="Boolean describing whether or not to reads should be deduplicated during barcode tagging")
+@click.option("-d", "--dedup", is_flag=True, default=False, help="Flag describing whether or not to reads should be deduplicated during barcode tagging")
 @click.option("-p", "--prefix", required=False, type=str, default="", show_default=True, help="Prefix for generated files")
 def bam_tag_deduplicate(bam, bai, valid_barcodes, log_progress, output_dir, dedup, prefix):
     """
