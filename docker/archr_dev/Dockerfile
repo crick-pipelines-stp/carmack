@@ -52,3 +52,6 @@ RUN mamba install -y -c conda-forge r-seurat
 # Install archr
 RUN R -e 'library(BiocManager); devtools::install_github("GreenleafLab/ArchR", ref="master", repos = BiocManager::repositories())'
 RUN R -e 'library(ArchR); ArchR::installExtraPackages()'
+
+# Set work directory
+RUN R -e "cat('setwd(\'/home/rstudio/mount\')\n', file = '/usr/local/lib/R/etc/Rprofile.site', append = TRUE)"
