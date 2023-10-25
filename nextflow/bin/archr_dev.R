@@ -42,7 +42,7 @@ library(irlba)
 
 # Set the number of threads
 # addArchRThreads(threads = opt$cores) 
-addArchRThreads(threads = 2) 
+addArchRThreads(threads = 1) 
 
 # Set genome
 # addArchRGenome(opt$genome)
@@ -77,7 +77,7 @@ arrow_files
 # rm(arrow_files)
 
 ## Per-cell QC
-# Above command outomatically generates a QualityControl folder with 
+# Above command automatically generates a QualityControl folder with 
 # a Fragment_Size_Distribution.pdf and a TSS_by_Unique_Frags.pdf file
 
 ## Doublet inference (should only be run for droplet-based single-cell chemistries e.g. hydrop)
@@ -88,7 +88,7 @@ doubScores <- addDoubletScores(
   LSIMethod = 1
 )
 
-# Alternative settings suggested to be  more appropriate when you have more homogeneous cells (e.g. one sample)
+# Alternative settings suggested to be more appropriate when you have more homogeneous cells (e.g. one sample)
 # doubScores <- addDoubletScores(
 #   input = arrow_files,
 #   k = 10, #Refers to how many cells near a "pseudo-doublet" to count.
@@ -128,19 +128,40 @@ plotPDF(p1,p2, name = "QC-Sample-FragSizes-TSSProfile.pdf", ArchRProj = proj_car
 
 ## Dimensionality reduction
 ## Iterative Latent Semantic Indexing (LSI)
-# proj_carmack_test_LSI <- addIterativeLSI(
-#   ArchRProj = proj_carmack_test,
-#   useMatrix = "TileMatrix", 
-#   name = "IterativeLSI", 
-#   iterations = 2, 
-#   clusterParams = list( #See Seurat::FindClusters
-#     resolution = c(0.2), 
-#     sampleCells = 10000, 
-#     n.start = 10
-#   ), 
-#   varFeatures = 25000, 
-#   dimsToUse = 1:30
-# )
+dim_reduction_lsi <- addIterativeLSI(
+  ArchRProj = proj_carmack_test,
+  useMatrix = "TileMatrix", 
+  name = "IterativeLSI", 
+  iterations = 2, 
+  clusterParams = list( #See Seurat::FindClusters
+    resolution = c(0.2), 
+    sampleCells = 10000, 
+    n.start = 10
+  ), 
+  varFeatures = 25000, 
+  dimsToUse = 1:30
+)
+# Can add more LSI iterations and start from a lower initial clustering resolution to detect more subtle batch effects.
+# Can additionally reduce the nr of variable features to focus on the most variable features
+# e.g. iterations = 4, resolution = c(0.1, 0.2, 0.4), varFeatures = 15000
+
+# For extremely large datasets, ArchR can estimate the LSI dimensionality reduction with LSI projection.
+# This can be done by setting  
+dim_reduction_lsi <- addIterativeLSI(
+  ArchRProj = proj_carmack_test,
+  useMatrix = "TileMatrix", 
+  name = "IterativeLSI", 
+  iterations = 2, 
+  clusterParams = list( #See Seurat::FindClusters
+    resolution = c(0.2), 
+    sampleCells = 10000, 
+    n.start = 10
+  ), 
+  varFeatures = 25000, 
+  dimsToUse = 1:30,
+  sampleCellsFinal = NULL,
+
+)
 
 ## Clustering
 # proj_carmack_test_cluster <- addClusters(
