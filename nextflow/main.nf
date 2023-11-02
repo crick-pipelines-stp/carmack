@@ -183,6 +183,8 @@ workflow {
 
     BAM_TAG_DEDUP.out.mqc | view
 
+    BAM_TAG_DEDUP.out.tsv | view
+
 
     // // Run bedtools bam_to_bed
     // // ch_tagged_bam with meta

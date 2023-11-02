@@ -10,6 +10,7 @@ process BAM_TAG_DEDUP {
     
     output:
     path "*.tagged.bam" , emit: bam
+    path "*.tsv"        , emit: tsv
     path "*_mqc.log"    , emit: mqc
     path  "versions.yml", emit: versions
 

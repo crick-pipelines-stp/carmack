@@ -20,6 +20,7 @@ class DuplicateRemoval:
 
         # Init
         out_bam = os.path.join(output_dir, prefix + ".tagged.bam")
+        out_tsv = os.path.join(output_dir, prefix + ".tsv")
         unique_ids = set() 
         bc_dict = {}
         line_nr = 0
@@ -46,74 +47,98 @@ class DuplicateRemoval:
         with pysam.AlignmentFile(self.bam, "rb", index_filename=self.bai) as bam_file:
             # Open a new BAM file for writing with the barcode tag added
             with pysam.AlignmentFile(out_bam, "wb", header=bam_file.header) as tagged_bam:
-                # Iterate over each read in the BAM file
-                for read in bam_file:
-                    # Get the read ID
-                    read_id = read.query_name
-                    line_nr += 1
+                with open(out_tsv, mode="w", newline="") as tsv:
+                    # Create tsv file writer object
+                    writer = csv.writer(tsv, delimiter="\t")
 
-                    # Log progress
-                    if log_progress and line_nr % one_perc:
-                        curr_perc = line_nr / valid_bc_count
-                        
-                        if curr_perc > curr_perc_thresh:
-                            logging.info(f"LINES_PROCESSED: {line_nr}")
-                            curr_perc_thresh += 0.1
+                    # Iterate over each read in the BAM file
+                    for read in bam_file:
+                        # Get the read ID
+                        read_id = read.query_name
+                        line_nr += 1
 
-                    # Process each read pair of the bam file
-                    if prev_read is not None and prev_read.query_name == read.query_name:
+                        # Log progress
+                        if log_progress and line_nr % one_perc:
+                            curr_perc = line_nr / valid_bc_count
+                            
+                            if curr_perc > curr_perc_thresh:
+                                logging.info(f"LINES_PROCESSED: {line_nr}")
+                                curr_perc_thresh += 0.1
 
-                        # Get the start and end position 
-                        start = min(read.reference_start, prev_read.reference_start) 
-                        end = start + abs(read.template_length)
+                        # Process each read pair of the bam file
+                        if prev_read is not None and prev_read.query_name == read.query_name:
+                            # Get chromosome
+                            chr = read.reference_name
 
-                        # if the start and end positions are the same, continue on to the next read pair
-                        if start == end:
-                            start_equals_end_count += 1
-                            continue
+                            # If the chromosome is different, continue on to the next read pair
+                            if read.reference_name != prev_read.reference_name:
+                                continue
 
-                        # Check if the read ID is in the valid barcodes dictionary
-                        if read_id in bc_dict:
-                            # Get the barcode 
-                            barcode = bc_dict[read_id]
 
-                            # Tag reads in bam file with the barcode
-                            prev_read.set_tag('BC', barcode)
-                            read.set_tag('BC', barcode)
+                            # Get the start and end position 
+                            start = min(read.reference_start, prev_read.reference_start) 
+                            end = start + abs(read.template_length)
 
-                            if dedup:
-                                # If dedup is True, deduplicate the tagged reads before writing to the output BAM file
-                                read_pair_string = f"{start}-{end}-{barcode}"
+                            # if the start and end positions are the same, continue on to the next read pair
+                            if start == end:
+                                start_equals_end_count += 1
+                                continue
 
-                                # If not in set of unique read_pair ids, mark as unique and write to file with unique read pairs
-                                if read_pair_string not in unique_ids:
-                                    unique_count += 1
+                            # Check if the read ID is in the valid barcodes dictionary
+                            if read_id in bc_dict:
+                                # Get the barcode 
+                                barcode = bc_dict[read_id]
 
-                                    # Add the read_id and q-score to the dictionary
-                                    unique_ids.add(read_pair_string)
+                                # Tag reads in bam file with the barcode
+                                prev_read.set_tag('BC', barcode)
+                                read.set_tag('BC', barcode)
 
-                                    # Set custom is_duplicate tag to False
-                                    prev_read.set_tag("DU", False)
-                                    read.set_tag("DU", False)
+                                if dedup:
+                                    # If dedup is True, deduplicate the tagged reads before writing to the output BAM file
+                                    read_pair_string = f"{start}-{end}-{barcode}"
 
-                                    # Write to file containing only unique read pairs
+                                    # If not in set of unique read_pair ids, mark as unique and write to file with unique read pairs
+                                    if read_pair_string not in unique_ids:
+                                        unique_count += 1
+
+                                        # Add the read_id and q-score to the dictionary
+                                        unique_ids.add(read_pair_string)
+
+                                        # Set custom is_duplicate tag to False
+                                        prev_read.set_tag("DU", False)
+                                        read.set_tag("DU", False)
+
+                                        # Write to bam file containing only unique read pairs
+                                        tagged_bam.write(prev_read)
+                                        tagged_bam.write(read)
+
+                                        # Write to tsv file
+                                        # Use string formatting to ensure fixed column widths
+                                        # formatted_row = "{:<5}\t{:<10}\t{:<10}\t{}".format(chr, start, end, barcode)
+                                        # tsv.write([chr, start, end, barcode])
+                                        writer.writerow([chr, start, end, barcode])
+                                        
+                                    # If in set of unique read_pair ids, don't write to file as it is a duplicate read pair 
+                                    else:
+                                        duplicate_count += 1
+                                        
+                                else:
+                                    # If dedup is False, write the tagged reads to the output BAM file without prior deduplication
                                     tagged_bam.write(prev_read)
                                     tagged_bam.write(read)
 
-                                # If in set of unique read_pair ids, don't write to file as it is a duplicate read pair 
-                                else:
-                                    duplicate_count += 1
-                                    
+                                    # Write to tsv file
+                                    # formatted_row = "{:<10}\t{:<15}\t{:<15}\t{}".format(chr, start, end, barcode)
+                                    # tsv.write(formatted_row)
+                                    # writer.writerow([formatted_row])
+                                    # writer.writerow([chr, start, end, barcode])
+                                    writer.writerow([chr, start, end, barcode])
+
                             else:
-                                # If dedup is False, write the tagged reads to the output BAM file without prior deduplication
-                                tagged_bam.write(prev_read)
-                                tagged_bam.write(read)
+                                log.error(f"read ID: {read_id} not in valid barcode dictionary!")
 
-                        else:
-                            log.error(f"read ID: {read_id} not in valid barcode dictionary!")
-
-                    prev_read = read
-        
+                        prev_read = read
+            
         if dedup:
             logging.info(f"Finished barcode tagging and deduplication!")
         else: 
