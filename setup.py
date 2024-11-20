@@ -25,6 +25,9 @@ setup(
     python_requires=">=3.10",
     install_requires=required,
     packages=find_packages(exclude="docs"),
-    include_package_data=True,
     zip_safe=False,
+    include_package_data=True,
+    package_data={
+        'carmack': ['data/*']
+    }
 )

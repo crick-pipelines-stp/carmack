@@ -4,3 +4,4 @@ rich-click
 rich
 numpy
 pandas
+pysam

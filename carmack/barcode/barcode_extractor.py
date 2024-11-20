@@ -90,11 +90,7 @@ class BarcodeExtractor:
         quality values of the bases at the changed positions. Automatically will target N's in a sequence as letters
         which must be changed. If there are more N's than allowed changes - we return nothing
         """
-        # pstats.f8 = BarcodeExtractor.f8_alt
         
-        # prof = profile.Profile()
-        # prof.enable()
-        # Init
         new_seq = set()
 
         # Find all index positions which are not N in seq as a list
@@ -108,20 +104,10 @@ class BarcodeExtractor:
 
         # If this is too far away then we just return nothing
         if mindist > maxdist:
-            # prof.disable()
-            # print('Done!')
-            # # print profiling output
-            # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
-            # stats.print_stats() 
             return [], 0
 
         # If the input sequence is in the barcode set, include the seq and qs in the output
         if seq in barcode_set:
-            # prof.disable()
-            # print('Done!')
-            # # print profiling output
-            # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
-            # stats.print_stats() 
             yield seq, 0
 
         # Combinations are generated in batches by changing n number of indices in the sequence, then n+1 and so on
@@ -151,11 +137,6 @@ class BarcodeExtractor:
                 
                     # If the new sequence is in the whitelist, sum the QS scores for the changed sequences and return 
                     if new_seq in barcode_set:
-                        # prof.disable()
-                        # print('Done!')
-                        # # print profiling output
-                        # stats = pstats.Stats(prof).strip_dirs().sort_stats("tottime")
-                        # stats.print_stats() 
                         yield new_seq, error_probs_sum
 
     @staticmethod
@@ -389,7 +370,7 @@ class BarcodeExtractor:
         logging.info(f"FAIL_SPC_NOTFND_FRACT: {round(stats_dict['fail_spc_notfnd_fraction'], 3)}, FAIL_INDL_FRACT: {round(stats_dict['fail_corr_indl_fraction'], 3)}, FAIL_CORR_BASE_SUB_FRACT: {round(stats_dict['fail_corr_base_sub_fraction'], 3)}")
         logging.info(f"FRACT_TOP10_BCS: {np.round(stats_dict['top_10_fractions'], 4)}")
 
-    def __extract_cell_barcodes(self, max_corrections, count, output_dir, prefix):
+    def __extract_cell_barcodes(self, max_corrections, print_stats, log_freq, output_dir, prefix):
         """Given a FASTQ file containing cell barcodes, extract the corrected cell barcodes.
         Write output to separate files containing all barcodes, all matched barcodes, and stats
         for downstream visualisation.
@@ -430,7 +411,7 @@ class BarcodeExtractor:
                     
                     # Stats logging
                     line_index += 1
-                    if line_index % count == 0:
+                    if print_stats and line_index % log_freq == 0:
                         # Calculate stats
                         stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
 
@@ -452,8 +433,8 @@ class BarcodeExtractor:
             for i, (k, v) in enumerate(bc_dict.items()):
                 bc_counts_file.write(f"{k},{str(v)}\n")
     
-    def extract_cell_barcodes(self, max_corrections, count, output_dir, prefix=None):
+    def extract_cell_barcodes(self, max_corrections, print_stats, log_freq, output_dir, prefix=None):
         if prefix == None:
             prefix = self.read1.rsplit("/", 1)[-1].split(".", 1)[0]
 
-        self.__extract_cell_barcodes(max_corrections, count, output_dir, prefix)
+        self.__extract_cell_barcodes(max_corrections, print_stats, log_freq, output_dir, prefix)
