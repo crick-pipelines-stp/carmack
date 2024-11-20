@@ -7,7 +7,7 @@ from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.io.fastq_file import FastqFile
 
-from ..utils import with_temporary_folder
+from tests.utils import with_temporary_folder
 
 TEST_BC_1 = "TGTAGCAAGT"
 TEST_BC_2 = "TTAGTTGGAC"

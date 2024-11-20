@@ -1,7 +1,7 @@
 import os
 
 from carmack.io.gzip_file import GzipFile
-from ..utils import with_temporary_folder
+from tests.utils import with_temporary_folder
 
 TEST_NAME = "@NB501505:171:H3KMGAFX3:1:21208:17616:17963 1:N:0:AGATCTCGGT"
 

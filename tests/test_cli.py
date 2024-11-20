@@ -16,7 +16,7 @@ BC_VALID_PATH = 'tests/data/bc_valid.csv'
 @mock.patch("carmack.__main__.carmack_cli")
 def test_header(mock_cli, capsys):
     """Test running the header function"""
-    
+
     carmack.__main__.run_carmack()
     out, err = capsys.readouterr()  
     # print(err)

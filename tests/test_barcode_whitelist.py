@@ -13,4 +13,3 @@ def test_load_barcode_whitelist(self):
         break
 
     self.assertEqual(len(whitelist), 96)
-
