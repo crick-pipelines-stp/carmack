@@ -137,14 +137,14 @@ def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_sta
 @click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
 @click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")  
 @click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
-@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")   
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default="", show_default=True, help="Prefix for generated files")
 def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
     """
     Filter fastq files for reads containing valid barcodes.
 
-    The total set of cell barcodes and valid cell barcodes are saved to separate files in the output directory. 
-    Additional files containing barcode stats and counts are also saved to the output directory. 
+    The total set of cell barcodes and valid cell barcodes are saved to separate files in the output directory.
+    Additional files containing barcode stats and counts are also saved to the output directory.
     """
 
     fastq_filter = FastqFilter(read1, read2)

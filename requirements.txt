@@ -1,7 +1,0 @@
-importlib_metadata
-click
-rich-click
-rich
-numpy
-pandas
-pysam

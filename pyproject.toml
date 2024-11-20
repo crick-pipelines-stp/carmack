@@ -1,22 +1,123 @@
-[build-system]
-build-backend = "setuptools.build_meta"
-requires = [
-    "setuptools>=40.6.0",
-    "wheel"
+[project]
+name="carmack"
+version = "0.0.0" # Dynamically updated
+requires-python = ">=3.12"
+description = "Single-cell multiomic tools"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { file = "LICENSE" }
+keywords = []
+authors = [
+    { name = "Chris Cheshire", email = "chris.cheshire@crick.ac.uk" }
+]
+dependencies = [
+    "click",
+    "rich-click",
+    "rich",
+    "numpy",
+    "pandas",
+    "pysam",
+]
+scripts = { "carmack" = "asf_tools.__main__:run_carmack" }
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "pylint",
+    "ruff"
+]
+tests = [
+    "pytest",
+    "pytest-cov",
+    "pytest-sugar",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+exclude = [
+    "docs",
+    "prof",
+    "prototype",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".*",
+    "*.egg",
+    ".github",
+    "__pycache__",
+    "build",
+    "dist",
+    "prof",
+    "data",
+    "docs",
 ]
 
 [tool.black]
-line-length = 120
-target_version = ["py37", "py38", "py39", "py310"]
-
-[tool.pytest.ini_options]
-markers = [
-    "datafiles: load datafiles"
-]
-testpaths = ["tests"]
-norecursedirs = [ ".*", "build", "dist", "*.egg", "data", "__pycache__", ".github", "carmack", "docs"]
+line-length = 150
+target-version = ["py311"]
+exclude = '''
+    carmack/__main__.py
+    | .tox
+    |  build
+    |  prototype
+'''
 
 [tool.isort]
+skip = [
+    "prototype",
+    "build",
+    ".tox"
+]
 profile = "black"
-known_first_party = ["carmack"]
-multi_line_output = 3
+atomic = true
+indent = 4
+line_length = 150
+lines_after_imports = 2
+include_trailing_comma = true
+
+[tool.pylint.FORMAT]
+max-line-length = 150
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+    "E0401", # import-errorß
+    "R0913", # too-many-arguments
+    "R0903", # too-few-public-methods
+    "R0904", # too-many-public-methods
+    "R0914", # too-many-locals
+    "R0912", # too-many-branches
+    "R0801", # duplicate-code
+    "R0902", # too-many-instance-attributes
+    "R0917", # too-many-positional-arguments
+    "R1710", # inconsistent-return-statements
+    "W1203", # logging-fstring-interpolation
+    "W0102", # dangerous-default-value
+]
+
+[tool.pylint.MASTER]
+ignore-paths = [
+    "prototype",
+    "build",
+    ".tox"
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 150
+exclude = [
+    "prototype",
+    "build",
+    ".tox"
+]
+
+[tool.cython-lint]
+max-line-length = 150
+
+[tool.coverage.run]
+omit = [
+    "carmack/__main__.py",
+]

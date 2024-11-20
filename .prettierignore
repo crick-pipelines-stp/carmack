@@ -1,5 +1,0 @@
-.mypy_cache
-.pytest_cache
-pipeline_tools.egg-info
-.dmypy.json
-tests

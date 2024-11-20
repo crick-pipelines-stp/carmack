@@ -1,29 +1,18 @@
-FROM python:3.10
+FROM python:3.12
+LABEL authors="chris.cheshire@crick.ac.uk"
 
-# Install APT
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        procps
+# Update pip to latest version
+RUN python -m pip install --upgrade pip
 
-# Install pip
-RUN pip install --upgrade pip
+# Add thesource files to the image
+COPY . /usr/src/carmack
+WORKDIR /usr/src/carmack
 
-# Build app folder
-RUN mkdir -p /app
-WORKDIR /app
-ENV PATH /app:$PATH
+# Update version
+RUN pip install toml
+RUN python update_version.py
 
-# Copy the app folder
-COPY . /app
+# Install program
+RUN pip install .
 
-# Install the lib
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -e .
-
-# Build work folder
-RUN mkdir /home/work
-WORKDIR /home/work
-
-# Disable autorun
-CMD ["/bin/bash"]
+CMD ["bash"]
