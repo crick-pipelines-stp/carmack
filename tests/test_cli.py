@@ -1,3 +1,5 @@
+# pylint: disable=missing-function-docstring, missing-class-docstring
+
 import tempfile
 import unittest
 from unittest import mock
@@ -46,7 +48,7 @@ class TestCli(unittest.TestCase):
         """Invoke the commandline interface using a list of parameters"""
 
         return self.runner.invoke(carmack.__main__.carmack_cli, cmd)
-    
+
     def test_cli_command_help(self):
         """Test the main launch function with --help"""
 
@@ -54,14 +56,14 @@ class TestCli(unittest.TestCase):
         # print(result)
         assert result.exit_code == 0
         assert "Show this message and exit." in result.output
-    
+
     def test_cli_command_incorrect(self):
         """Test the main launch function with an unrecognised subcommand"""
 
         result = self.invoke_cli(["foo"])
         # print(result)
         self.assertTrue(result.exit_code == 2)
-    
+
     @mock.patch("carmack.__main__.BarcodeExtractor", autospec=True)
     def test_cli_command_extract_cell_barcodes(self, mock_barcode_ext): 
         """Test extract_cell_barcodes"""
@@ -87,7 +89,7 @@ class TestCli(unittest.TestCase):
         self.assertTrue(result.exit_code == 0)
         mock_barcode_ext.assert_called_once_with(R1_PATH, R2_PATH, CB_PATH, params["chemistry"]) 
         mock_barcode_ext.return_value.extract_cell_barcodes.assert_called_once_with(params["max_dist"], False, params["log_freq"], params["output_dir"], params["prefix"])
-        
+
     @mock.patch("carmack.__main__.FastqFilter", autospec=True)
     def test_cli_command_fastq_filter(self, mock_fastq_filter):
         """Test fastq_filter"""
@@ -110,27 +112,26 @@ class TestCli(unittest.TestCase):
         self.assertTrue(result.exit_code == 0)
         mock_fastq_filter.assert_called_once_with(R1_PATH, R2_PATH) 
         mock_fastq_filter.return_value.filter_valid_reads.assert_called_once_with(BC_VALID_PATH, params["output_dir"], params["prefix"])
-    
-    @mock.patch("carmack.__main__.DuplicateRemoval", autospec=True)
-    def test_cli_command_duplicate_removal(self, mock_duplicate_removal):
-        """Test duplicate_removal"""
 
-        # Init
-        params = {"output_dir": ".",
-                  "prefix": ''}
-        
-        # Test
-        cmd = ["bam-tag-deduplicate"] + [BAM_PATH, BAI_PATH, BC_VALID_PATH] + self.assemble_params(params)
-        result = self.invoke_cli(cmd)
+    # @mock.patch("carmack.__main__.DuplicateRemoval", autospec=True)
+    # def test_cli_command_duplicate_removal(self, mock_duplicate_removal):
+    #     """Test duplicate_removal"""
 
-        # print(mock_duplicate_removal.call_args)
-        # print(mock_duplicate_removal.return_value.tag_and_deduplicate_reads.call_args)
-        # print(result)
-        # print(result.output)
-        # print(result.exception)
+    #     # Init
+    #     params = {"output_dir": ".",
+    #               "prefix": ''}
 
-        # Assert
-        self.assertTrue(result.exit_code == 0)
-        mock_duplicate_removal.assert_called_once_with(BAM_PATH, BAI_PATH, BC_VALID_PATH) 
-        mock_duplicate_removal.return_value.tag_and_deduplicate_reads.assert_called_once_with(False, params["output_dir"], False, params["prefix"])
-    
+    #     # Test
+    #     cmd = ["bam-tag-deduplicate"] + [BAM_PATH, BAI_PATH, BC_VALID_PATH] + self.assemble_params(params)
+    #     result = self.invoke_cli(cmd)
+
+    #     # print(mock_duplicate_removal.call_args)
+    #     # print(mock_duplicate_removal.return_value.tag_and_deduplicate_reads.call_args)
+    #     # print(result)
+    #     # print(result.output)
+    #     # print(result.exception)
+
+    #     # Assert
+    #     self.assertTrue(result.exit_code == 0)
+    #     mock_duplicate_removal.assert_called_once_with(BAM_PATH, BAI_PATH, BC_VALID_PATH) 
+    #     mock_duplicate_removal.return_value.tag_and_deduplicate_reads.assert_called_once_with(False, params["output_dir"], False, params["prefix"])

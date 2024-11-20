@@ -7,7 +7,7 @@ import numpy as np
 
 class ChemistryBase(ABC):
     """Base class for chemistry objects."""
- 
+
     def __init__(self):
         super().__init__()
 
@@ -30,4 +30,3 @@ class ChemistryBase(ABC):
     def subset_barcode_chunks(self, seq: str, qs: np.ndarray) -> list:
         """Subset barcodes locations from sequence for given chemistry."""
         pass
-

@@ -79,7 +79,7 @@ class BarcodeExtractor:
 
         self.bc_dist = bc_dist
         return self.bc_counts
-    
+
     @staticmethod
     def f8_alt(x):
         return "%14.9f" % x
@@ -90,7 +90,7 @@ class BarcodeExtractor:
         quality values of the bases at the changed positions. Automatically will target N's in a sequence as letters
         which must be changed. If there are more N's than allowed changes - we return nothing
         """
-        
+
         new_seq = set()
 
         # Find all index positions which are not N in seq as a list
@@ -125,7 +125,8 @@ class BarcodeExtractor:
 
                 # Convert the set to a list of indices for subsetting the qs scores (ignore the empty list at the beggining)                
                 indices_list = np.array(list(indices))
-                if len(indices_list) == 0: continue
+                if len(indices_list) == 0:
+                    continue
 
                 # Subset the quality scores for the indices we are changing and sum them
                 error_probs = qs[indices_list]
@@ -134,7 +135,7 @@ class BarcodeExtractor:
                 # Generate possible base substitutions from the indice positions using the minus alphabet
                 for substitutions in itertools.product(*[ALPHABET_MINUS[base] if i in indices else base for i, base in enumerate(seq)]):
                     new_seq = ''.join(substitutions)
-                
+
                     # If the new sequence is in the whitelist, sum the QS scores for the changed sequences and return 
                     if new_seq in barcode_set:
                         yield new_seq, error_probs_sum
@@ -162,8 +163,8 @@ class BarcodeExtractor:
         if seq_len == target_len:
             return [seq],[qs]
         
-        # Return if absolute difference between seq and   
-        # target length is larger than max_corrections 
+        # Return if absolute difference between seq and
+        # target length is larger than max_corrections
         diff =  seq_len - target_len
         if abs(diff) > maxdist:
             return [], []
@@ -294,7 +295,7 @@ class BarcodeExtractor:
         msg = f"{msg}|{sub_msg}" 
 
         corr_chunks = []
-        if bc_chunks is not None:        
+        if bc_chunks is not None:
             # For each barcode chunk, correct
             for idx, bc_chunk in enumerate(bc_chunks):
                 # Logging

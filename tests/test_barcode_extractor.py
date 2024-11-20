@@ -1,3 +1,5 @@
+# pylint: disable=missing-function-docstring, missing-class-docstring
+
 import os
 import pytest
 import numpy as np
@@ -14,7 +16,7 @@ R1_PATH = 'tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz'
 R2_PATH = 'tests/data/hydrop_scatac_1_S1_R3_001.fastq.gz'
 CB_PATH = 'tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz'
 
-class TestBarcodeExtractor():
+class TestBarcodeExtractor(unittest.TestCase):
     # ------------------------------------------------------------------------------ #
     # calc_raw_barcode_match_counts
     # ------------------------------------------------------------------------------ #
@@ -23,21 +25,21 @@ class TestBarcodeExtractor():
     def test_bcext_calc_raw_barcode_match_counts_hydrop(self, temp_path):
         """Test calculation of raw barcode match counts."""
 
+        # Setup
         expected_hash = '21f54e9372a0b5b304064cb88cff39f6'
-
-        # Init
         test_file = os.path.join(temp_path, 'barcode_counts.txt')
         barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
 
+        # Test
         bc_counts = barcode_ext.calc_raw_barcode_match_counts()
-        # print(bc_counts)
 
+        # Assert
         with open(test_file, 'w') as out_file:
             for bc_count_set in bc_counts:
-                    sorted_bc_set = sorted(bc_count_set) 
-                    for bc in sorted_bc_set:
-                        line = bc + '-' + str(bc_count_set[bc])
-                        out_file.write(line + '\n')
+                sorted_bc_set = sorted(bc_count_set)
+                for bc in sorted_bc_set:
+                    line = bc + '-' + str(bc_count_set[bc])
+                    out_file.write(line + '\n')
 
         utils.validate_file_md5(test_file, expected_hash)
 
@@ -45,68 +47,144 @@ class TestBarcodeExtractor():
     def test_bcext_calc_raw_barcode_match_distribution_hydrop(self, temp_path):
         """Test calculation of raw barcode match distribution."""
 
+        # Setup
         expected_hash = '3b2ee579aaa8e472c635cfc04e6cdeca'
-
-        # Init
         test_file = os.path.join(temp_path, 'barcode_dist.txt')
         barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
 
-        # Calc distribution
+        # Test
         bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
+        # Assert
         with open(test_file, 'w') as out_file:
             for bc_count_set in bc_dist:
-                    sorted_bc_set = sorted(bc_count_set) 
-                    for bc in sorted_bc_set:
-                        line = bc + '-' + str(bc_count_set[bc])
-                        out_file.write(line + '\n')
+                sorted_bc_set = sorted(bc_count_set)
+                for bc in sorted_bc_set:
+                    line = bc + '-' + str(bc_count_set[bc])
+                    out_file.write(line + '\n')
 
         utils.validate_file_md5(test_file, expected_hash)
+
+    @with_temporary_folder
+    def test_bcext_extract_cell_barcodes_md5(self, temp_path):
+        """Test cell barcode extraction"""
+
+        expected_hash_file_all = '880f4312a753e63d9d8a81f1e7010f6a'
+        expected_hash_file_valid = '55a3edbc0adf3a4552f9cdf5cfaeeb4d'
+        expected_hash_file_bc_stats = '78bbdffef6690227bd8bc28b95646480'
+        expected_hash_file_bc_counts = 'b49cdb0ad6b3fc4178a10f4e75e8b4be'
+
+        # Init
+        max_corrections = 2
+        log_freq = 100
+        prefix = ''
+        print_stats = True
+        test_file_all = os.path.join(temp_path, prefix + '.bc_all.csv')
+        test_file_valid = os.path.join(temp_path, prefix +'.bc_valid.csv')
+        test_file_bc_stats = os.path.join(temp_path, prefix + '.bc_counts_stats.csv')
+        test_file_bc_counts = os.path.join(temp_path, prefix + '.bc_counts.csv')
+        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+
+        # Run extract_cell_barcodes
+        barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path, prefix)
+
+        # Check md5
+        utils.validate_file_md5(test_file_all, expected_hash_file_all)
+        utils.validate_file_md5(test_file_valid, expected_hash_file_valid)
+        utils.validate_file_md5(test_file_bc_stats, expected_hash_file_bc_stats)
+        utils.validate_file_md5(test_file_bc_counts, expected_hash_file_bc_counts)
+
+    @with_temporary_folder
+    def test_bcext_extract_cell_barcodes_prefix(self, temp_path):
+        """Test barcode extraction using either no or a user-specified prefix"""
+        # Init
+        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+        max_corrections = 2
+        log_freq = 100
+        print_stats = True
+
+        # Run extract_cell_barcodes
+        barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path, prefix='hydrop_scatac_1_S2_R2_001')
+
+        # Get files
+        files = os.listdir(temp_path)
+
+        # assert prefix in all filenames
+        assert all('hydrop_scatac_1_S2_R2_001' in filename for filename in files)
+
+    @with_temporary_folder
+    def test_bcext_extract_cell_barcodes_no_prefix(self, temp_path):
+        """Test barcode extraction using either no or a user-specified prefix"""
+        # Init
+        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+        max_corrections = 2
+        log_freq = 100
+        print_stats = True
+
+        # Run extract_cell_barcodes
+        barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path)
+
+        # Get files
+        files = os.listdir(temp_path)
+        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
+        prefix = barcode_ext.read1.rsplit("/", 1)[-1].split(".", 1)[0]
+
+        # assert prefix in all filenames
+        assert all(prefix in filename for filename in files)
+
+
+class TestBarcodeExtractorFixtures():
 
     # ------------------------------------------------------------------------------ #
     # gen_nearby_seqs
     # ------------------------------------------------------------------------------ #
 
-    # TODO: GEN BARCODE SET ONLY ONCE
-
     @pytest.mark.parametrize("maxdist,seq", [(1, 'TGTAGCAAGN'), (2, 'TGTAGCAAGN'), (3, 'TGTAGCAANN'), (4, 'TGTANCANNN'), (4, 'NGTAGCANNN')])
     def test_bcext_gen_nearby_seqs_withn(self, maxdist, seq):
         """Test generation of nearby sequences."""
 
-        # Init
+        # Setup
         qs = np.full(len(seq), 30)
         chemistry = ChemistryFactory.get_chemistry('hydrop')
         barcode_sets = chemistry.load_barcode_set()
 
-        # Generate nearby sequences
-        seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+        # Test
+        seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))  # pylint: disable=unused-variable
+
+        # Assert
+        assert len(seqs) == 1
+
 
     @pytest.mark.parametrize("maxdist", [1, 2])
     @pytest.mark.parametrize("seq", ['AGTTNNN', 'AGCTNNNNNNN', 'AGCTNNNN', 'AGCTNNN', 'AGCTNNNN'])
     def test_bcext_gen_nearby_seqs_withn_none(self, maxdist, seq):
         """Test generation of nearby sequences."""
 
-        # Init
+        # Setup
         qs = np.full(len(seq), 30)
         chemistry = ChemistryFactory.get_chemistry('hydrop')
         barcode_sets = chemistry.load_barcode_set()
 
-        # Generate nearby sequences
+        # Test
         nearby_seqs = list(BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
 
+        # Assert
         assert len(nearby_seqs) == 0
 
-    @pytest.mark.parametrize("maxdist,seq", [(1, 'TGTAGCAAGC'), (3, 'TGTAGCAAGG'), (5, 'TGTAGCAAGC'), (4, 'AGCTGGCCGG')])
-    def test_bcext_gen_nearby_seqs_no_n(self, maxdist, seq):
+    @pytest.mark.parametrize("maxdist,seq,exp", [(1, 'TGTAGCAAGC', 1), (3, 'TGTAGCAAGG', 1), (5, 'TGTAGCAAGC', 12), (4, 'AGCTGGCCGG', 2)])
+    def test_bcext_gen_nearby_seqs_no_n(self, maxdist, seq, exp):
         """Test generation of nearby sequences."""
 
-        # Init
+        # Setup
         qs = np.full(len(seq), 30)
         chemistry = ChemistryFactory.get_chemistry('hydrop')
         barcode_sets = chemistry.load_barcode_set()
 
-        # Generate nearby sequences
-        seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+        # Test
+        seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))  # pylint: disable=unused-variable
+
+        # Assert
+        assert len(seqs) == exp
 
     @pytest.mark.parametrize("maxdist,seq,expected", [(1, 'TGTAGCAAGN', 1), (3, 'TGTAGCAAGN', 1), (5, 'TGTAGCAAGN', 7), (5, 'TGTAGCAANN', 5), (5, 'TGTANCAANN', 3)])
     def test_bcext_gen_nearby_seqs_expected(self, maxdist, seq, expected):
@@ -118,21 +196,19 @@ class TestBarcodeExtractor():
         barcode_sets = chemistry.load_barcode_set()
 
         # Generate nearby sequences
-        seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))
+        seqs, error = zip(*BarcodeExtractor.gen_nearby_seqs(seq, qs, barcode_sets[0], maxdist))  # pylint: disable=unused-variable
 
         for seq in list(seqs):
             assert seq in barcode_sets[0]
-        
+
         assert len(seqs) == expected
-        
+
     # ------------------------------------------------------------------------------ #
     # gen_indel_set
     # ------------------------------------------------------------------------------ #
 
-    @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGN', 10, 0), 
-                                                        ('NNTAGCAAGC', 10, 0), 
-                                                        ('NNTAGCAAGC', 8, 0)])
-    def test_bcext_gen_indel_set_n_in_seq(self, seq, target_len, expected):
+    @pytest.mark.parametrize("seq,target_len", [('TGTAGCAAGN', 10), ('NNTAGCAAGC', 10), ('NNTAGCAAGC', 8)])
+    def test_bcext_gen_indel_set_n_in_seq(self, seq, target_len):
         """Test generation of indel sets with N in input sequence raises a ValueError."""
         with pytest.raises(ValueError):
 
@@ -140,10 +216,10 @@ class TestBarcodeExtractor():
             qs = np.full(len(seq), 30)
 
             # Generate indels
-            seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)        
+            seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)  # pylint: disable=unused-variable
 
-    @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGC', 10, 1), 
-                                                        ('TGTAGCAAGCG', 11, 1), 
+    @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAAGC', 10, 1),
+                                                        ('TGTAGCAAGCG', 11, 1),
                                                         ('TGTAGCAAGCGG', 12, 1)])
     def test_bcext_gen_indel_set_correct_length(self, seq, target_len, expected):
         """Test generation of indel sets when input sequence has correct length."""
@@ -153,7 +229,7 @@ class TestBarcodeExtractor():
 
         # Generate indels
         seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)
-            
+
         assert len(seq_set) == expected
         assert len(qs_set) == expected
 
@@ -173,8 +249,8 @@ class TestBarcodeExtractor():
         assert len(seq_set) == expected
         assert len(qs_set) == expected
 
-    @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGCGC', 10, 11), 
-                                                        ('TGTAGCAGCCC', 10, 9), 
+    @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGCGC', 10, 11),
+                                                        ('TGTAGCAGCCC', 10, 9),
                                                         ('TGTAGCAGCGCA', 10, 63),
                                                         ('TGTAGCACGCCCGCGCA', 10, 0)])
     def test_bcext_gen_indel_set_insertions(self, seq, target_len, expected):
@@ -189,8 +265,8 @@ class TestBarcodeExtractor():
         assert len(seq_set) == expected
         assert len(qs_set) == expected
 
-    @pytest.mark.parametrize("seq,target_len", [('TGTAGCAGC', 10), 
-                                                ('TGTAGCAAGC', 11), 
+    @pytest.mark.parametrize("seq,target_len", [('TGTAGCAGC', 10),
+                                                ('TGTAGCAAGC', 11),
                                                 ('TGTAGCAGC', 11)])
     def test_bcext_gen_indel_set_qs_deletions(self, seq, target_len):
         """Test generation of indel sets with high quality score for position N."""
@@ -200,7 +276,7 @@ class TestBarcodeExtractor():
         expected_qs = np.full(target_len, 30)
 
         # Generate indels
-        seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)
+        seq_set, qs_set = BarcodeExtractor.gen_indel_set(seq, qs, target_len, 2)  # pylint: disable=unused-variable
 
         for qs_seq in qs_set:
             assert not all([a == b for a, b in zip(qs_seq, expected_qs)])
@@ -241,7 +317,7 @@ class TestBarcodeExtractor():
         bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
         # Correct barcode
-        corr_seq, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist[0])
+        corr_seq, match_candidates, unnorm_posterior, posterior = BarcodeExtractor.correct_barcode_chunk(seq, np_qs, barcode_sets[0], max_corrections, target_len, bc_dist[0])  # pylint: disable=unused-variable
         # print("")
         # print(match_candidates)
         # print(unnorm_posterior)
@@ -261,7 +337,7 @@ class TestBarcodeExtractor():
     ('CATGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT', 'GAACAGTAGTACGGTGGACTCAGTGTGGAA', 'OK|NIM|SUBSET:INDL|BC1:INDL_11:CORROK|BC2:CORROK|BC3:INDL_9:CORROK'), # Indel but correction ok
     ('TGTCACAACAAGGGTACTCGGTCCAGGCTTGCAGGAGCGGGACTTGTGGCGT', None, 'FAIL|NIM|SUBSET:SPC2_NOTFND'), # Fail because spacer not found
     ('TTGTCCGCCAAGGGTACTCGTATGCAGTAGCTGCGTCAGACAAGTACTCTGC', None, 'FAIL|NIM|SUBSET:INDL|BC1:INDL_17:CORRFAIL|BC2:INDL_3:CORRFAIL|BC3:CORROK') # Fail because too many indels
-    ]) 
+    ])
     def test_bcext_correct_barcode_perm(self, seq, expected_seq, expected_msg):
         """Test correction of whole barcode read"""
         print("")
@@ -353,7 +429,7 @@ class TestBarcodeExtractor():
                 assert corr_bc == expected_corr_bc
                 assert msg == expected_msg
                 break
-            
+
             count = count + 1
 
 
@@ -382,12 +458,12 @@ class TestBarcodeExtractor():
                 out_file.write(line + '\n')
 
                 # print(line)
-            
+
         utils.validate_file_md5(test_file, expected_hash)
 
     @pytest.mark.parametrize("expected_full_match_fraction, expected_corr_match_fraction, expected_fail_match_fraction, expected_fail_spc_notfnd_fraction, expected_fail_corr_indl_fraction, expected_fail_corr_base_sub_fraction, expected_top_10_fractions", [
     (0.8651, 0.0692, 0.0657, 0.6605783866057838, 0.091324200913242, 0.2480974124809741, [0.0088, 0.007 , 0.0065, 0.0058, 0.0055, 0.0034, 0.0029, 0.0028, 0.0026, 0.0025])
-    ]) 
+    ])
     def test_bcext_stats_calc(self, expected_full_match_fraction, expected_corr_match_fraction, expected_fail_match_fraction, expected_fail_spc_notfnd_fraction, expected_fail_corr_indl_fraction, expected_fail_corr_base_sub_fraction, expected_top_10_fractions):
         """Test stats calculation"""
         # Init
@@ -405,7 +481,7 @@ class TestBarcodeExtractor():
         for (name, corr_bc, msg) in barcode_ext.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, 2):
             if corr_bc is None:
                 corr_bc = "NO-MATCH"
-            
+
             # Add to a dictionary of unique barcodes for counting
             if corr_bc in bc_dict:
                 bc_dict[corr_bc] += 1
@@ -430,70 +506,3 @@ class TestBarcodeExtractor():
         assert stats_dict['fail_corr_indl_fraction'] == expected_fail_corr_indl_fraction
         assert stats_dict['fail_corr_base_sub_fraction'] == expected_fail_corr_base_sub_fraction
         assert all([a == b for a, b in zip(stats_dict['top_10_fractions'], expected_top_10_fractions)])
-
-    @with_temporary_folder
-    def test_bcext_extract_cell_barcodes_md5(self, temp_path):
-        """Test cell barcode extraction"""
-
-        expected_hash_file_all = '880f4312a753e63d9d8a81f1e7010f6a'
-        expected_hash_file_valid = '55a3edbc0adf3a4552f9cdf5cfaeeb4d'
-        expected_hash_file_bc_stats = '78bbdffef6690227bd8bc28b95646480'
-        expected_hash_file_bc_counts = 'b49cdb0ad6b3fc4178a10f4e75e8b4be'
-
-        # Init
-        max_corrections = 2
-        log_freq = 100
-        prefix = ''
-        print_stats = True
-        test_file_all = os.path.join(temp_path, prefix + '.bc_all.csv')
-        test_file_valid = os.path.join(temp_path, prefix +'.bc_valid.csv')
-        test_file_bc_stats = os.path.join(temp_path, prefix + '.bc_counts_stats.csv')
-        test_file_bc_counts = os.path.join(temp_path, prefix + '.bc_counts.csv')
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
-
-        # Run extract_cell_barcodes
-        barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path, prefix)
-
-        # Check md5
-        utils.validate_file_md5(test_file_all, expected_hash_file_all)
-        utils.validate_file_md5(test_file_valid, expected_hash_file_valid)
-        utils.validate_file_md5(test_file_bc_stats, expected_hash_file_bc_stats)
-        utils.validate_file_md5(test_file_bc_counts, expected_hash_file_bc_counts)
-
-    @with_temporary_folder
-    def test_bcext_extract_cell_barcodes_prefix(self, temp_path):
-        """Test barcode extraction using either no or a user-specified prefix"""
-        # Init
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
-        max_corrections = 2
-        log_freq = 100
-        print_stats = True
-
-        # Run extract_cell_barcodes
-        barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path, prefix='hydrop_scatac_1_S2_R2_001')
-
-        # Get files
-        files = os.listdir(temp_path)
-
-        # assert prefix in all filenames
-        assert all('hydrop_scatac_1_S2_R2_001' in filename for filename in files)
-
-    @with_temporary_folder
-    def test_bcext_extract_cell_barcodes_no_prefix(self, temp_path):
-        """Test barcode extraction using either no or a user-specified prefix"""
-        # Init
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
-        max_corrections = 2
-        log_freq = 100
-        print_stats = True
-
-        # Run extract_cell_barcodes
-        barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path)
-
-        # Get files
-        files = os.listdir(temp_path)
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, 'hydrop')
-        prefix = barcode_ext.read1.rsplit("/", 1)[-1].split(".", 1)[0]
-
-        # assert prefix in all filenames
-        assert all(prefix in filename for filename in files)

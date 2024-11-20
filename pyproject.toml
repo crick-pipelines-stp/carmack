@@ -17,7 +17,7 @@ dependencies = [
     "pandas",
     "pysam",
 ]
-scripts = { "carmack" = "asf_tools.__main__:run_carmack" }
+scripts = { "carmack" = "carmack.__main__:run_carmack" }
 
 [project.optional-dependencies]
 dev = [
@@ -96,6 +96,7 @@ disable = [
     "R1710", # inconsistent-return-statements
     "W1203", # logging-fstring-interpolation
     "W0102", # dangerous-default-value
+    "W1514", # unspecified-encoding
 ]
 
 [tool.pylint.MASTER]

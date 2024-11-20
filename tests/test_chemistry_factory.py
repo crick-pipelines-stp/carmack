@@ -1,3 +1,5 @@
+# pylint: disable=missing-function-docstring, missing-class-docstring
+
 import unittest
 
 from carmack.chemistry.chemistry_factory import ChemistryFactory

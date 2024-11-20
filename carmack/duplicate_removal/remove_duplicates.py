@@ -21,7 +21,7 @@ class DuplicateRemoval:
         # Init
         out_bam = os.path.join(output_dir, prefix + ".tagged.bam")
         out_tsv = os.path.join(output_dir, prefix + ".tsv")
-        unique_ids = set() 
+        unique_ids = set()
         bc_dict = {}
         line_nr = 0
         start_equals_end_count = 0
@@ -35,10 +35,10 @@ class DuplicateRemoval:
             csv_reader = csv.reader(valid_barcodes)
             for line in csv_reader:
                 valid_bc_count += 1
-                barcode_id = line[0].split(' ', 1)[0] 
+                barcode_id = line[0].split(' ', 1)[0]
                 barcode = line[1]
                 bc_dict[barcode_id] = barcode
-        
+
         # calculate ~1% of total valid barcodes for logging and set initial threshold to 10%
         one_perc = valid_bc_count / 100
         curr_perc_thresh = 0.1
@@ -60,7 +60,7 @@ class DuplicateRemoval:
                         # Log progress
                         if log_progress and line_nr % one_perc:
                             curr_perc = line_nr / valid_bc_count
-                            
+
                             if curr_perc > curr_perc_thresh:
                                 logging.info(f"LINES_PROCESSED: {line_nr}")
                                 curr_perc_thresh += 0.1
@@ -149,4 +149,3 @@ class DuplicateRemoval:
             with open(os.path.join(output_dir, prefix + '.dedup.stats_mqc.log'), "w") as dedup_counts_stats_file: 
                 dedup_counts_stats_file.write('unique_read_count,duplicate_read_count\n')
                 dedup_counts_stats_file.write(f"{unique_count},{duplicate_count}")
-        
