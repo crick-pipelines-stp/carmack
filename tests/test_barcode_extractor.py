@@ -233,8 +233,8 @@ class TestBarcodeExtractorFixtures():
         assert len(seq_set) == expected
         assert len(qs_set) == expected
 
-    @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGC', 10, 10), 
-                                                        ('TGTAGCAAGC', 11, 11), 
+    @pytest.mark.parametrize("seq,target_len,expected", [('TGTAGCAGC', 10, 10),
+                                                        ('TGTAGCAAGC', 11, 11),
                                                         ('TGTAGCAGC', 11, 55),
                                                         ('TGTGC', 10, 0)])
     def test_bcext_gen_indel_set_deletions(self, seq, target_len, expected):
@@ -288,7 +288,7 @@ class TestBarcodeExtractorFixtures():
     @pytest.mark.parametrize("seq, qs, max_corrections, target_len, dist_updates, expected_seq", [
     ('TGTAGCAAGT', [30,30,30,30,30,30,30,30,30,30], 1, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a high quality score - should return the original sequence
     ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 1, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a low quality score - should return the original sequence as the max dist is not high enough to generate other possible barcodes
-    ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a low quality score - should return the original sequence as the prior distribution is weighted to the matched barcode 
+    ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 5, 10, {'TGTAGCAAGT': 1000000}, 'TGTAGCAAGT'), # Sequence matches barcode and has a low quality score - should return the original sequence as the prior distribution is weighted to the matched barcode
     ('TGTAGCAAGT', [10,10,10,10,10,10,10,10,10,10], 5, 10, {'TGAATCCACC': 1000000}, None), # Sequence matches barcode and has a low quality score - should nothing as the qual score is so poor
     ('TGTAGCAAGT', [22,22,22,22,22,22,22,22,22,22], 4, 10, {'CATTGCGAGT': 10000000000, 'TGTAGCAAGT': 0}, 'CATTGCGAGT'), # Sequence matches barcode and has a low quality score - should return the a diff sequence as the prior distribution is weighted to another sequence
     ('TGTAGCAAGTT', [30,30,30,30,30,30,30,30,30,30], 2, 10, {}, 'TGTAGCAAGT'), # Insertion - ends up with 3 copies of the same barcode generated in different ways
@@ -359,7 +359,7 @@ class TestBarcodeExtractorFixtures():
         assert msg == expected_msg
 
     @with_temporary_folder
-    def test_bcext_correct_barcode_md5(self, temp_path):
+    def test_bcext_correct_barcode_md5(self, temp_path=None):
         """Test calculation of raw barcode match distribution."""
 
         expected_hash = '81208771bc217c14628cc59bb886c6fd'
@@ -405,7 +405,7 @@ class TestBarcodeExtractorFixtures():
     ('NB501505:171:H3KMGAFX3:3:21601:7618:10703 2:N:0:CTATAGTCTT', None, 'FAIL|NIM|SUBSET:SPC2_NOTFND', 5), # Fail because spacer not found
     ('NB501505:171:H3KMGAFX3:3:11402:13723:5588 2:N:0:CTATAGTCTT', None, 'FAIL|NIM|SUBSET:INDL|BC1:INDL_11:CORROK|BC2:INDL_9:CORRFAIL|BC3:CORROK', 6), # Correction fail on chunk 3
     ('NB501505:171:H3KMGAFX3:2:21203:12986:2165 2:N:0:CTATAGTCTT', 'TTGCAGTTCTACACGTTGTGAGTTGGAAGA', 'OK|NIM|SUBSET:OK|BC1:CORROK|BC2:CORROK|BC3:CORROK', 13) # No immediate match, but no indels
-    ]) 
+    ])
     def test_bcext_get_corrected_barcode_messages(self, expected_read_name, expected_corr_bc, expected_msg, line):
         """Test barcode messaging"""
         # Init
@@ -434,7 +434,7 @@ class TestBarcodeExtractorFixtures():
 
 
     @with_temporary_folder
-    def test_bcext_get_corrected_barcode_md5(self, temp_path):
+    def test_bcext_get_corrected_barcode_md5(self, temp_path=None):
         """Test barcode correction"""
 
         expected_hash = 'b5a7aa8b036fee4e2dddeb2eee9a45ea'
