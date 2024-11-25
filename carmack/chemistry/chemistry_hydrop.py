@@ -1,6 +1,7 @@
 import os
 import numpy as np
 from importlib.resources import files
+from itertools import product
 
 from .chemistry_base import ChemistryBase
 from ..io.gzip_file import GzipFile
@@ -41,21 +42,19 @@ class ChemistryHydrop(ChemistryBase):
     def construct_whitelist(self, barcode_set):
         whitelist = set()
 
-        for bc1 in barcode_set[0]:
-            for bc2 in barcode_set[1]:
-                for bc3 in barcode_set[2]:
-                    curr_wl = bc1 + bc2 + bc3
-                    whitelist.add(curr_wl)
+        for b_combination in product(*barcode_set):
+            curr_wl = ''.join(b_combination)
+            whitelist.add(curr_wl)
 
         return whitelist
-    
+
     def subset_whitelist_guess(self, seq: str) -> str:
         """Make best guess sequence subset based on standard hydrop chemistry for a whitelist match"""
 
         # Return if seq too short for hydrop chemistry
         if(len(seq) < 50):
             return None
-        
+
         # Subset seq if more than 50 to the left most 50 bases
         if(len(seq) > 50):
             seq = seq[:50]
@@ -77,7 +76,7 @@ class ChemistryHydrop(ChemistryBase):
         # Return nothing if the sequence is too short for hydrop chemistry
         if(len(seq) < 50):
             return None, None, "SUBSET:SEQLEN<50"
-        
+
         # Subset seq if more than 50 to the left most 50 bases
         if(len(seq) > 50):
             seq = seq[:50]
@@ -91,7 +90,7 @@ class ChemistryHydrop(ChemistryBase):
             return None, None, "SUBSET:SPC1_NOTFND"
         if idx_spcr_2 == -1:
             return None, None, "SUBSET:SPC2_NOTFND"
-        
+
         # Set message to indel if detected
         if idx_spcr_1 != 10:
             msg = "SUBSET:INDL"
