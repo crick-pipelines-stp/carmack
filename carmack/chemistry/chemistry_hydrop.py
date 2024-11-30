@@ -42,6 +42,7 @@ class ChemistryHydrop(ChemistryBase):
     def construct_whitelist(self, barcode_set):
         whitelist = set()
 
+        # Create combinations of BC1 + BC2 + BC3
         for b_combination in product(*barcode_set):
             curr_wl = ''.join(b_combination)
             whitelist.add(curr_wl)

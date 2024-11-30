@@ -123,7 +123,7 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
 @click.option("-p", "--prefix", required=False, type=str, default="", show_default=True, help="Prefix for generated files")
 def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_stats, log_freq, output_dir, prefix): 
     """
-    Extracts valid cell barcodes by correcing for indels and sequencing errors, using a specified maximal Hamming distance and barcode chemistry.
+    Extracts valid cell barcodes by correcting for indels and sequencing errors, using a specified maximal Hamming distance and barcode chemistry.
 
     The total set of cell barcodes and valid cell barcodes are saved to separate files in the output directory. 
     Additional files containing barcode stats and counts are also saved to the output directory. 
@@ -163,7 +163,7 @@ def bam_tag_deduplicate(bam, bai, valid_barcodes, log_progress, output_dir, dedu
     Tag reads with barcodes and deduplicate.
 
     The reads are tagged with their corresponding barcodes and written to an output BAM file. 
-    If dedup is set to True, reads are also deduplicated baon the start position, end position and barcode of the read pairs.
+    If dedup is set to True, reads are also deduplicated based on the start position, end position and barcode of the read pairs.
     An additional file containing the number of unique and duplicate read pairs is also saved to the output directory.
     """
 
