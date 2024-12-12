@@ -13,7 +13,7 @@ import rich_click as click
 import carmack
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.fastq_tools.fastq_filter import FastqFilter
-from carmack.duplicate_removal.remove_duplicates import DuplicateRemoval
+from carmack.tag_dedup.tag_dedup import TagDedup
 
 # Set up logging as the root logger
 # Submodules should all traverse back to this
@@ -120,7 +120,7 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
 @click.option("-s", "--print_stats", is_flag=True, default=False, help="Flag describing whether or not to print summary stats during barcode extraction")
 @click.option("-l", "--log_freq", required=False, type=int, default=10000, help="Number of lines after which stats are logged during barcode extraction")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
-@click.option("-p", "--prefix", required=False, type=str, default="", show_default=True, help="Prefix for generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
 def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_stats, log_freq, output_dir, prefix):
     """
     Extracts valid cell barcodes by correcting for indels and sequencing errors, using a specified maximal Hamming distance and barcode chemistry.
@@ -138,7 +138,7 @@ def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_sta
 @click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")
 @click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
-@click.option("-p", "--prefix", required=False, type=str, default="", show_default=True, help="Prefix for generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
 def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
     """
     Filter fastq files for reads containing valid barcodes.
@@ -154,11 +154,10 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
 @click.argument("bai", required=True, nargs=1, type=click.Path(exists=True), metavar="<bai>")
 @click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
-@click.option("-l", "--log_progress", is_flag=True, default=False, help="Flag describing whether or not to log progress during barcode tagging and deduplication")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-d", "--dedup", is_flag=True, default=False, help="Flag describing whether or not to reads should be deduplicated during barcode tagging")
-@click.option("-p", "--prefix", required=False, type=str, default="", show_default=True, help="Prefix for generated files")
-def bam_tag_deduplicate(bam, bai, valid_barcodes, log_progress, output_dir, dedup, prefix):
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
     """
     Tag reads with barcodes and deduplicate.
 
@@ -167,8 +166,11 @@ def bam_tag_deduplicate(bam, bai, valid_barcodes, log_progress, output_dir, dedu
     An additional file containing the number of unique and duplicate read pairs is also saved to the output directory.
     """
 
-    duplicate_rem = DuplicateRemoval(bam, bai, valid_barcodes)
-    duplicate_rem.tag_and_deduplicate_reads(log_progress, output_dir, dedup, prefix)
+    # duplicate_rem = DuplicateRemoval(bam, bai, valid_barcodes)
+    # duplicate_rem.tag_and_deduplicate_reads(log_progress, output_dir, dedup, prefix)
+    tag_dedup = TagDedup(bam, bai, valid_barcodes)
+    tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
+
 
 
 # Main script is being run - launch the CLI
