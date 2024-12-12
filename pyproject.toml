@@ -58,8 +58,8 @@ norecursedirs = [
 ]
 
 [tool.black]
-line-length = 150
-target-version = ["py311"]
+line-length = 99
+target-version = ["py312"]
 exclude = '''
     carmack/__main__.py
     | .tox
@@ -76,12 +76,12 @@ skip = [
 profile = "black"
 atomic = true
 indent = 4
-line_length = 150
+line_length = 99
 lines_after_imports = 2
 include_trailing_comma = true
 
 [tool.pylint.FORMAT]
-max-line-length = 150
+max-line-length = 99
 
 [tool.pylint."MESSAGES CONTROL"]
 disable = [
@@ -108,8 +108,8 @@ ignore-paths = [
 ]
 
 [tool.ruff]
-target-version = "py311"
-line-length = 150
+target-version = "py312"
+line-length = 99
 exclude = [
     "prototype",
     "build",
@@ -117,7 +117,7 @@ exclude = [
 ]
 
 [tool.cython-lint]
-max-line-length = 150
+max-line-length = 99
 
 [tool.coverage.run]
 omit = [
