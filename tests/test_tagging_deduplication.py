@@ -77,14 +77,12 @@ class TestTagDedup:
                 assert read.has_tag("DU")
 
     @pytest.mark.parametrize("bam_path, bai_path, csv_path", zip(BAM_PATHS, BAI_PATHS, CSV_PATHS))
-    def test_tag_dedup(self, tmp_path_factory, bam_path, bai_path, csv_path):
+    def test_tag_dedup(self, tmpdir, bam_path, bai_path, csv_path):
         """
         Tests for the tagging and deduplication.
         """
         # Init
-        tmpdir = tmp_path_factory.mktemp(self._get_prefix(bam_path))
         files = self._get_files(tmpdir, bam_path)
-
         unique_counter = {"bam_tagged": 0, "bam_dedup": 0, "mqc_log": 0}
 
         ## Load barcodes
