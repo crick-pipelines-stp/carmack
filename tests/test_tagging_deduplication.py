@@ -7,17 +7,15 @@ from carmack.tag_dedup.tag_dedup import TagDedup
 
 BAM_PATHS = [
     "tests/data/hydrop_scatac_1_S1_R1.sorted.bam",
-    "tests/data/hydrop_scatac_1_S1_R1_dup.sorted.bam"
+    "tests/data/hydrop_scatac_1_S1_R1_dup.sorted.bam",
 ]
 BAI_PATHS = [
     "tests/data/hydrop_scatac_1_S1_R1.sorted.bam.bai",
-    "tests/data/hydrop_scatac_1_S1_R1_dup.sorted.bam.bai"
+    "tests/data/hydrop_scatac_1_S1_R1_dup.sorted.bam.bai",
 ]
-CSV_PATHS = [
-    "tests/data/bc_valid.csv",
-    "tests/data/bc_valid_dup.csv"
-]
-CUSTOM_INDEX = 1 # Easier to run tests on the custom files (much smaller)
+CSV_PATHS = ["tests/data/bc_valid.csv", "tests/data/bc_valid_dup.csv"]
+CUSTOM_INDEX = 1  # Easier to run tests on the custom files (much smaller)
+
 
 class TestTagDedup:
     def _get_prefix(self, path):
@@ -36,11 +34,11 @@ class TestTagDedup:
             "bai_tagged_file": os.path.join(out_dir, prefix + ".tagged.bam.bai"),
             "bam_dedup_file": os.path.join(out_dir, prefix + ".dedup.tagged.bam"),
             "bai_dedup_file": os.path.join(out_dir, prefix + ".dedup.tagged.bam.bai"),
-            "multiqc_log": os.path.join(out_dir, prefix + ".dedup.stats_mqc.log")
+            "multiqc_log": os.path.join(out_dir, prefix + ".dedup.stats_mqc.log"),
         }
         return file_paths
 
-    def _check_output(self, file_dict, dedup = True):
+    def _check_output(self, file_dict, dedup=True):
         """
         Assert statements to check for the presence of output files.
         """
@@ -50,7 +48,6 @@ class TestTagDedup:
             assert os.path.exists(file_dict["bam_dedup_file"])
             assert os.path.exists(file_dict["bai_dedup_file"])
             assert os.path.exists(file_dict["multiqc_log"])
-
 
     def test_tag_only(self, tmpdir):
         """
@@ -86,9 +83,9 @@ class TestTagDedup:
         unique_counter = {"bam_tagged": 0, "bam_dedup": 0, "mqc_log": 0}
 
         ## Load barcodes
-        with open(csv_path, 'r') as valid_barcodes:
+        with open(csv_path, "r") as valid_barcodes:
             csv_reader = csv.reader(valid_barcodes)
-            bc_dict = {line[0].split(' ', 1)[0]: line[1] for line in csv_reader}
+            bc_dict = {line[0].split(" ", 1)[0]: line[1] for line in csv_reader}
 
         # Work
         tag_dedup = TagDedup(bam_path, bai_path, csv_path)

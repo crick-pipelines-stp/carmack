@@ -20,8 +20,10 @@ class TagDedup:
         self.bai = bai
         self.bc_valid_csv = bc_valid_csv
 
-        log.debug(f"TagDedup object created with BAM: {bam}, BAI: {bai},"
-                f" and valid barcodes CSV: {bc_valid_csv}")
+        log.debug(
+            f"TagDedup object created with BAM: {bam}, BAI: {bai},"
+            f" and valid barcodes CSV: {bc_valid_csv}"
+        )
 
     def _progressbar(self, alignment_file: pysam.AlignmentFile, **kwargs):
         """
@@ -29,24 +31,23 @@ class TagDedup:
         """
         return tqdm(
             alignment_file.fetch(),
-            leave = True,
-            bar_format = "{l_bar}{bar}| {n_fmt}/{total_fmt} reads",
-            total = alignment_file.count(),
-            **kwargs
+            leave=True,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} reads",
+            total=alignment_file.count(),
+            **kwargs,
         )
 
     def _tag(
-            self,
-            untagged_bam: pysam.AlignmentFile,
-            tagged_bam: pysam.AlignmentFile,
-            bc_dict: dict
-        ) -> None:
+        self, untagged_bam: pysam.AlignmentFile, tagged_bam: pysam.AlignmentFile, bc_dict: dict
+    ) -> None:
         """
         Tag reads in untagged BAM file with barcode, duplicates and write to
         tagged BAM file.
         """
-        log.info(f"Starting to tag reads in BAM file. Total reads to process: "
-                f"{untagged_bam.count()}")
+        log.info(
+            f"Starting to tag reads in BAM file. Total reads to process: "
+            f"{untagged_bam.count()}"
+        )
         tag_count: int = 0
 
         # [(chromosome, start, template_len, barcode), ...]
@@ -57,22 +58,21 @@ class TagDedup:
 
             # Check if BC tag already exists
             if read.has_tag("BC"):
-                log.error("Input BAM file read with BC tag detected (read "
-                        f"name: {read_name}). Exiting.")
+                log.error(
+                    f"Input BAM file read with BC tag detected (read name: {read_name}). Exiting."
+                )
                 raise ValueError("Input BAM file reads already has 'BC' tags.")
 
             # Log unpaired reads
             if not read.is_paired:
-                log.warning(
-                    f"Read {read_name} is not paired and will be skipped."
-                )
+                log.warning(f"Read {read_name} is not paired and will be skipped.")
                 continue
 
             # Check if read has a barcode
             if read_name not in bc_dict:
                 log.warning(
                     f"Read {read_name} does not have a barcode in barcodes CSV",
-                    " and will be skipped."
+                    " and will be skipped.",
                 )
                 continue
 
@@ -80,14 +80,13 @@ class TagDedup:
             barcode = bc_dict[read_name]
             read.set_tag("BC", barcode)
             log.debug(
-                f"Tagged read {read_name} (paired: {read.is_paired})"
-                f" with barcode {barcode}"
+                f"Tagged read {read_name} (paired: {read.is_paired})" f" with barcode {barcode}"
             )
 
             # Tag duplicates
             chr = read.reference_name
             start = read.reference_start
-            seq_len = read.template_length # Don't want absolute value
+            seq_len = read.template_length  # Don't want absolute value
 
             if (chr, start, seq_len, barcode) in dup_index:
                 # Only a duplicate if chr, start, seq_len and barcode match
@@ -101,20 +100,21 @@ class TagDedup:
             tagged_bam.write(read)
             tag_count += 1
 
-        log.info(f"Finished tagging reads. Total reads tagged:"
-                f"{tag_count}")
+        log.info(f"Finished tagging reads. Total reads tagged:" f"{tag_count}")
 
     def _dedup(
         self,
         tagged_bam: pysam.AlignmentFile,
         dedup_bam: pysam.AlignmentFile,
-        multiqc_log: Optional[csv.writer] = None
+        multiqc_log: Optional[csv.writer] = None,
     ):
         """
         Filter reads in tagged BAM file to remove duplicates.
         """
-        log.info(f"Starting to deduplicate reads in tagged BAM file. Total "
-                f"reads to process: {tagged_bam.count()}")
+        log.info(
+            f"Starting to deduplicate reads in tagged BAM file. Total "
+            f"reads to process: {tagged_bam.count()}"
+        )
 
         unique_count: int = 0
 
@@ -148,17 +148,10 @@ class TagDedup:
         # MultiQC log
         # Two reads for one read-pair
         if multiqc_log is not None:
-            multiqc_log.writerow(
-                ["unique_reads", "duplicate_reads"]
-            )
-            multiqc_log.writerow(
-                [unique_count, tagged_bam.count() - unique_count]
-            )
+            multiqc_log.writerow(["unique_reads", "duplicate_reads"])
+            multiqc_log.writerow([unique_count, tagged_bam.count() - unique_count])
 
-
-    def tag_dedup_reads(
-            self, dedup: bool, output_dir: str, prefix: Optional[str] = None
-        ) -> None:
+    def tag_dedup_reads(self, dedup: bool, output_dir: str, prefix: Optional[str] = None) -> None:
         """
         Generate a tagged BAM file and TSV file with filtered reads coordinates
         with associated barcodes. If `dedup = TRUE`, also generate a
@@ -171,15 +164,13 @@ class TagDedup:
         # Init
         BAM_TAGGED_PATH = os.path.join(output_dir, prefix + ".tagged.bam")
         BAM_DEDUP_PATH = os.path.join(output_dir, prefix + ".dedup.tagged.bam")
-        MULTIQC_CSV_PATH = os.path.join(output_dir,
-                                        prefix + ".dedup.stats_mqc.log")
+        MULTIQC_CSV_PATH = os.path.join(output_dir, prefix + ".dedup.stats_mqc.log")
 
         # Read barcodes from CSV
-        with open(self.bc_valid_csv, 'r') as valid_barcodes:
+        with open(self.bc_valid_csv, "r") as valid_barcodes:
             csv_reader = csv.reader(valid_barcodes)
-            bc_dict = {line[0].split(' ', 1)[0]: line[1] for line in csv_reader}
+            bc_dict = {line[0].split(" ", 1)[0]: line[1] for line in csv_reader}
         log.debug(f"Loaded {len(bc_dict)} valid barcodes.")
-
 
         # Tag and write to tagged BAM file
         with ExitStack() as stack:
@@ -187,38 +178,35 @@ class TagDedup:
                 pysam.AlignmentFile(self.bam, "rb", index_filename=self.bai)
             )
             bam_tagged = stack.enter_context(
-                pysam.AlignmentFile(BAM_TAGGED_PATH, "wb",
-                                    header=input_bam.header)
+                pysam.AlignmentFile(BAM_TAGGED_PATH, "wb", header=input_bam.header)
             )
 
             # Tag
             self._tag(input_bam, bam_tagged, bc_dict)
 
         pysam.index(BAM_TAGGED_PATH)
-        log.info(f"Tagged BAM file written to {BAM_TAGGED_PATH} with "
-                "a corresponding BAI index file.")
+        log.info(
+            f"Tagged BAM file written to {BAM_TAGGED_PATH} with " "a corresponding BAI index file."
+        )
 
         if not dedup:
             return
 
         # Deduplicate and write to deduplicated BAM file
         with ExitStack() as stack:
-            bam_tagged = stack.enter_context(
-                pysam.AlignmentFile(BAM_TAGGED_PATH, "rb")
-            )
+            bam_tagged = stack.enter_context(pysam.AlignmentFile(BAM_TAGGED_PATH, "rb"))
             bam_dedup = stack.enter_context(
-                pysam.AlignmentFile(BAM_DEDUP_PATH, "wb",
-                                    header=bam_tagged.header)
+                pysam.AlignmentFile(BAM_DEDUP_PATH, "wb", header=bam_tagged.header)
             )
-            multiqc_csv = stack.enter_context(
-                open(MULTIQC_CSV_PATH, mode="w", newline="")
-            )
+            multiqc_csv = stack.enter_context(open(MULTIQC_CSV_PATH, mode="w", newline=""))
             multiqc_csv_writer = csv.writer(multiqc_csv)
 
             # Deduplicate
             self._dedup(bam_tagged, bam_dedup, multiqc_csv_writer)
 
         pysam.index(BAM_DEDUP_PATH)
-        log.info(f"Deduplicated BAM file written to {BAM_DEDUP_PATH} with "
-                "a corresponding BAI index file.")
+        log.info(
+            f"Deduplicated BAM file written to {BAM_DEDUP_PATH} with "
+            "a corresponding BAI index file."
+        )
         log.info(f"MultiQC log written to {MULTIQC_CSV_PATH}.")
