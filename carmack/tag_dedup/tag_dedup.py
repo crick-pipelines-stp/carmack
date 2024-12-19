@@ -65,8 +65,7 @@ class TagDedup:
 
             # Log unpaired reads
             if not read.is_paired:
-                log.warning(f"Read {read_name} is not paired and will be skipped.")
-                continue
+                log.warning(f"Read {read_name} is not paired.")
 
             # Check if read has a barcode
             if read_name not in bc_dict:
