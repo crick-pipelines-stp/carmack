@@ -5,6 +5,7 @@ import csv
 from typing import Optional, List, Tuple
 from contextlib import ExitStack
 from tqdm import tqdm
+from carmack.utils import get_prefix
 
 log = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ class TagDedup:
         """
         # Set prefix, if non specified
         if prefix is None:
-            prefix = self.bam.rsplit("/", 1)[-1].split(".", 1)[0]
+            prefix = get_prefix(self.bam)
 
         # Init
         BAM_TAGGED_PATH = os.path.join(output_dir, prefix + ".tagged.bam")
