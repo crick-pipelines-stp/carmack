@@ -68,5 +68,7 @@ def get_bai(bam_file: str) -> str | None:
     """
     bai_file = f"{bam_file}.bai"
     if not path.exists(bai_file):
-        return None
+        raise FileNotFoundError(
+            f"Could not find BAI file for {bam_file} - Try specifying it manually."
+        )
     return bai_file

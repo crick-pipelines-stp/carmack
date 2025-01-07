@@ -11,6 +11,7 @@ import rich.traceback
 import rich_click as click
 
 import carmack
+from carmack.utils import get_bai
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.tag_dedup.tag_dedup import TagDedup
@@ -26,7 +27,12 @@ click.rich_click.COMMAND_GROUPS = {
     "carmack": [
         {
             "name": "Commands for users",
-            "commands": ["extract-cell-barcodes", "fastq-filter", "bam-tag-deduplicate"],
+            "commands": [
+                "extract-cell-barcodes",
+                "fastq-filter",
+                "bam-tag-deduplicate",
+                "split-bam",
+            ],
         }
     ]
 }
@@ -152,7 +158,7 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
 
 @carmack_cli.command("bam-tag-deduplicate")
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
-@click.argument("bai", required=True, nargs=1, type=click.Path(exists=True), metavar="<bai>")
+@click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
 @click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-d", "--dedup", is_flag=True, default=False, help="Flag describing whether or not to reads should be deduplicated during barcode tagging")
@@ -165,13 +171,11 @@ def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
     If dedup is set to True, reads are also deduplicated based on the start position, end position and barcode of the read pairs.
     An additional file containing the number of unique and duplicate read pairs is also saved to the output directory.
     """
+    if bai is None:
+        bai = get_bai(bam)
 
-    # duplicate_rem = DuplicateRemoval(bam, bai, valid_barcodes)
-    # duplicate_rem.tag_and_deduplicate_reads(log_progress, output_dir, dedup, prefix)
     tag_dedup = TagDedup(bam, bai, valid_barcodes)
     tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
-
-
 
 # Main script is being run - launch the CLI
 if __name__ == "__main__":

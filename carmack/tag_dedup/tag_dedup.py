@@ -186,7 +186,7 @@ class TagDedup:
 
         pysam.index(BAM_TAGGED_PATH)
         log.info(
-            f"Tagged BAM file written to {BAM_TAGGED_PATH} with " "a corresponding BAI index file."
+            f"Tagged BAM file written to {BAM_TAGGED_PATH} with a corresponding BAI index file."
         )
 
         if not dedup:

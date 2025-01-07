@@ -3,6 +3,7 @@ import pytest
 import pysam
 import csv
 
+from carmack.utils import get_prefix
 from carmack.tag_dedup.tag_dedup import TagDedup
 
 BAM_PATHS = [
@@ -18,17 +19,11 @@ CUSTOM_INDEX = 1  # Easier to run tests on the custom files (much smaller)
 
 
 class TestTagDedup:
-    def _get_prefix(self, path):
-        """
-        Get basename for the output files.
-        """
-        return path.rsplit("/", 1)[-1].split(".", 1)[0]
-
     def _get_files(self, out_dir, bam_path):
         """
         Get paths to output files.
         """
-        prefix = self._get_prefix(bam_path)
+        prefix = get_prefix(bam_path)
         file_paths = {
             "bam_tagged_file": os.path.join(out_dir, prefix + ".tagged.bam"),
             "bai_tagged_file": os.path.join(out_dir, prefix + ".tagged.bam.bai"),
