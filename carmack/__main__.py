@@ -11,9 +11,11 @@ import rich.traceback
 import rich_click as click
 
 import carmack
+from carmack.utils import get_bai, get_cpu_count
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.tag_dedup.tag_dedup import TagDedup
+from carmack.split_reads.split_reads import BamSplitter
 
 # Set up logging as the root logger
 # Submodules should all traverse back to this
@@ -26,7 +28,12 @@ click.rich_click.COMMAND_GROUPS = {
     "carmack": [
         {
             "name": "Commands for users",
-            "commands": ["extract-cell-barcodes", "fastq-filter", "bam-tag-deduplicate"],
+            "commands": [
+                "extract-cell-barcodes",
+                "fastq-filter",
+                "bam-tag-deduplicate",
+                "split-bam",
+            ],
         }
     ]
 }
@@ -152,7 +159,7 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
 
 @carmack_cli.command("bam-tag-deduplicate")
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
-@click.argument("bai", required=True, nargs=1, type=click.Path(exists=True), metavar="<bai>")
+@click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
 @click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-d", "--dedup", is_flag=True, default=False, help="Flag describing whether or not to reads should be deduplicated during barcode tagging")
@@ -165,12 +172,32 @@ def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
     If dedup is set to True, reads are also deduplicated based on the start position, end position and barcode of the read pairs.
     An additional file containing the number of unique and duplicate read pairs is also saved to the output directory.
     """
+    if bai is None:
+        bai = get_bai(bam)
 
-    # duplicate_rem = DuplicateRemoval(bam, bai, valid_barcodes)
-    # duplicate_rem.tag_and_deduplicate_reads(log_progress, output_dir, dedup, prefix)
     tag_dedup = TagDedup(bam, bai, valid_barcodes)
     tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
 
+@carmack_cli.command("split-bam")
+@click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
+@click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+@click.option("-n", "--cpu_count", required=False, type=int, default=get_cpu_count(), show_default=True, help="Number of CPUs to use for sorting and indexing of split BAM files. Default is all available CPUs minus 1.")
+def split_bam(bam, bai, output_dir, prefix, cpu_count):
+    """
+    Split barcode-tagged BAM file into separate files based on barcode tag (BC) value.
+
+    Reads are split into separate alignment files with each file containing reads with the same barcode tag value.
+    The output files are saved to the output directory with corresponding sorted BAM and index BAI files.
+    Each file is named according to the barcode tag (BC) value.
+    Additionally, creates a CSV file in the output directory containing the barcode counts.
+    """
+    if bai is None:
+        bai = get_bai(bam)
+
+    splitter = BamSplitter(bam, bai)
+    splitter.split(output_dir, prefix, cpu_count)
 
 
 # Main script is being run - launch the CLI
