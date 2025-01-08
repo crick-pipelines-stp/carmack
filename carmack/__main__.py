@@ -11,10 +11,11 @@ import rich.traceback
 import rich_click as click
 
 import carmack
-from carmack.utils import get_bai
+from carmack.utils import get_bai, get_cpu_count
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.tag_dedup.tag_dedup import TagDedup
+from carmack.split_reads.split_reads import BamSplitter
 
 # Set up logging as the root logger
 # Submodules should all traverse back to this
@@ -176,6 +177,28 @@ def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
 
     tag_dedup = TagDedup(bam, bai, valid_barcodes)
     tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
+
+@carmack_cli.command("split-bam")
+@click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
+@click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+@click.option("-n", "--cpu_count", required=False, type=int, default=get_cpu_count(), show_default=True, help="Number of CPUs to use for sorting and indexing of split BAM files. Default is all available CPUs minus 1.")
+def split_bam(bam, bai, output_dir, prefix, cpu_count):
+    """
+    Split barcode-tagged BAM file into separate files based on barcode tag (BC) value.
+
+    Reads are split into separate alignment files with each file containing reads with the same barcode tag value.
+    The output files are saved to the output directory with corresponding sorted BAM and index BAI files.
+    Each file is named according to the barcode tag (BC) value.
+    Additionally, creates a CSV file in the output directory containing the barcode counts.
+    """
+    if bai is None:
+        bai = get_bai(bam)
+
+    splitter = BamSplitter(bam, bai)
+    splitter.split(output_dir, prefix, cpu_count)
+
 
 # Main script is being run - launch the CLI
 if __name__ == "__main__":

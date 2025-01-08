@@ -5,7 +5,7 @@ Common utility functions for Carmack.
 import hashlib
 import io
 import logging
-from os import path
+from os import path, cpu_count
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ def get_prefix(file_name: str) -> str:
     return file_name.rsplit("/", 1)[-1].split(".", 1)[0]
 
 
-def get_bai(bam_file: str) -> str | None:
+def get_bai(bam_file: str) -> str:
     """
     Try to get the corresponding BAI file for a BAM file. Looks for a file with the same name as
     the BAM file but with a .bai extension.
@@ -72,3 +72,10 @@ def get_bai(bam_file: str) -> str | None:
             f"Could not find BAI file for {bam_file} - Try specifying it manually."
         )
     return bai_file
+
+
+def get_cpu_count(reserve: int = 1) -> int:
+    """
+    Get the number of CPUs available on the system minus the reserved amount.
+    """
+    return max(1, cpu_count() - reserve)
