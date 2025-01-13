@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 class BamSplitter:
     """
-    Class that splits a BAM file into two separate files based on a barcode (BC) tag value.
+    Class that splits a BAM file into two separate files based on barcode (BC) tag value.
     """
 
     def __init__(self, bam: str, bai: Optional[str]) -> None:
@@ -119,7 +119,7 @@ class BamSplitter:
             split_files = self.split_bam(stack, bam, output_dir, prefix)
 
         # Sort and index split BAM files
-        log.info("Sorting and indexing split BAM files.")
+        log.info(f"Sorting and indexing split BAM files (using {cpu_count} threads).")
         SORTED_BAM_SUFFIX = "split.sorted.bam"
 
         def sort_index(split_file: str, logger: logging.Logger = log) -> None:
