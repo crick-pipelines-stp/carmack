@@ -17,6 +17,9 @@ class BedFile:
         """
         Format a bed entry into a dictionary.
         """
+        if len(entry) < 6:
+            raise ValueError(f"BAM file must have at least 6 columns, but got {len(entry)}")
+
         entry_dict = {
             "chrom": entry[0],
             "start": int(entry[1]),
