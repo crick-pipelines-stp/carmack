@@ -14,9 +14,11 @@ dependencies = [
     "rich-click",
     "rich",
     "numpy",
-    "pandas",
     "pysam",
-    "tqdm"
+    "tqdm",
+    "matplotlib",
+    "scipy",
+    "kneed"
 ]
 scripts = { "carmack" = "carmack.__main__:run_carmack" }
 
@@ -112,10 +114,11 @@ ignore-paths = [
 [tool.ruff]
 target-version = "py312"
 line-length = 99
-exclude = [
+extend-exclude = [
     "prototype",
     "build",
-    ".tox"
+    ".tox",
+    "__main__.py"
 ]
 
 [tool.cython-lint]
