@@ -1,6 +1,6 @@
 import logging
-from typing import List, Set, Tuple, Iterable
-from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_lil
+from typing import List, Tuple, Iterable
+from scipy.sparse import lil_matrix, csr_matrix
 
 log = logging.getLogger(__name__)
 
@@ -21,10 +21,10 @@ class PeakBarcodeMatrix:
 
     Attributes
     ----------
-    peaks : Tuple[str]
-        Tuple of peak names.
-    barcodes : Tuple[str]
-        Tuple of unique cell barcodes.
+    peaks : Iterable[str]
+        Iterable of peak names.
+    barcodes : Iterable[str]
+        Iterable of unique cell barcodes.
     matrix: lil_matrix
         Sparse matrix of peak-barcode
 
@@ -40,15 +40,15 @@ class PeakBarcodeMatrix:
         Sum the matrix along the barcode axis to get the number of overlapping peaks per barcode.
     """
 
-    def __init__(self, peak_names: Tuple[str], barcodes: Set[str], force=False) -> None:
+    def __init__(self, peak_names: Iterable[str], barcodes: Iterable[str], force=False) -> None:
         """
         Initialise the peak-barcode matrix.
 
         Parameters
         ----------
-        peak_names : Tuple[str]
+        peak_names : Iterable[str]
             Tuple of peak names.
-        barcodes : Set[str]
+        barcodes : Iterable[str]
             Set of unique cell barcodes.
         force : bool, optional
             Overwrite matrix if already initialised, by default False
@@ -72,7 +72,7 @@ class PeakBarcodeMatrix:
 
         return tuple(sorted(iter))
 
-    def get_index(self, peak_name, barcode) -> int:
+    def get_index(self, peak_name, barcode) -> Tuple[int, int]:
         """
         Get the matrix index for the given peak and barcode.
         """
@@ -108,9 +108,11 @@ class PeakBarcodeMatrix:
         Filter the matrix by the given row and column indices. Converts and returns a csr_matrix
         for efficient slicing operations.
         """
+
         def check_indices(axis, indices):
             if not all(0 <= idx < axis for idx in indices):
                 raise ValueError(f"Invalid indices for axis {axis}.")
+
         check_indices(self.matrix.shape[0], row_indices)
         check_indices(self.matrix.shape[1], column_indices)
 

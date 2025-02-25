@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Optional, Generator
+from typing import Dict, Tuple, Optional, Generator
 import os
 import csv
 import pysam
@@ -103,7 +103,7 @@ class CellCaller:
 
         log.debug(f"Peak-barcode matrix computed with {min_overlap}bp of minimum overlap.")
 
-    def find_knee(self) -> int:
+    def find_knee(self) -> Tuple[int, int]:
         """
         Find the knee point in the barcode rank plot. Uses the KneeLocator class from the kneed
         package, with the curve set to "concave" and direction set to "decreasing".
