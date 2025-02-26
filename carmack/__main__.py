@@ -211,10 +211,11 @@ def split_bam(bam, bai, output_dir, prefix, cpu_count):
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<tagged_bam>")
 @click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
 @click.option("-c", "--force_n", required=False, type=int, default=None, help="Force selection of top n cells")
+@click.option("-m", "--min_overlap", required=False, type=int, default=1, show_default=True, help="Minimum number of basepairs overlapping a peak to be considered")
 @click.option("-g", "--visualise", is_flag=True, default=False, help="Save barcode rank plot with threshold")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-def call_cells(bed, bam, bai, force_n, visualise, output_dir, prefix):
+def call_cells(bed, bam, bai, force_n, min_overlap, visualise, output_dir, prefix):
     """
     Filter and export cells and peaks to standard single-cell format based on the number of
     overlapping peaks per cell.
@@ -228,7 +229,7 @@ def call_cells(bed, bam, bai, force_n, visualise, output_dir, prefix):
         bai = get_bai(bam)
 
     cell_caller = CellCaller(bed, bam, bai)
-    cell_caller.compute_matrix()
+    cell_caller.compute_matrix(min_overlap=min_overlap)
 
     if visualise:
         plot = cell_caller.make_plot(force_n=force_n)
