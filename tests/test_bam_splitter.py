@@ -17,6 +17,7 @@ SORTED_BAM_SUFFIX = "split.sorted.bam"
 SORTED_BAI_SUFFIX = "split.sorted.bam.bai"
 CSV_FILE = PREFIX + "_split_counts.csv"
 
+
 class TestBamSplitter:
     @pytest.fixture(scope="class")
     def shared_path(self, tmp_path_factory):
@@ -67,10 +68,10 @@ class TestBamSplitter:
                 with pysam.AlignmentFile(file, "rb") as bam:
                     read_counter = 0
                     for read in bam:
-                        assert read.get_tag("BC") == barcode # Check if barcodes match
+                        assert read.get_tag("BC") == barcode  # Check if barcodes match
                         read_counter += 1
                     # Check if number of reads match
-                    assert read_counter == barcodes[barcode] # bam.count() requires index file
+                    assert read_counter == barcodes[barcode]  # bam.count() requires index file
 
     def test_csv_file(self, shared_path, barcodes):
         """
@@ -80,8 +81,8 @@ class TestBamSplitter:
         with open(csv_file_path, "r") as csv_file:
             csv_reader = csv.reader(csv_file)
             header = next(csv_reader)
-            assert header == ["barcode", "count"] # Check header
-            for row in csv_reader: # Check each barcode and count
+            assert header == ["barcode", "count"]  # Check header
+            for row in csv_reader:  # Check each barcode and count
                 barcode, count = row
                 assert barcode in barcodes
                 assert int(count) == barcodes[barcode]

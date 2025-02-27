@@ -16,6 +16,7 @@ from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.tag_dedup.tag_dedup import TagDedup
 from carmack.split_reads.split_reads import BamSplitter
+from carmack.cell_caller.cell_caller import CellCaller
 
 # Set up logging as the root logger
 # Submodules should all traverse back to this
@@ -32,7 +33,13 @@ click.rich_click.COMMAND_GROUPS = {
                 "extract-cell-barcodes",
                 "fastq-filter",
                 "bam-tag-deduplicate",
-                "split-bam",
+                "call-cells",
+            ],
+        },
+        {
+            "name": "Additional utility commands",
+            "commands": [
+                "split-bam"
             ],
         }
     ]
@@ -179,7 +186,7 @@ def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
     tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
 
 @carmack_cli.command("split-bam")
-@click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
+@click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<tagged_bam>")
 @click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
@@ -198,6 +205,38 @@ def split_bam(bam, bai, output_dir, prefix, cpu_count):
 
     splitter = BamSplitter(bam, bai)
     splitter.split(output_dir, prefix, cpu_count)
+
+@carmack_cli.command("call-cells")
+@click.argument("bed", required=True, nargs=1, type=click.Path(exists=True), metavar="<peaks_bed>")
+@click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<tagged_bam>")
+@click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
+@click.option("-c", "--force_n", required=False, type=int, default=None, help="Force selection of top n cells")
+@click.option("-m", "--min_overlap", required=False, type=int, default=1, show_default=True, help="Minimum number of basepairs overlapping a peak to be considered")
+@click.option("-g", "--visualise", is_flag=True, default=False, help="Save barcode rank plot with threshold")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+def call_cells(bed, bam, bai, force_n, min_overlap, visualise, output_dir, prefix):
+    """
+    Filter and export cells and peaks to standard single-cell format based on the number of
+    overlapping peaks per cell.
+
+    All instances of peak-barcode overlaps are counted and saved to a matrix, which is then used to
+    filter cells based on knee point, or a fixed number of cells with most overlaps (if force_n is
+    set). The output files (barcodes, peaks and peak-barcode matrix) are saved to the output
+    directory. If visualise is set, a plot of the barcode rank is saved to the output directory.
+    """
+    if bai is None:
+        bai = get_bai(bam)
+
+    cell_caller = CellCaller(bed, bam, bai)
+    cell_caller.compute_matrix(min_overlap=min_overlap)
+
+    if visualise:
+        plot = cell_caller.make_plot(force_n=force_n)
+        prefix = f"{prefix}_" if prefix else ""
+        plot.savefig(os.path.join(output_dir, f"{prefix}barcode_matrix.png"))
+
+    cell_caller.export(output_dir, prefix, force_n)
 
 
 # Main script is being run - launch the CLI
