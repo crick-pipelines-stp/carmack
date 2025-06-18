@@ -29,42 +29,106 @@ class BarcodeExtractor:
     Class that handles barcode extraction/correction from fastq files
     """
 
-    bc_counts = None
-    bc_dist = None
-
     def __init__(self, read1: str, read2: str, cell_barcode: str, chemistry: str) -> None:
+        # Init
         self.read1 = read1
         self.read2 = read2
         self.cell_barcode = cell_barcode
+        self.bc_counts = None
+        self.bc_dist = None
+
+        # Load the chemistry and barcode set
         self.chemistry = ChemistryFactory.get_chemistry(chemistry)
+        self.barcode_set = self.chemistry.load_barcode_set()
+        self.barcode_wl = self.chemistry.construct_whitelist(self.barcode_set)
 
-    def calc_raw_barcode_match_counts(self) -> list:
+    def extract_cell_barcodes(
+        self,
+        max_corrections: int,
+        print_stats: bool,
+        log_freq: int,
+        output_dir: str,
+        prefix: str = None,
+    ):
         """
-        Computes the counts of raw barcode matches across the barcode set for the given chemistry.
+        Extracts cell barcodes from the provided FASTQ files and writes the results to output files.
+
+        Args:
+            max_corrections (int): Maximum number of allowed corrections for barcode extraction.
+            print_stats (bool): Whether to print extraction statistics.
+            log_freq (int): Frequency (in number of reads) at which to log progress.
+            output_dir (str): Directory where output files will be written.
+            prefix (str, optional): Prefix for output file names. If None, a prefix is derived from the input file name.
+
+        Returns:
+            None
         """
+        if prefix is None:
+            prefix = self.read1.rsplit("/", 1)[-1].split(".", 1)[0]
 
-        # Load the barcode set to match against
-        barcode_set = self.chemistry.load_barcode_set()
+        # Init
+        bc_dist = self.calc_raw_barcode_match_dist()
+        line_index = 0
+        msg_dict = {}
+        bc_dict = {}
 
-        # Init counts
-        bc_counts = []
-        for bc_set in barcode_set:
-            bc_counts.append({bc: 0 for bc in bc_set})
+        # Open files and write
+        with open(os.path.join(output_dir, prefix + ".bc_all.csv"), "w") as file_all:
+            with open(os.path.join(output_dir, prefix + ".bc_valid.csv"), "w") as file_valid:
+                for name, corr_bc, msg in self.get_corrected_barcode(
+                    self.barcode_wl, self.barcode_set, bc_dist, max_corrections
+                ):
+                    if corr_bc is None:
+                        corr_bc = "NO-MATCH"
 
-        # Iterate over the fastq file and count the number of matches for each barcode
-        fq_file = FastqFile(self.cell_barcode)
-        stream = fq_file.open_read_iterator(as_string=True)
-        for name, seq, qual in stream:
-            barcodes, qs, msg = self.chemistry.subset_barcode_chunks(seq, qual)
+                    # Add to a dictionary of unique barcode messages for counting
+                    if msg in msg_dict:
+                        msg_dict[msg] += 1
+                    else:
+                        msg_dict[msg] = 1
 
-            if barcodes is not None and msg == "SUBSET:OK":
-                for idx, bc_set in enumerate(barcode_set):
-                    ext_bc = barcodes[idx]
-                    if barcodes[idx] in bc_set:
-                        bc_counts[idx][ext_bc] = bc_counts[idx][ext_bc] + 1
+                    # Add to a dictionary of unique barcodes for counting
+                    if corr_bc in bc_dict:
+                        bc_dict[corr_bc] += 1
+                    else:
+                        bc_dict[corr_bc] = 1
 
-        self.bc_counts = bc_counts
-        return bc_counts
+                    # Write all barcodes to file_all
+                    file_all.write(f"{name},{corr_bc},{msg}\n")
+
+                    # Write all matched barcodes to file_valid
+                    if corr_bc != "NO-MATCH":
+                        file_valid.write(f"{name},{corr_bc},{msg}\n")
+
+                    # Stats logging
+                    line_index += 1
+                    if print_stats and line_index % log_freq == 0:
+                        # Calculate stats
+                        stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
+
+                        # Report logging information
+                        BarcodeExtractor.report_extraction(line_index, stats_dict)
+
+        # Update stats
+        stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
+
+        # Report logging information
+        BarcodeExtractor.report_extraction(line_index, stats_dict)
+
+        # Write barcode stats and counts to separate output files
+        with open(
+            os.path.join(output_dir, prefix + ".bc_counts_stats.csv"), "w"
+        ) as bc_counts_stats_file:
+            bc_counts_stats_file.write(
+                "full_match_fraction,corr_match_fraction,fail_match_fraction,fail_spc_notfnd_fraction,fail_corr_indl_fraction,fail_corr_base_sub_fraction,top_10_fractions\n"
+            )
+            bc_counts_stats_file.write(
+                f"{round(stats_dict['full_match_fraction'], 3)},{round(stats_dict['corr_match_fraction'], 3)},{round(stats_dict['fail_match_fraction'] , 3)},{round(stats_dict['fail_spc_notfnd_fraction'], 3)},{round(stats_dict['fail_corr_indl_fraction'], 3)},{round(stats_dict['fail_corr_base_sub_fraction'], 3)},{np.round(stats_dict['top_10_fractions'], 4)}"
+            )
+
+        with open(os.path.join(output_dir, prefix + ".bc_counts.csv"), "w") as bc_counts_file:
+            for _, (k, v) in enumerate(bc_dict.items()):
+                bc_counts_file.write(f"{k},{str(v)}\n")
 
     def calc_raw_barcode_match_dist(self) -> list:
         """
@@ -86,8 +150,36 @@ class BarcodeExtractor:
         self.bc_dist = bc_dist
         return self.bc_counts
 
+    def calc_raw_barcode_match_counts(self) -> list:
+        """
+        Computes the counts of raw barcode matches across the barcode set for the given chemistry.
+        """
+
+        # Init counts
+        bc_counts = []
+        for bc_set in self.barcode_set:
+            bc_counts.append({bc: 0 for bc in bc_set})
+
+        # Iterate over the fastq file and count the number of matches for each barcode
+        fq_file = FastqFile(self.cell_barcode)
+        stream = fq_file.open_read_iterator(as_string=True)
+        for _, seq, qual in stream:
+            barcodes, _, msg = self.chemistry.subset_barcode_chunks(seq, qual)
+
+            if barcodes is not None and msg == "SUBSET:OK":
+                for idx, bc_set in enumerate(self.barcode_set):
+                    ext_bc = barcodes[idx]
+                    if barcodes[idx] in bc_set:
+                        bc_counts[idx][ext_bc] = bc_counts[idx][ext_bc] + 1
+
+        self.bc_counts = bc_counts
+        return bc_counts
+
     @staticmethod
     def f8_alt(x):
+        """
+        Format a float to 14 characters with 9 decimal places, suitable for printing.
+        """
         return "%14.9f" % x
 
     @staticmethod
@@ -370,7 +462,24 @@ class BarcodeExtractor:
             )
             yield (name, corr_bc, msg)
 
+    @staticmethod
     def stats_calc(messages_dict, barcodes_dict):
+        """
+        Calculate various statistics from message and barcode dictionaries.
+        Args:
+            messages_dict (dict): A dictionary where keys are message status strings and values are their counts.
+            barcodes_dict (dict): A dictionary where keys are barcode identifiers and values are their counts.
+        Returns:
+            dict: A dictionary containing the following statistics:
+                - "full_match_fraction": Fraction of messages with a full match ("OK|WL_MATCH").
+                - "corr_match_fraction": Fraction of messages with a corrected match ("OK|NIM" in key).
+                - "fail_match_fraction": Fraction of messages with a failed match ("FAIL|NIM" in key).
+                - "fail_spc_notfnd_fraction": Fraction of failed matches due to "NOTFND" among all failed matches.
+                - "fail_corr_indl_fraction": Fraction of failed matches due to individual correction failure ("INDL_.*:CORRFAIL") among all failed matches.
+                - "fail_corr_base_sub_fraction": Fraction of failed matches due to base substitution correction failure ("BC.:CORRFAIL") among all failed matches.
+                - "top_10_fractions": Numpy array of fractions of total barcodes that belong to each of the 10 most frequent barcodes (excluding "NO-MATCH").
+        """
+
         # Init
         stats_dict = {}
 
@@ -427,6 +536,7 @@ class BarcodeExtractor:
 
         return stats_dict
 
+    @staticmethod
     def report_extraction(line_index, stats_dict):
         """
         Report the extraction statistics to the log
@@ -442,82 +552,3 @@ class BarcodeExtractor:
             f"FAIL_SPC_NOTFND_FRACT: {round(stats_dict['fail_spc_notfnd_fraction'], 3)}, FAIL_INDL_FRACT: {round(stats_dict['fail_corr_indl_fraction'], 3)}, FAIL_CORR_BASE_SUB_FRACT: {round(stats_dict['fail_corr_base_sub_fraction'], 3)}"
         )
         log.info(f"FRACT_TOP10_BCS: {np.round(stats_dict['top_10_fractions'], 4)}")
-
-    def __extract_cell_barcodes(self, max_corrections, print_stats, log_freq, output_dir, prefix):
-        """Given a FASTQ file containing cell barcodes, extract the corrected cell barcodes.
-        Write output to separate files containing all barcodes, all matched barcodes, and stats
-        for downstream visualisation.
-        """
-        # Init
-        barcode_set = self.chemistry.load_barcode_set()
-        barcode_wl = self.chemistry.construct_whitelist(barcode_set)
-        bc_dist = self.calc_raw_barcode_match_dist()
-        line_index = 0
-        msg_dict = {}
-        bc_dict = {}
-
-        # Open files and write
-        with open(os.path.join(output_dir, prefix + ".bc_all.csv"), "w") as file_all:
-            with open(os.path.join(output_dir, prefix + ".bc_valid.csv"), "w") as file_valid:
-                for name, corr_bc, msg in self.get_corrected_barcode(
-                    barcode_wl, barcode_set, bc_dist, max_corrections
-                ):
-                    if corr_bc is None:
-                        corr_bc = "NO-MATCH"
-
-                    # Add to a dictionary of unique barcode messages for counting
-                    if msg in msg_dict:
-                        msg_dict[msg] += 1
-                    else:
-                        msg_dict[msg] = 1
-
-                    # Add to a dictionary of unique barcodes for counting
-                    if corr_bc in bc_dict:
-                        bc_dict[corr_bc] += 1
-                    else:
-                        bc_dict[corr_bc] = 1
-
-                    # Write all barcodes to file_all
-                    file_all.write(f"{name},{corr_bc},{msg}\n")
-
-                    # Write all matched barcodes to file_valid
-                    if corr_bc != "NO-MATCH":
-                        file_valid.write(f"{name},{corr_bc},{msg}\n")
-
-                    # Stats logging
-                    line_index += 1
-                    if print_stats and line_index % log_freq == 0:
-                        # Calculate stats
-                        stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
-
-                        # Report logging information
-                        BarcodeExtractor.report_extraction(line_index, stats_dict)
-
-        # Update stats
-        stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
-
-        # Report logging information
-        BarcodeExtractor.report_extraction(line_index, stats_dict)
-
-        # Write barcode stats and counts to separate output files
-        with open(
-            os.path.join(output_dir, prefix + ".bc_counts_stats.csv"), "w"
-        ) as bc_counts_stats_file:
-            bc_counts_stats_file.write(
-                "full_match_fraction,corr_match_fraction,fail_match_fraction,fail_spc_notfnd_fraction,fail_corr_indl_fraction,fail_corr_base_sub_fraction,top_10_fractions\n"
-            )
-            bc_counts_stats_file.write(
-                f"{round(stats_dict['full_match_fraction'], 3)},{round(stats_dict['corr_match_fraction'], 3)},{round(stats_dict['fail_match_fraction'] , 3)},{round(stats_dict['fail_spc_notfnd_fraction'], 3)},{round(stats_dict['fail_corr_indl_fraction'], 3)},{round(stats_dict['fail_corr_base_sub_fraction'], 3)},{np.round(stats_dict['top_10_fractions'], 4)}"
-            )
-
-        with open(os.path.join(output_dir, prefix + ".bc_counts.csv"), "w") as bc_counts_file:
-            for i, (k, v) in enumerate(bc_dict.items()):
-                bc_counts_file.write(f"{k},{str(v)}\n")
-
-    def extract_cell_barcodes(
-        self, max_corrections, print_stats, log_freq, output_dir, prefix=None
-    ):
-        if prefix == None:
-            prefix = self.read1.rsplit("/", 1)[-1].split(".", 1)[0]
-
-        self.__extract_cell_barcodes(max_corrections, print_stats, log_freq, output_dir, prefix)
