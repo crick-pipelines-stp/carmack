@@ -6,38 +6,35 @@ import numpy as np
 
 from ..io.gzip_file import GzipFile
 from .chemistry_base import ChemistryBase
+from carmack.barcode.barcode_utils import find_anchor_hamming
+
+BC_LENGTH = 96
+BC_CHUNK_LENGTH = 10
+BC1_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath("carmack_custom_seq_1_0_96_bc1.tsv")
+BC2_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath("carmack_custom_seq_1_0_96_bc2.tsv")
+BC3_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath("carmack_custom_seq_1_0_96_bc3.tsv")
+PRIMER_C = "TGTGTATAAGGACCTCGTTGCC"
+PRIMER_A = "ATGGAAGCCGACGAATTAGACC"
 
 
-BC1_PATH = files("carmack.data.barcodes").joinpath("hydrop_whitelist_bc1_96.tsv")
-BC2_PATH = files("carmack.data.barcodes").joinpath("hydrop_whitelist_bc2_96.tsv")
-BC3_PATH = files("carmack.data.barcodes").joinpath("hydrop_whitelist_bc3_96.tsv")
-
-
-class ChemistryHydrop(ChemistryBase):
+class ChemistryCarmackCustomSeq10(ChemistryBase):
     """
-    ChemistryHydrop class.
+    ChemistryCarmack class.
     """
-
-    SPACER_1 = "AGGGTACTCG"
-    SPACER_2 = "GCAGTAGCTG"
-
-    def __init__(self):
-        """Initialize the ChemistryHydrop class."""
-        super().__init__()
 
     def load_barcode_set(self) -> list:
         """Load barcode set for chemistry."""
 
         stream1 = GzipFile(str(BC1_PATH)).open_read_iterator(as_string=True)
-        bc1 = {line.strip()[10:-10] for line in stream1}
+        bc1 = {line.strip() for line in stream1}
         stream1.close()
 
         stream2 = GzipFile(str(BC2_PATH)).open_read_iterator(as_string=True)
-        bc2 = {line.strip()[10:-10] for line in stream2}
+        bc2 = {line.strip() for line in stream2}
         stream2.close()
 
         stream3 = GzipFile(str(BC3_PATH)).open_read_iterator(as_string=True)
-        bc3 = {line.strip()[15:-10] for line in stream3}
+        bc3 = {line.strip() for line in stream3}
         stream3.close()
 
         return [bc1, bc2, bc3]
@@ -53,20 +50,20 @@ class ChemistryHydrop(ChemistryBase):
         return whitelist
 
     def subset_whitelist_guess(self, seq: str) -> str:
-        """Make best guess sequence subset based on standard hydrop chemistry for a whitelist match"""
+        """Make best guess sequence subset based on standard chemistry for a whitelist match"""
 
-        # Return if seq too short for hydrop chemistry
-        if len(seq) < 50:
+        # Return if seq too short for chemistry
+        if len(seq) < BC_LENGTH:
             return None
 
         # Subset seq if more than 50 to the left most 50 bases
-        if len(seq) > 50:
-            seq = seq[:50]
+        if len(seq) > BC_LENGTH:
+            seq = seq[:BC_LENGTH]
 
         # Subset barcodes
-        bc3 = seq[:10]
-        bc2 = seq[20:30]
-        bc1 = seq[40:50]
+        bc3 = seq[22:32]
+        bc2 = seq[54:64]
+        bc1 = seq[86:96]
 
         # Return constructed 30 base hydrop whitelist bc
         return bc1 + bc2 + bc3
@@ -78,37 +75,37 @@ class ChemistryHydrop(ChemistryBase):
         msg = "SUBSET:OK"
 
         # Return nothing if the sequence is too short for hydrop chemistry
-        if len(seq) < 50:
-            return None, None, "SUBSET:SEQLEN<50"
+        if len(seq) < BC_LENGTH:
+            return None, None, "SUBSET:SEQLEN<" + str(BC_LENGTH)
 
-        # Subset seq if more than 50 to the left most 50 bases
-        if len(seq) > 50:
-            seq = seq[:50]
+        # Subset seq if more than 96 for efficiency
+        if len(seq) > BC_LENGTH:
+            seq = seq[:BC_LENGTH]
 
         # Try to find spacer seqs
-        idx_spcr_1 = seq.find(self.SPACER_1)
-        idx_spcr_2 = seq.find(self.SPACER_2)
+        idx_primer_c = find_anchor_hamming(seq, PRIMER_C, 2)
+        idx_primer_a = find_anchor_hamming(seq, PRIMER_A, 2)
 
         # Error if we cant find them
-        if idx_spcr_1 == -1:
-            return None, None, "SUBSET:SPC1_NOTFND"
-        if idx_spcr_2 == -1:
-            return None, None, "SUBSET:SPC2_NOTFND"
+        if idx_primer_c == -1:
+            return None, None, "SUBSET:PRIMC_NOTFND"
+        if idx_primer_a == -1:
+            return None, None, "SUBSET:PRIMA_NOTFND"
 
         # Set message to indel if detected
-        if idx_spcr_1 != 10:
+        if idx_primer_c != 32:
             msg = "SUBSET:INDL"
-        if idx_spcr_2 != 30:
+        if idx_primer_a != 64:
             msg = "SUBSET:INDL"
 
         # Subset the barcodes
-        bc1 = seq[idx_spcr_2 + 10 :]
-        bc2 = seq[idx_spcr_1 + 10 : (-50 + idx_spcr_2)]
-        bc3 = seq[: (-50 + idx_spcr_1)]
+        bc3 = seq[idx_primer_c - BC_CHUNK_LENGTH : idx_primer_c]
+        bc2 = seq[idx_primer_c + len(PRIMER_C) : idx_primer_a]
+        bc1 = seq[idx_primer_a + len(PRIMER_A) :]
 
         # Subset the qs scores
-        qs1 = qs[idx_spcr_2 + 10 :]
-        qs2 = qs[idx_spcr_1 + 10 : (-50 + idx_spcr_2)]
-        qs3 = qs[: (-50 + idx_spcr_1)]
+        qs3 = qs[idx_primer_c - BC_CHUNK_LENGTH : idx_primer_c]
+        qs2 = qs[idx_primer_c + len(PRIMER_C) : idx_primer_a]
+        qs1 = qs[idx_primer_a + len(PRIMER_A) :]
 
         return [bc1, bc2, bc3], [qs1, qs2, qs3], msg
