@@ -1,5 +1,5 @@
-from typing import Dict, Generator, Literal
 import os
+from typing import Dict, Generator, Literal
 
 
 class BedFile:

@@ -5,7 +5,8 @@ Common utility functions for Carmack.
 import hashlib
 import io
 import logging
-from os import path, cpu_count
+from os import cpu_count, path
+
 
 log = logging.getLogger(__name__)
 

@@ -1,16 +1,20 @@
+import itertools
+import logging
 import os
 import re
-import logging
-import itertools
+
 import numpy as np
 
-from..chemistry.chemistry_factory import ChemistryFactory
-from..chemistry.chemistry_base import ChemistryBase
+from ..chemistry.chemistry_base import ChemistryBase
+from ..chemistry.chemistry_factory import ChemistryFactory
 from ..io.fastq_file import FastqFile
 
-DNA_ALPHABET = 'AGCT'
-ALPHABET_MINUS = {char: {c for c in DNA_ALPHABET if c != char} for char in DNA_ALPHABET} # This is a set of alternative bases given a base
-ALPHABET_MINUS['N'] = set(DNA_ALPHABET)
+
+DNA_ALPHABET = "AGCT"
+ALPHABET_MINUS = {
+    char: {c for c in DNA_ALPHABET if c != char} for char in DNA_ALPHABET
+}  # This is a set of alternative bases given a base
+ALPHABET_MINUS["N"] = set(DNA_ALPHABET)
 QS_SCORE_THRESHOLD = 24
 BC_CONFIDENCE_THRESHOLD = 0.9
 ILLUMINA_QUAL_MIN_SCORE = 2
@@ -18,6 +22,8 @@ ILLUMINA_QUAL_MAX_SCORE = 30
 ILLUMINA_QUAL_OFFSET = 33
 
 log = logging.getLogger(__name__)
+
+
 class BarcodeExtractor:
     """
     Class that handles barcode extraction/correction from fastq files
@@ -26,7 +32,7 @@ class BarcodeExtractor:
     bc_counts = None
     bc_dist = None
 
-    def __init__(self, read1: str, read2 : str, cell_barcode: str, chemistry: str) -> None:
+    def __init__(self, read1: str, read2: str, cell_barcode: str, chemistry: str) -> None:
         self.read1 = read1
         self.read2 = read2
         self.cell_barcode = cell_barcode
@@ -43,12 +49,12 @@ class BarcodeExtractor:
         # Init counts
         bc_counts = []
         for bc_set in barcode_set:
-            bc_counts.append({bc:0 for bc in bc_set})
+            bc_counts.append({bc: 0 for bc in bc_set})
 
-        # Iterate over the fastq file and count the number of matches for each barcode
+        # Iterate over the fastq file and count the number of matches for each barcode
         fq_file = FastqFile(self.cell_barcode)
         stream = fq_file.open_read_iterator(as_string=True)
-        for (name, seq, qual) in stream:
+        for name, seq, qual in stream:
             barcodes, qs, msg = self.chemistry.subset_barcode_chunks(seq, qual)
 
             if barcodes is not None and msg == "SUBSET:OK":
@@ -67,7 +73,7 @@ class BarcodeExtractor:
         """
 
         # Get counts
-        if(self.bc_counts is None):
+        if self.bc_counts is None:
             self.bc_counts = self.calc_raw_barcode_match_counts()
 
         # Calculate distribution
@@ -94,10 +100,10 @@ class BarcodeExtractor:
         new_seq = set()
 
         # Find all index positions which are not N in seq as a list
-        non_n_indices = [i for i in range(len(seq)) if seq[i] != 'N']
+        non_n_indices = [i for i in range(len(seq)) if seq[i] != "N"]
 
         # Find all positions which are N in seq as a tuple
-        n_indices = tuple([i for i in range(len(seq)) if seq[i] == 'N'])
+        n_indices = tuple([i for i in range(len(seq)) if seq[i] == "N"])
 
         # The number of unknown N's dicates the minmimum hamming distance that combinations must be from the original sequence
         mindist = len(n_indices)
@@ -120,7 +126,7 @@ class BarcodeExtractor:
             for modified_indices in itertools.combinations(non_n_indices, dist - mindist):
 
                 # Combine the indices we have to change because of N's and the other potential cominations into a final
-                # List of indices to change
+                # List of indices to change
                 indices = set(modified_indices + n_indices)
 
                 # Convert the set to a list of indices for subsetting the qs scores (ignore the empty list at the beggining)
@@ -133,8 +139,10 @@ class BarcodeExtractor:
                 error_probs_sum = error_probs.sum()
 
                 # Generate possible base substitutions from the indice positions using the minus alphabet
-                for substitutions in itertools.product(*[ALPHABET_MINUS[base] if i in indices else base for i, base in enumerate(seq)]):
-                    new_seq = ''.join(substitutions)
+                for substitutions in itertools.product(
+                    *[ALPHABET_MINUS[base] if i in indices else base for i, base in enumerate(seq)]
+                ):
+                    new_seq = "".join(substitutions)
 
                     # If the new sequence is in the whitelist, sum the QS scores for the changed sequences and return
                     if new_seq in barcode_set:
@@ -154,18 +162,18 @@ class BarcodeExtractor:
         seq_len = len(seq)
         seq_set.append(seq)
 
-        # Check for N's in seq
+        # Check for N's in seq
         if "N" in seq:
             log.error(f"N detected when generating indel set - {seq}")
             return []
 
-        # Return if seq is correct length
+        # Return if seq is correct length
         if seq_len == target_len:
-            return [seq],[qs]
+            return [seq], [qs]
 
         # Return if absolute difference between seq and
         # target length is larger than max_corrections
-        diff =  seq_len - target_len
+        diff = seq_len - target_len
         if abs(diff) > maxdist:
             return [], []
 
@@ -176,8 +184,8 @@ class BarcodeExtractor:
                 curr_gen_seq = []
                 for i in range(0, len(curr_seq) + 1):
                     new_seq_ar = list(curr_seq)
-                    new_seq_ar.insert(i, 'N')
-                    new_seq = ''.join(new_seq_ar)
+                    new_seq_ar.insert(i, "N")
+                    new_seq = "".join(new_seq_ar)
                     if new_seq not in curr_gen_seq:
                         curr_gen_seq.append(new_seq)
                         if len(new_seq) < target_len:
@@ -194,7 +202,7 @@ class BarcodeExtractor:
                 for i in range(0, len(curr_seq)):
                     new_seq_ar = list(curr_seq)
                     new_seq_ar.pop(i)
-                    new_seq = ''.join(new_seq_ar)
+                    new_seq = "".join(new_seq_ar)
                     if new_seq not in curr_gen_seq:
                         curr_gen_seq.append(new_seq)
                         if len(new_seq) > target_len:
@@ -207,8 +215,8 @@ class BarcodeExtractor:
         for seq in output_set:
             curr_qs = qs.copy()
             for idx, base in enumerate(seq):
-                if base == 'N':
-                    curr_qs=np.insert(curr_qs, idx, 50)
+                if base == "N":
+                    curr_qs = np.insert(curr_qs, idx, 50)
             output_qs.append(curr_qs)
 
         return output_set, output_qs
@@ -237,9 +245,13 @@ class BarcodeExtractor:
         # If the input sequence doesn't perfectly match an existing barcode, this can be either due to indels or mutations.
         # If there are indels, gen_indel_set will generate a set of sequences with the correct length containing N in each possible position and their associated qs
         # If the original sequence already had the correct length or or is already in the barcode_set but has low qs, it will just return the input sequence and qs
-        for indel_seq, indel_qs in zip(*BarcodeExtractor.gen_indel_set(seq, qs, target_len, max_corrections)):
+        for indel_seq, indel_qs in zip(
+            *BarcodeExtractor.gen_indel_set(seq, qs, target_len, max_corrections)
+        ):
             # For each indel sequence, generate all possible nearby sequences that are at most max_corrections (Hamming distance) away from the input sequence
-            for curr_seq, error_sum in BarcodeExtractor.gen_nearby_seqs(indel_seq, indel_qs, barcode_set, max_corrections):
+            for curr_seq, error_sum in BarcodeExtractor.gen_nearby_seqs(
+                indel_seq, indel_qs, barcode_set, max_corrections
+            ):
                 # Find the posterior for each seq
                 p_bc = bc_dist[curr_seq]
 
@@ -249,7 +261,7 @@ class BarcodeExtractor:
                 # The likelihood is (10 ** -log10p_edit). This is the probability that the modified index or indices were originally incorrect.
                 # Multiply the prior with the likelihood to get the unnormalised posterior: p(A)*p(B|A)
                 # Store the unnormalised posterior and the match candidates.
-                unnorm_posterior.append(p_bc * (10 ** -log10p_edit))
+                unnorm_posterior.append(p_bc * (10**-log10p_edit))
                 match_candidates.append(curr_seq)
 
         # Normalise the posterior values so that they all sum to 1
@@ -260,12 +272,20 @@ class BarcodeExtractor:
         if len(posterior) > 0:
             pmax = posterior.max()
             if pmax > BC_CONFIDENCE_THRESHOLD:
-                corr_seq =  match_candidates[np.argmax(posterior)]
+                corr_seq = match_candidates[np.argmax(posterior)]
 
         return corr_seq, match_candidates, unnorm_posterior, posterior
 
     @staticmethod
-    def correct_barcode(seq: str, qs: np.ndarray, barcode_wl: set, barcode_set: list, bc_dists: dict, chemistry: ChemistryBase, max_corrections: int):
+    def correct_barcode(
+        seq: str,
+        qs: np.ndarray,
+        barcode_wl: set,
+        barcode_set: list,
+        bc_dists: dict,
+        chemistry: ChemistryBase,
+        max_corrections: int,
+    ):
         """Given a barcode sequence, correct each barcode chunk individually if it is not
         immediately matched in the barcode whitelist. Join the corrected chunks and return
         the entire corrected barcode sequence along with a message describing whether the
@@ -305,7 +325,14 @@ class BarcodeExtractor:
                     msg = f"{msg}|BC{idx + 1}"
 
                 # Correct  barcode chunk
-                curr_corr_bc = BarcodeExtractor.correct_barcode_chunk(bc_chunk, qs_chunks[idx], barcode_set[idx], max_corrections, target_len, bc_dists[idx])[0]
+                curr_corr_bc = BarcodeExtractor.correct_barcode_chunk(
+                    bc_chunk,
+                    qs_chunks[idx],
+                    barcode_set[idx],
+                    max_corrections,
+                    target_len,
+                    bc_dists[idx],
+                )[0]
                 corr_chunks.append(curr_corr_bc)
 
                 if curr_corr_bc is None:
@@ -315,13 +342,15 @@ class BarcodeExtractor:
 
         # Assign corrected BC if the correction has not failed
         if "CORRFAIL" not in msg and ("SUBSET:OK" in msg or "SUBSET:INDL" in msg):
-            corr_bc = ''.join(corr_chunks)
+            corr_bc = "".join(corr_chunks)
             msg = f"OK|{msg}"
         else:
             msg = f"FAIL|{msg}"
         return corr_bc, msg
 
-    def get_corrected_barcode(self, barcode_wl: set, barcode_set: list, bc_dists: dict, max_corrections: int):
+    def get_corrected_barcode(
+        self, barcode_wl: set, barcode_set: list, bc_dists: dict, max_corrections: int
+    ):
         """Given a FASTQ file containing cell barcodes, evaluate each barcode and correct it
         if required. Return the read name, the original or corrected barcode and a message
         describing the correction process.
@@ -330,13 +359,15 @@ class BarcodeExtractor:
         fq_file = FastqFile(self.cell_barcode)
         fastq_iter = fq_file.open_read_iterator(as_string=True)
 
-        # Iterate over each line in the FASTQ file and correct the barcode in necessary
-        for (name, seq, qs) in fastq_iter:
+        # Iterate over each line in the FASTQ file and correct the barcode in necessary
+        for name, seq, qs in fastq_iter:
             # Conver the quality score to a numpy array
-            dqs = np.frombuffer(qs.encode('UTF-8'), dtype=np.byte) - ILLUMINA_QUAL_OFFSET
+            dqs = np.frombuffer(qs.encode("UTF-8"), dtype=np.byte) - ILLUMINA_QUAL_OFFSET
 
             # Match and correct the barcode
-            corr_bc, msg = BarcodeExtractor.correct_barcode(seq, dqs, barcode_wl, barcode_set, bc_dists, self.chemistry, max_corrections)
+            corr_bc, msg = BarcodeExtractor.correct_barcode(
+                seq, dqs, barcode_wl, barcode_set, bc_dists, self.chemistry, max_corrections
+            )
             yield (name, corr_bc, msg)
 
     def stats_calc(messages_dict, barcodes_dict):
@@ -345,30 +376,71 @@ class BarcodeExtractor:
 
         # Calculate percentage of full match, corrected match and failed match
         total_msg_count = sum(messages_dict.values())
-        stats_dict['full_match_fraction'] = sum(dict(filter(lambda x: x[0] =='OK|WL_MATCH', messages_dict.items())).values())/total_msg_count
-        stats_dict['corr_match_fraction'] = sum(dict(filter(lambda x: 'OK|NIM' in x[0], messages_dict.items())).values())/total_msg_count
-        stats_dict['fail_match_fraction'] = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], messages_dict.items())).values())/total_msg_count
+        stats_dict["full_match_fraction"] = (
+            sum(dict(filter(lambda x: x[0] == "OK|WL_MATCH", messages_dict.items())).values())
+            / total_msg_count
+        )
+        stats_dict["corr_match_fraction"] = (
+            sum(dict(filter(lambda x: "OK|NIM" in x[0], messages_dict.items())).values())
+            / total_msg_count
+        )
+        stats_dict["fail_match_fraction"] = (
+            sum(dict(filter(lambda x: "FAIL|NIM" in x[0], messages_dict.items())).values())
+            / total_msg_count
+        )
 
         # Calculate percentage of different categories of failed matches
-        total_fail_count = sum(dict(filter(lambda x: 'FAIL|NIM' in x[0], messages_dict.items())).values())
-        stats_dict['fail_spc_notfnd_fraction'] = sum(dict(filter(lambda x: 'NOTFND' in x[0], messages_dict.items())).values())/total_fail_count
-        stats_dict['fail_corr_indl_fraction'] = sum(dict(filter(lambda x: re.search('INDL_.*:CORRFAIL', x[0]), messages_dict.items())).values())/total_fail_count
-        stats_dict['fail_corr_base_sub_fraction'] = sum(dict(filter(lambda x: re.search('BC.:CORRFAIL', x[0]), messages_dict.items())).values())/total_fail_count
+        total_fail_count = sum(
+            dict(filter(lambda x: "FAIL|NIM" in x[0], messages_dict.items())).values()
+        )
+        stats_dict["fail_spc_notfnd_fraction"] = (
+            sum(dict(filter(lambda x: "NOTFND" in x[0], messages_dict.items())).values())
+            / total_fail_count
+        )
+        stats_dict["fail_corr_indl_fraction"] = (
+            sum(
+                dict(
+                    filter(lambda x: re.search("INDL_.*:CORRFAIL", x[0]), messages_dict.items())
+                ).values()
+            )
+            / total_fail_count
+        )
+        stats_dict["fail_corr_base_sub_fraction"] = (
+            sum(
+                dict(
+                    filter(lambda x: re.search("BC.:CORRFAIL", x[0]), messages_dict.items())
+                ).values()
+            )
+            / total_fail_count
+        )
 
         # Calculate percentage total barcodes that belong to the 10 most frequent barcodes
         total_bc_count = sum(barcodes_dict.values())
-        bc_dict_sorted = {k: v for k, v in sorted(barcodes_dict.items(), key=lambda x: x[1], reverse=True) if k != "NO-MATCH"}
+        bc_dict_sorted = {
+            k: v
+            for k, v in sorted(barcodes_dict.items(), key=lambda x: x[1], reverse=True)
+            if k != "NO-MATCH"
+        }
         top_10_bcs = dict(itertools.islice(bc_dict_sorted.items(), 10))
         top_10_counts = np.array(list(top_10_bcs.values()), dtype=float)
-        stats_dict['top_10_fractions'] = np.divide(top_10_counts, total_bc_count)
+        stats_dict["top_10_fractions"] = np.divide(top_10_counts, total_bc_count)
 
-        return(stats_dict)
+        return stats_dict
 
     def report_extraction(line_index, stats_dict):
+        """
+        Report the extraction statistics to the log
+        :param line_index: The number of lines processed
+        :param stats_dict: A dictionary containing the statistics calculated from the extraction
+        """
         log.info("SUMMARY")
         log.info(f"LINES_PROCESSED: {line_index:,}")
-        log.info(f"FULL-MATCH_FRACT: {round(stats_dict['full_match_fraction'], 3)}, CORR_MATCH_FRACT: {round(stats_dict['corr_match_fraction'], 3)}, FAIL_MATCH_FRACT: {round(stats_dict['fail_match_fraction'] , 3)}")
-        log.info(f"FAIL_SPC_NOTFND_FRACT: {round(stats_dict['fail_spc_notfnd_fraction'], 3)}, FAIL_INDL_FRACT: {round(stats_dict['fail_corr_indl_fraction'], 3)}, FAIL_CORR_BASE_SUB_FRACT: {round(stats_dict['fail_corr_base_sub_fraction'], 3)}")
+        log.info(
+            f"FULL-MATCH_FRACT: {round(stats_dict['full_match_fraction'], 3)}, CORR_MATCH_FRACT: {round(stats_dict['corr_match_fraction'], 3)}, FAIL_MATCH_FRACT: {round(stats_dict['fail_match_fraction'] , 3)}"
+        )
+        log.info(
+            f"FAIL_SPC_NOTFND_FRACT: {round(stats_dict['fail_spc_notfnd_fraction'], 3)}, FAIL_INDL_FRACT: {round(stats_dict['fail_corr_indl_fraction'], 3)}, FAIL_CORR_BASE_SUB_FRACT: {round(stats_dict['fail_corr_base_sub_fraction'], 3)}"
+        )
         log.info(f"FRACT_TOP10_BCS: {np.round(stats_dict['top_10_fractions'], 4)}")
 
     def __extract_cell_barcodes(self, max_corrections, print_stats, log_freq, output_dir, prefix):
@@ -385,9 +457,11 @@ class BarcodeExtractor:
         bc_dict = {}
 
         # Open files and write
-        with open(os.path.join(output_dir, prefix + '.bc_all.csv'), "w") as file_all:
-            with open(os.path.join(output_dir, prefix + '.bc_valid.csv'), "w") as file_valid:
-                for (name, corr_bc, msg) in self.get_corrected_barcode(barcode_wl, barcode_set, bc_dist, max_corrections):
+        with open(os.path.join(output_dir, prefix + ".bc_all.csv"), "w") as file_all:
+            with open(os.path.join(output_dir, prefix + ".bc_valid.csv"), "w") as file_valid:
+                for name, corr_bc, msg in self.get_corrected_barcode(
+                    barcode_wl, barcode_set, bc_dist, max_corrections
+                ):
                     if corr_bc is None:
                         corr_bc = "NO-MATCH"
 
@@ -426,15 +500,23 @@ class BarcodeExtractor:
         BarcodeExtractor.report_extraction(line_index, stats_dict)
 
         # Write barcode stats and counts to separate output files
-        with open(os.path.join(output_dir, prefix + '.bc_counts_stats.csv'), "w") as bc_counts_stats_file:
-            bc_counts_stats_file.write('full_match_fraction,corr_match_fraction,fail_match_fraction,fail_spc_notfnd_fraction,fail_corr_indl_fraction,fail_corr_base_sub_fraction,top_10_fractions\n')
-            bc_counts_stats_file.write(f"{round(stats_dict['full_match_fraction'], 3)},{round(stats_dict['corr_match_fraction'], 3)},{round(stats_dict['fail_match_fraction'] , 3)},{round(stats_dict['fail_spc_notfnd_fraction'], 3)},{round(stats_dict['fail_corr_indl_fraction'], 3)},{round(stats_dict['fail_corr_base_sub_fraction'], 3)},{np.round(stats_dict['top_10_fractions'], 4)}")
+        with open(
+            os.path.join(output_dir, prefix + ".bc_counts_stats.csv"), "w"
+        ) as bc_counts_stats_file:
+            bc_counts_stats_file.write(
+                "full_match_fraction,corr_match_fraction,fail_match_fraction,fail_spc_notfnd_fraction,fail_corr_indl_fraction,fail_corr_base_sub_fraction,top_10_fractions\n"
+            )
+            bc_counts_stats_file.write(
+                f"{round(stats_dict['full_match_fraction'], 3)},{round(stats_dict['corr_match_fraction'], 3)},{round(stats_dict['fail_match_fraction'] , 3)},{round(stats_dict['fail_spc_notfnd_fraction'], 3)},{round(stats_dict['fail_corr_indl_fraction'], 3)},{round(stats_dict['fail_corr_base_sub_fraction'], 3)},{np.round(stats_dict['top_10_fractions'], 4)}"
+            )
 
-        with open(os.path.join(output_dir, prefix + '.bc_counts.csv'), "w") as bc_counts_file:
+        with open(os.path.join(output_dir, prefix + ".bc_counts.csv"), "w") as bc_counts_file:
             for i, (k, v) in enumerate(bc_dict.items()):
                 bc_counts_file.write(f"{k},{str(v)}\n")
 
-    def extract_cell_barcodes(self, max_corrections, print_stats, log_freq, output_dir, prefix=None):
+    def extract_cell_barcodes(
+        self, max_corrections, print_stats, log_freq, output_dir, prefix=None
+    ):
         if prefix == None:
             prefix = self.read1.rsplit("/", 1)[-1].split(".", 1)[0]
 

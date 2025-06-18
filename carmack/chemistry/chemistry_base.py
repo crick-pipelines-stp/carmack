@@ -3,7 +3,9 @@ Defines base class for all chemistry classes.
 """
 
 from abc import ABC, abstractmethod
+
 import numpy as np
+
 
 class ChemistryBase(ABC):
     """Base class for chemistry objects."""

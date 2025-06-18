@@ -1,7 +1,7 @@
-import pytest
-from scipy.sparse import isspmatrix_lil, isspmatrix_csr
-from scipy.io import mmread
 import matplotlib.pyplot as plt
+import pytest
+from scipy.io import mmread
+from scipy.sparse import isspmatrix_csr, isspmatrix_lil
 
 from carmack.cell_caller.cell_caller import CellCaller
 from carmack.cell_caller.peak_barcode_matrix import PeakBarcodeMatrix

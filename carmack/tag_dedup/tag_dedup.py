@@ -1,11 +1,14 @@
-import os
-import logging
-import pysam
 import csv
-from typing import Optional, List, Tuple
+import logging
+import os
 from contextlib import ExitStack
+from typing import List, Optional, Tuple
+
+import pysam
 from tqdm import tqdm
+
 from carmack.utils import get_prefix
+
 
 log = logging.getLogger(__name__)
 

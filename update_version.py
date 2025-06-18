@@ -29,7 +29,11 @@ def get_version():
     except subprocess.CalledProcessError:
         version = "0.1"
 
-    branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).strip().decode("utf-8")
+    branch = (
+        subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        .strip()
+        .decode("utf-8")
+    )
     if branch != "main":
         version += "-dev"
 

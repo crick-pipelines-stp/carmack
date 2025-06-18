@@ -1,6 +1,8 @@
 import logging
-from typing import List, Tuple, Iterable
-from scipy.sparse import lil_matrix, csr_matrix
+from typing import Iterable, List, Tuple
+
+from scipy.sparse import csr_matrix, lil_matrix
+
 
 log = logging.getLogger(__name__)
 

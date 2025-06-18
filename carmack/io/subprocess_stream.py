@@ -1,9 +1,10 @@
-import sys
-import os
 import logging
+import os
 import subprocess
+import sys
 
 from .log_subprocess import LogSubprocess
+
 
 log = logging.getLogger(__name__)
 

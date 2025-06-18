@@ -1,12 +1,15 @@
-import os
-import logging
-import pysam
 import csv
-from typing import Optional, Set
-from contextlib import ExitStack
-from tqdm import tqdm
+import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from typing import Optional, Set
+
+import pysam
+from tqdm import tqdm
+
 from carmack.utils import get_prefix
+
 
 log = logging.getLogger(__name__)
 

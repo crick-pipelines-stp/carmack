@@ -2,7 +2,9 @@ import pytest
 
 from carmack.io.bed_file import BedFile
 
+
 BED_PATH = "tests/data/atac_k562_peaks.sorted.bed"
+
 
 class TestBedFile:
     def test_read_file(self):
@@ -15,7 +17,7 @@ class TestBedFile:
         assert isinstance(entry["end"], int)
         assert isinstance(entry["name"], str)
         assert isinstance(entry["score"], int)
-        assert (0 <= entry["score"] <= 1000)
+        assert 0 <= entry["score"] <= 1000
         assert entry["strand"] in ["+", "-", "."]
 
     def test_read_nonexistent_file(self, tmp_path):
@@ -45,5 +47,3 @@ class TestBedFile:
 
         bed_source.close()
         bed_source_new.close()
-
-

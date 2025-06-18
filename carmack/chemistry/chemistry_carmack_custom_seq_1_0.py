@@ -8,9 +8,9 @@ from ..io.gzip_file import GzipFile
 from .chemistry_base import ChemistryBase
 
 
-BC1_PATH = files("carmack.data.barcodes.hydrop").joinpath("hydrop_whitelist_bc1_96.tsv")
-BC2_PATH = files("carmack.data.barcodes.hydrop").joinpath("hydrop_whitelist_bc2_96.tsv")
-BC3_PATH = files("carmack.data.barcodes.hydrop").joinpath("hydrop_whitelist_bc3_96.tsv")
+BC1_PATH = files("carmack.data.barcodes").joinpath("hydrop_whitelist_bc1_96.tsv")
+BC2_PATH = files("carmack.data.barcodes").joinpath("hydrop_whitelist_bc2_96.tsv")
+BC3_PATH = files("carmack.data.barcodes").joinpath("hydrop_whitelist_bc3_96.tsv")
 
 
 class ChemistryHydrop(ChemistryBase):

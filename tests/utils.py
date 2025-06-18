@@ -7,6 +7,7 @@ Helper functions for tests
 import functools
 import tempfile
 
+
 def with_temporary_folder(func):
     """
     Call the decorated funtion under the tempfile.TemporaryDirectory

@@ -1,6 +1,7 @@
 from .gzip_file import GzipFile
 from .subprocess_stream import SubprocessStream
 
+
 GZIP_SUFFIX = ".gz"
 LZ4_SUFFIX = ".lz4"
 
@@ -69,7 +70,11 @@ class FastqFile(GzipFile):
                             if self.compressor is None:
                                 yield (name1, seq1, qual1)
                             else:
-                                yield (name1.decode("UTF-8"), seq1.decode("UTF-8"), qual1.decode("UTF-8"))
+                                yield (
+                                    name1.decode("UTF-8"),
+                                    seq1.decode("UTF-8"),
+                                    qual1.decode("UTF-8"),
+                                )
                         else:
                             yield (name1, seq1, qual1)
 

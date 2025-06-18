@@ -1,16 +1,17 @@
-import logging
-from typing import Dict, Tuple, Optional, Generator
-import os
 import csv
-import pysam
-import matplotlib.pyplot as plt
-from scipy.io import mmwrite
-from kneed import KneeLocator
+import logging
+import os
+from typing import Dict, Generator, Optional, Tuple
 
-from carmack.io.bed_file import BedFile
-from carmack.cell_caller.peak_barcode_matrix import PeakBarcodeMatrix
-from carmack.utils import get_prefix
+import matplotlib.pyplot as plt
+import pysam
+from kneed import KneeLocator
+from scipy.io import mmwrite
+
 from carmack import __version__
+from carmack.cell_caller.peak_barcode_matrix import PeakBarcodeMatrix
+from carmack.io.bed_file import BedFile
+from carmack.utils import get_prefix
 
 
 log = logging.getLogger(__name__)

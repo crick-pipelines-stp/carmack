@@ -3,7 +3,9 @@ Helper functions for loading lists of barcodes from files
 """
 
 import os
+
 from carmack.io.gzip_file import GzipFile
+
 
 def load_barcode_whitelist(path):
     full_path = os.path.abspath(path)

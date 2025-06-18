@@ -1,9 +1,12 @@
-import os
 import logging
+import os
 
 from ..io.fastq_file import FastqFile
 
+
 log = logging.getLogger(__name__)
+
+
 class FastqFilter:
     """
     Class that filters fastq files for valid reads
@@ -22,7 +25,7 @@ class FastqFilter:
         # Load valid barcodes
         with open(bc_valid, "r") as bc_valid_file:
             for line in bc_valid_file:
-                barcode = line.split(',')[0].split(' ')[0]
+                barcode = line.split(",")[0].split(" ")[0]
                 valid_barcodes.add(barcode)
 
         r1_fq = FastqFile(self.read1)
@@ -34,16 +37,16 @@ class FastqFilter:
         r2_fq_filtered = FastqFile(filtered_r2)
 
         wstream_r1 = r1_fq_filtered.open_write_stream()
-        for (name, seq, qual) in r1_fq.open_read_iterator(as_string=True):
-            name_split_read = name.split(' ')
+        for name, seq, qual in r1_fq.open_read_iterator(as_string=True):
+            name_split_read = name.split(" ")
 
             if name_split_read[0] in valid_barcodes:
                 FastqFile.write_read(wstream_r1, name, seq, qual)
         wstream_r1.close()
 
         wstream_r2 = r2_fq_filtered.open_write_stream()
-        for (name, seq, qual) in r2_fq.open_read_iterator(as_string=True):
-            name_split_read = name.split(' ')
+        for name, seq, qual in r2_fq.open_read_iterator(as_string=True):
+            name_split_read = name.split(" ")
 
             if name_split_read[0] in valid_barcodes:
                 FastqFile.write_read(wstream_r2, name, seq, qual)

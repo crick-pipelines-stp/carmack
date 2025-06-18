@@ -80,12 +80,12 @@ skip = [
 profile = "black"
 atomic = true
 indent = 4
-line_length = 99
+line_length = 200
 lines_after_imports = 2
 include_trailing_comma = true
 
 [tool.pylint.FORMAT]
-max-line-length = 99
+max-line-length = 200
 
 [tool.pylint."MESSAGES CONTROL"]
 disable = [
@@ -113,7 +113,7 @@ ignore-paths = [
 
 [tool.ruff]
 target-version = "py312"
-line-length = 99
+line-length = 200
 extend-exclude = [
     "prototype",
     "build",

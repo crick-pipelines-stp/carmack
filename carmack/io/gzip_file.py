@@ -1,7 +1,9 @@
 from .subprocess_stream import SubprocessStream
 
+
 GZIP_SUFFIX = ".gz"
 LZ4_SUFFIX = ".lz4"
+
 
 class GzipFile:
     """

@@ -11,12 +11,13 @@ import rich.traceback
 import rich_click as click
 
 import carmack
-from carmack.utils import get_bai, get_cpu_count
 from carmack.barcode.barcode_extractor import BarcodeExtractor
-from carmack.fastq_tools.fastq_filter import FastqFilter
-from carmack.tag_dedup.tag_dedup import TagDedup
-from carmack.split_reads.split_reads import BamSplitter
 from carmack.cell_caller.cell_caller import CellCaller
+from carmack.fastq_tools.fastq_filter import FastqFilter
+from carmack.split_reads.split_reads import BamSplitter
+from carmack.tag_dedup.tag_dedup import TagDedup
+from carmack.utils import get_bai, get_cpu_count
+
 
 # Set up logging as the root logger
 # Submodules should all traverse back to this
