@@ -18,7 +18,8 @@ dependencies = [
     "tqdm",
     "matplotlib",
     "scipy",
-    "kneed"
+    "kneed",
+    "numba",
 ]
 scripts = { "carmack" = "carmack.__main__:run_carmack" }
 
@@ -34,7 +35,8 @@ tests = [
     "pytest-cov",
     "pytest-sugar",
     "memray",
-    "pytest-memray"
+    "pytest-memray",
+    "assertpy",
 ]
 
 [tool.setuptools]
