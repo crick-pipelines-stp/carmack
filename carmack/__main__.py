@@ -10,64 +10,43 @@ import rich.logging
 import rich.traceback
 import rich_click as click
 
-# import nf_core
-# import nf_core.bump_version
-# import nf_core.create
-# import nf_core.download
-# import nf_core.launch
-# import nf_core.licences
-# import nf_core.lint
-# import nf_core.list
-# import nf_core.modules
-# import nf_core.schema
-# import nf_core.subworkflows
-# import nf_core.sync
-# import nf_core.utils
+import carmack
+from carmack.utils import get_bai, get_cpu_count
+from carmack.barcode.barcode_extractor import BarcodeExtractor
+from carmack.fastq_tools.fastq_filter import FastqFilter
+from carmack.tag_dedup.tag_dedup import TagDedup
+from carmack.split_reads.split_reads import BamSplitter
+from carmack.cell_caller.cell_caller import CellCaller
 
 # Set up logging as the root logger
 # Submodules should all traverse back to this
 log = logging.getLogger()
 
-# # Set up .nfcore directory for storing files between sessions
-# nf_core.utils.setup_nfcore_dir()
-
 # # Set up nicer formatting of click cli help messages
-# click.rich_click.MAX_WIDTH = 100
-# click.rich_click.USE_RICH_MARKUP = True
-# click.rich_click.COMMAND_GROUPS = {
-#     "nf-core": [
-#         {
-#             "name": "Commands for users",
-#             "commands": ["list", "launch", "download", "licences"],
-#         },
-#         {
-#             "name": "Commands for developers",
-#             "commands": ["create", "lint", "modules", "schema", "bump-version", "sync"],
-#         },
-#     ],
-#     "nf-core modules": [
-#         {
-#             "name": "For pipelines",
-#             "commands": ["list", "info", "install", "update", "remove", "patch"],
-#         },
-#         {
-#             "name": "Developing new modules",
-#             "commands": ["create", "create-test-yml", "lint", "bump-versions", "mulled", "test"],
-#         },
-#     ],
-#     "nf-core subworkflows": [
-#         {
-#             "name": "For pipelines",
-#             "commands": ["install"],
-#         },
-#         {
-#             "name": "Developing new subworkflows",
-#             "commands": ["create", "create-test-yml"],
-#         },
-#     ],
-# }
+click.rich_click.MAX_WIDTH = 120
+click.rich_click.USE_RICH_MARKUP = True
+click.rich_click.COMMAND_GROUPS = {
+    "carmack": [
+        {
+            "name": "Commands for users",
+            "commands": [
+                "extract-cell-barcodes",
+                "fastq-filter",
+                "bam-tag-deduplicate",
+                "call-cells",
+            ],
+        },
+        {
+            "name": "Additional utility commands",
+            "commands": [
+                "split-bam"
+            ],
+        }
+    ]
+}
 # click.rich_click.OPTION_GROUPS = {
-#     "nf-core modules list local": [{"options": ["--dir", "--json", "--help"]}],
+#     "carmack extract-cell-barcodes": [{"options": ["--chemistry", "--maxdist", "--line_count", "--output_dir", "--prefix"]}],
+#     "carmack fastq-filter": [{"options": ["--output_dir", "--prefix"]}]
 # }
 
 # Set up rich stderr console
@@ -78,14 +57,12 @@ stdout = rich.console.Console()
 rich.traceback.install(console=stderr, width=200, word_wrap=True, extra_lines=1)
 
 
-# 
-# 
-# 
-# 
-# 
-
 def run_carmack():
-    # Print carmack header
+    """
+    Print programme header and then use to click for the command line interface.
+    """
+
+    # Print carmack header (ANSI Shadow)
     stderr.print("\n\n", highlight=False)
     stderr.print("███████████████████████████████████████████████████████████████████", highlight=False)
     stderr.print("░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", highlight=False)
@@ -98,58 +75,168 @@ def run_carmack():
     stderr.print("░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", highlight=False)
     stderr.print("███████████████████████████████████████████████████████████████████", highlight=False)
     stderr.print("\n", highlight=False)
-    # stderr.print(
-    #     f"[grey39]    carmack version {carmack.__version__} - [link=https://github.com/briscoelab/carmack]https://github.com/briscoelab/carmack[/]",
-    #     highlight=False,
-    # )
     stderr.print(
-        f"[grey25]    carmack version 0.1dev - [link=https://github.com/briscoelab/carmack]https://github.com/briscoelab/carmack[/]",
+        f"[grey25]    carmack version {carmack.__version__} - [link=https://github.com/briscoelab/carmack]https://github.com/briscoelab/carmack[/]",
         highlight=False,
     )
     stderr.print("\n", highlight=False)
     stderr.print("███████████████████████████████████████████████████████████████████", highlight=False)
     stderr.print("\n\n", highlight=False)
 
-    # # Launch the click cli
-    # nf_core_cli(auto_envvar_prefix="NFCORE")
+    # Launch the click cli
+    carmack_cli()
 
-# @click.group(context_settings=dict(help_option_names=["-h", "--help"]))
-# @click.version_option(nf_core.__version__)
-# @click.option("-v", "--verbose", is_flag=True, default=False, help="Print verbose output to the console.")
-# @click.option("--hide-progress", is_flag=True, default=False, help="Don't show progress bars.")
-# @click.option("-l", "--log-file", help="Save a verbose log to a file.", metavar="<filename>")
-# @click.pass_context
-# def carmack_cli(ctx, verbose, hide_progress, log_file):
-#     """
-#     nf-core/tools provides a set of helper tools for use with nf-core Nextflow pipelines.
 
-#     It is designed for both end-users running pipelines and also developers creating new pipelines.
-#     """
-#     # Set the base logger to output DEBUG
-#     log.setLevel(logging.DEBUG)
+@click.group(context_settings=dict(help_option_names=["-h", "--help"]))
+@click.version_option(carmack.__version__)
+@click.option("-v", "--verbose", is_flag=True, default=False, help="Print verbose output to the console.")
+@click.option("--hide-progress", is_flag=True, default=False, help="Don't show progress bars.")
+@click.option("-l", "--log-file", help="Save a verbose log to a file.", metavar="<filename>")
+@click.pass_context
+def carmack_cli(ctx, verbose, hide_progress, log_file):
+    """
+    carmack provides helper tools for the analysis of single-cell mutli-omic data.
 
-#     # Set up logs to the console
-#     log.addHandler(
-#         rich.logging.RichHandler(
-#             level=logging.DEBUG if verbose else logging.INFO,
-#             console=rich.console.Console(stderr=True, force_terminal=nf_core.utils.rich_force_colors()),
-#             show_time=False,
-#             show_path=verbose,  # True if verbose, false otherwise
-#             markup=True,
-#         )
-#     )
+    This python module enables the extraction of valid cell barcodes and can filter reads with valid barcodes from fastq files.
+    """
+    # Set the base logger to output DEBUG
+    log.setLevel(logging.DEBUG)
 
-#     # Set up logs to a file if we asked for one
-#     if log_file:
-#         log_fh = logging.FileHandler(log_file, encoding="utf-8")
-#         log_fh.setLevel(logging.DEBUG)
-#         log_fh.setFormatter(logging.Formatter("[%(asctime)s] %(name)-20s [%(levelname)-7s]  %(message)s"))
-#         log.addHandler(log_fh)
+    # Set up logs to the console
+    log.addHandler(
+        rich.logging.RichHandler(
+            level=logging.DEBUG if verbose else logging.INFO,
+            console=rich.console.Console(stderr=True),
+            show_time=False,
+            show_path=verbose,  # True if verbose, false otherwise
+            markup=True,
+        )
+    )
 
-#     ctx.obj = {
-#         "verbose": verbose,
-#         "hide_progress": hide_progress or verbose,  # Always hide progress bar with verbose logging
-#     }
+    # Set up logs to a file if we asked for one
+    if log_file:
+        log_fh = logging.FileHandler(log_file, encoding="utf-8")
+        log_fh.setLevel(logging.DEBUG)
+        log_fh.setFormatter(logging.Formatter("[%(asctime)s] %(name)-20s [%(levelname)s]  %(message)s"))
+        log.addHandler(log_fh)
+
+    ctx.obj = {
+        "verbose": verbose,
+        "hide_progress": hide_progress or verbose,  # Always hide progress bar with verbose logging
+    }
+
+@carmack_cli.command("extract-cell-barcodes")
+@click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
+@click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")
+@click.argument("barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<barcodes>")
+@click.option("-c","--chemistry", required=True, type=str, help="Chemistry class for barcode extraction")
+@click.option("-d", "--max_dist", required=True, type=int, help="Maximal Hamming distance for barcode extraction")
+@click.option("-s", "--print_stats", is_flag=True, default=False, help="Flag describing whether or not to print summary stats during barcode extraction")
+@click.option("-l", "--log_freq", required=False, type=int, default=10000, help="Number of lines after which stats are logged during barcode extraction")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_stats, log_freq, output_dir, prefix):
+    """
+    Extracts valid cell barcodes by correcting for indels and sequencing errors, using a specified maximal Hamming distance and barcode chemistry.
+
+    The total set of cell barcodes and valid cell barcodes are saved to separate files in the output directory.
+    Additional files containing barcode stats and counts are also saved to the output directory.
+    """
+
+    barcode_ext = BarcodeExtractor(read1, read2, barcodes, chemistry)
+    barcode_ext.extract_cell_barcodes(max_dist, print_stats, log_freq, output_dir, prefix)
+
+
+@carmack_cli.command("fastq-filter")
+@click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
+@click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")
+@click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
+    """
+    Filter fastq files for reads containing valid barcodes.
+
+    The total set of cell barcodes and valid cell barcodes are saved to separate files in the output directory.
+    Additional files containing barcode stats and counts are also saved to the output directory.
+    """
+
+    fastq_filter = FastqFilter(read1, read2)
+    fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix)
+
+@carmack_cli.command("bam-tag-deduplicate")
+@click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
+@click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
+@click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-d", "--dedup", is_flag=True, default=False, help="Flag describing whether or not to reads should be deduplicated during barcode tagging")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
+    """
+    Tag reads with barcodes and deduplicate.
+
+    The reads are tagged with their corresponding barcodes and written to an output BAM file.
+    If dedup is set to True, reads are also deduplicated based on the start position, end position and barcode of the read pairs.
+    An additional file containing the number of unique and duplicate read pairs is also saved to the output directory.
+    """
+    if bai is None:
+        bai = get_bai(bam)
+
+    tag_dedup = TagDedup(bam, bai, valid_barcodes)
+    tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
+
+@carmack_cli.command("split-bam")
+@click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<tagged_bam>")
+@click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+@click.option("-n", "--cpu_count", required=False, type=int, default=get_cpu_count(), show_default=True, help="Number of CPUs to use for sorting and indexing of split BAM files. Default is all available CPUs minus 1.")
+def split_bam(bam, bai, output_dir, prefix, cpu_count):
+    """
+    Split barcode-tagged BAM file into separate files based on barcode tag (BC) value.
+
+    Reads are split into separate alignment files with each file containing reads with the same barcode tag value.
+    The output files are saved to the output directory with corresponding sorted BAM and index BAI files.
+    Each file is named according to the barcode tag (BC) value.
+    Additionally, creates a CSV file in the output directory containing the barcode counts.
+    """
+    if bai is None:
+        bai = get_bai(bam)
+
+    splitter = BamSplitter(bam, bai)
+    splitter.split(output_dir, prefix, cpu_count)
+
+@carmack_cli.command("call-cells")
+@click.argument("bed", required=True, nargs=1, type=click.Path(exists=True), metavar="<peaks_bed>")
+@click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<tagged_bam>")
+@click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
+@click.option("-c", "--force_n", required=False, type=int, default=None, help="Force selection of top n cells")
+@click.option("-m", "--min_overlap", required=False, type=int, default=1, show_default=True, help="Minimum number of basepairs overlapping a peak to be considered")
+@click.option("-g", "--visualise", is_flag=True, default=False, help="Save barcode rank plot with threshold")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+def call_cells(bed, bam, bai, force_n, min_overlap, visualise, output_dir, prefix):
+    """
+    Filter and export cells and peaks to standard single-cell format based on the number of
+    overlapping peaks per cell.
+
+    All instances of peak-barcode overlaps are counted and saved to a matrix, which is then used to
+    filter cells based on knee point, or a fixed number of cells with most overlaps (if force_n is
+    set). The output files (barcodes, peaks and peak-barcode matrix) are saved to the output
+    directory. If visualise is set, a plot of the barcode rank is saved to the output directory.
+    """
+    if bai is None:
+        bai = get_bai(bam)
+
+    cell_caller = CellCaller(bed, bam, bai)
+    cell_caller.compute_matrix(min_overlap=min_overlap)
+
+    if visualise:
+        plot = cell_caller.make_plot(force_n=force_n)
+        prefix = f"{prefix}_" if prefix else ""
+        plot.savefig(os.path.join(output_dir, f"{prefix}barcode_matrix.png"))
+
+    cell_caller.export(output_dir, prefix, force_n)
 
 
 # Main script is being run - launch the CLI

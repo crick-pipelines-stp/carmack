@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 """
-Shouldn't do much, as everything is under subcommands.
+Set app version
 """
 
-# import pkg_resources
+from importlib.metadata import PackageNotFoundError, version
 
-# __version__ = pkg_resources.get_distribution("nf_core").version + "-goodwright"
-__version__ = "0.1dev"
+
+try:
+    __version__ = version("carmack")
+except PackageNotFoundError:
+    __version__ = "0.0.0"

@@ -1,0 +1,130 @@
+[project]
+name="carmack"
+version = "0.0.0" # Dynamically updated
+requires-python = ">=3.12"
+description = "Single-cell multiomic tools"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { file = "LICENSE" }
+keywords = []
+authors = [
+    { name = "Chris Cheshire", email = "chris.cheshire@crick.ac.uk" }
+]
+dependencies = [
+    "click",
+    "rich-click",
+    "rich",
+    "numpy",
+    "pysam",
+    "tqdm",
+    "matplotlib",
+    "scipy",
+    "kneed"
+]
+scripts = { "carmack" = "carmack.__main__:run_carmack" }
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "pylint",
+    "ruff"
+]
+tests = [
+    "pytest",
+    "pytest-cov",
+    "pytest-sugar",
+    "memray",
+    "pytest-memray"
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+exclude = [
+    "docs",
+    "prof",
+    "prototype",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".*",
+    "*.egg",
+    ".github",
+    "__pycache__",
+    "build",
+    "dist",
+    "prof",
+    "data",
+    "docs",
+]
+
+[tool.black]
+line-length = 99
+target-version = ["py312"]
+exclude = '''
+    carmack/__main__.py
+    | .tox
+    |  build
+    |  prototype
+'''
+
+[tool.isort]
+skip = [
+    "prototype",
+    "build",
+    ".tox"
+]
+profile = "black"
+atomic = true
+indent = 4
+line_length = 99
+lines_after_imports = 2
+include_trailing_comma = true
+
+[tool.pylint.FORMAT]
+max-line-length = 99
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+    "E0401", # import-errorß
+    "R0913", # too-many-arguments
+    "R0903", # too-few-public-methods
+    "R0904", # too-many-public-methods
+    "R0914", # too-many-locals
+    "R0912", # too-many-branches
+    "R0801", # duplicate-code
+    "R0902", # too-many-instance-attributes
+    "R0917", # too-many-positional-arguments
+    "R1710", # inconsistent-return-statements
+    "W1203", # logging-fstring-interpolation
+    "W0102", # dangerous-default-value
+    "W1514", # unspecified-encoding
+]
+
+[tool.pylint.MASTER]
+ignore-paths = [
+    "prototype",
+    "build",
+    ".tox"
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 99
+extend-exclude = [
+    "prototype",
+    "build",
+    ".tox",
+    "__main__.py"
+]
+
+[tool.cython-lint]
+max-line-length = 99
+
+[tool.coverage.run]
+omit = [
+    "carmack/__main__.py",
+]
