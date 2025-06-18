@@ -154,7 +154,9 @@ def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_sta
 @click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
+@click.option("--trim-r1", required=False, type=int, default=0, show_default=True, help="Trim this many bases from start of read1 if matched.")
+@click.option("--trim-r2", required=False, type=int, default=0, show_default=True, help="Trim this many bases from start of read2 if matched.")
+def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix, trim_r1, trim_r2):
     """
     Filter fastq files for reads containing valid barcodes.
 
@@ -163,7 +165,7 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
     """
 
     fastq_filter = FastqFilter(read1, read2)
-    fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix)
+    fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix, trim_r1=trim_r1, trim_r2=trim_r2)
 
 @carmack_cli.command("bam-tag-deduplicate")
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")

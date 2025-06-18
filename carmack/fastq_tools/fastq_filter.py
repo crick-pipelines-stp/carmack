@@ -16,7 +16,17 @@ class FastqFilter:
         self.read1 = read1
         self.read2 = read2
 
-    def filter_valid_reads(self, bc_valid, output_dir, prefix=None):
+    def filter_valid_reads(self, bc_valid, output_dir, prefix=None, trim_r1=0, trim_r2=0):
+        """
+        Filter reads in read1/read2 by valid barcodes, with optional trimming of first n bases from each read.
+
+        Args:
+            bc_valid (str): Path to file with valid barcodes.
+            output_dir (str): Output directory for filtered fastq files.
+            prefix (str, optional): Prefix for output files.
+            trim_r1 (int, optional): Number of bases to trim from start of read1. Default 0.
+            trim_r2 (int, optional): Number of bases to trim from start of read2. Default 0.
+        """
         log.info("VALID BARCODE READ FILTER")
 
         # Init
@@ -41,6 +51,9 @@ class FastqFilter:
             name_split_read = name.split(" ")
 
             if name_split_read[0] in valid_barcodes:
+                if trim_r1 > 0:
+                    seq = seq[trim_r1:]
+                    qual = qual[trim_r1:]
                 FastqFile.write_read(wstream_r1, name, seq, qual)
         wstream_r1.close()
 
@@ -49,5 +62,8 @@ class FastqFilter:
             name_split_read = name.split(" ")
 
             if name_split_read[0] in valid_barcodes:
+                if trim_r2 > 0:
+                    seq = seq[trim_r2:]
+                    qual = qual[trim_r2:]
                 FastqFile.write_read(wstream_r2, name, seq, qual)
         wstream_r2.close()

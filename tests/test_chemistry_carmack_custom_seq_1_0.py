@@ -61,7 +61,6 @@ class TestChemistryCarmackCustomSeq10():
 
         assert test_wl in barcode_wl
 
-
     def test_chem_carmack_cs10_construct_whitelist_md5(self, tmp_path):
         expected_hash = "fa1805f3bd180de020eb7e6c6512ffeb"
         test_file = os.path.join(tmp_path, "barcodes.txt")
