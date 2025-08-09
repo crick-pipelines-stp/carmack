@@ -67,12 +67,14 @@ class BarcodeExtractor:
             prefix = self.read1.rsplit("/", 1)[-1].split(".", 1)[0]
 
         # Init
-        bc_dist = self.calc_raw_barcode_match_dist()
+        log.info("Calculating raw barcode match distribution...")
+        bc_dist = self.calc_raw_barcode_match_dist(log_freq)
         line_index = 0
         msg_dict = {}
         bc_dict = {}
 
         # Open files and write
+        log.info("Extracting barcodes...")
         with open(os.path.join(output_dir, prefix + ".bc_all.csv"), "w") as file_all:
             with open(os.path.join(output_dir, prefix + ".bc_valid.csv"), "w") as file_valid:
                 for name, corr_bc, msg in self.get_corrected_barcode(
@@ -130,7 +132,7 @@ class BarcodeExtractor:
             for _, (k, v) in enumerate(bc_dict.items()):
                 bc_counts_file.write(f"{k},{str(v)}\n")
 
-    def calc_raw_barcode_match_dist(self) -> list:
+    def calc_raw_barcode_match_dist(self, log_freq = 10_000) -> list:
         """
         Computes the distribution of raw barcode matches across the barcode set for the given chemistry.
         Prior distribution over barcodes, with pseudo-count based on matching barcodes only
@@ -138,7 +140,7 @@ class BarcodeExtractor:
 
         # Get counts
         if self.bc_counts is None:
-            self.bc_counts = self.calc_raw_barcode_match_counts()
+            self.bc_counts = self.calc_raw_barcode_match_counts(log_freq)
 
         # Calculate distribution
         for count_set in self.bc_counts:
@@ -150,12 +152,13 @@ class BarcodeExtractor:
         self.bc_dist = bc_dist
         return self.bc_counts
 
-    def calc_raw_barcode_match_counts(self) -> list:
+    def calc_raw_barcode_match_counts(self, log_freq = 10_000) -> list:
         """
         Computes the counts of raw barcode matches across the barcode set for the given chemistry.
         """
 
         # Init counts
+        line_index = 0
         bc_counts = []
         for bc_set in self.barcode_set:
             bc_counts.append({bc: 0 for bc in bc_set})
@@ -171,6 +174,10 @@ class BarcodeExtractor:
                     ext_bc = barcodes[idx]
                     if barcodes[idx] in bc_set:
                         bc_counts[idx][ext_bc] = bc_counts[idx][ext_bc] + 1
+
+            if line_index % log_freq == 0:
+                log.info(f"Processed {line_index:,}")
+            line_index += 1
 
         self.bc_counts = bc_counts
         return bc_counts

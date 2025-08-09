@@ -164,6 +164,7 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix, trim_r1, trim
     Additional files containing barcode stats and counts are also saved to the output directory.
     """
 
+    log.info("Filtering fastq files for valid barcodes...")
     fastq_filter = FastqFilter(read1, read2)
     fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix, trim_r1=trim_r1, trim_r2=trim_r2)
 
@@ -185,6 +186,7 @@ def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
     if bai is None:
         bai = get_bai(bam)
 
+    log.info("Tagging reads with barcodes and deduplicating if requested...")
     tag_dedup = TagDedup(bam, bai, valid_barcodes)
     tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
 
@@ -228,6 +230,7 @@ def call_cells(bed, bam, bai, force_n, min_overlap, visualise, output_dir, prefi
     set). The output files (barcodes, peaks and peak-barcode matrix) are saved to the output
     directory. If visualise is set, a plot of the barcode rank is saved to the output directory.
     """
+    log.info("Calling cells based on peak overlaps...")
     if bai is None:
         bai = get_bai(bam)
 
