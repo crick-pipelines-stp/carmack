@@ -73,7 +73,7 @@ class TestBarcodeExtractor(unittest.TestCase):
 
         expected_hash_file_all = "880f4312a753e63d9d8a81f1e7010f6a"
         expected_hash_file_valid = "55a3edbc0adf3a4552f9cdf5cfaeeb4d"
-        expected_hash_file_bc_stats = "78bbdffef6690227bd8bc28b95646480"
+        expected_hash_file_bc_stats = "2b7a4a1062480fe2df561b6ab8fbc53e"
         expected_hash_file_bc_counts = "b49cdb0ad6b3fc4178a10f4e75e8b4be"
 
         # Init
@@ -697,3 +697,55 @@ class TestBarcodeExtractorFixtures:
         assert all(
             [a == b for a, b in zip(stats_dict["top_10_fractions"], expected_top_10_fractions)]
         )
+
+    def test_bcext_stats_calc_granular_carmack_custom_seq(self):
+        """Test granular stats calculation for carmack custom seq chemistry failure patterns"""
+        # Setup test message dictionary with carmack custom seq specific patterns
+        msg_dict = {
+            "OK|WL_MATCH": 100,
+            "OK|NIM|SUBSET:OK|BC1:CORROK|BC2:CORROK|BC3:CORROK": 50,
+            "FAIL|NIM|SUBSET:PRIMC_NOTFND": 30,
+            "FAIL|NIM|SUBSET:PRIMA_NOTFND": 20,
+            "FAIL|NIM|SUBSET:SEQLEN<96": 10,
+            "FAIL|NIM|SUBSET:INDL|BC1:CORRFAIL|BC2:CORROK|BC3:CORROK": 15,
+            "FAIL|NIM|SUBSET:INDL|BC1:CORROK|BC2:CORRFAIL|BC3:CORROK": 12,
+            "FAIL|NIM|SUBSET:INDL|BC1:CORROK|BC2:CORROK|BC3:CORRFAIL": 8,
+            "FAIL|NIM|SUBSET:OK|BC1:CORRFAIL|BC2:CORROK|BC3:CORROK": 25,
+            "FAIL|NIM|SUBSET:OK|BC1:CORROK|BC2:CORRFAIL|BC3:CORROK": 18,
+            "FAIL|NIM|SUBSET:OK|BC1:CORROK|BC2:CORROK|BC3:CORRFAIL": 13,
+            "FAIL|NIM|SUBSET:INDL|BC1:CORRFAIL|BC2:CORRFAIL|BC3:CORROK": 5,
+            "FAIL|NIM|SUBSET:OK|BC1:CORRFAIL|BC2:CORRFAIL|BC3:CORRFAIL": 4,
+        }
+
+        bc_dict = {
+            "VALID_BC_1": 80,
+            "VALID_BC_2": 70,
+            "NO-MATCH": sum([v for k, v in msg_dict.items() if "FAIL" in k]),
+        }
+
+        # Test
+        stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
+
+        # Assert new granular statistics
+        # Primer/Anchor Issues
+        assert stats_dict["fail_primc_notfnd_count"] == 30
+        assert stats_dict["fail_prima_notfnd_count"] == 20
+        assert stats_dict["fail_seqlen_short_count"] == 10
+
+        # Barcode Chunk-Specific Failures
+        # BC1 failures: 15 + 25 + 5 + 4 = 49
+        assert stats_dict["fail_bc1_corrfail_count"] == 49
+        # BC2 failures: 12 + 18 + 5 + 4 = 39
+        assert stats_dict["fail_bc2_corrfail_count"] == 39
+        # BC3 failures: 8 + 13 + 4 = 25
+        assert stats_dict["fail_bc3_corrfail_count"] == 25
+
+        # Indel vs Substitution Context
+        # Indel with correction failure: 15 + 12 + 8 + 5 = 40
+        assert stats_dict["fail_indel_with_corrfail_count"] == 40
+        # Substitution only (no indel) with correction failure: 25 + 18 + 13 + 4 = 60
+        assert stats_dict["fail_substitution_only_corrfail_count"] == 60
+
+        # Multi-chunk Failures
+        # Multiple chunks failed: 5 + 4 = 9
+        assert stats_dict["fail_multiple_chunks_count"] == 9

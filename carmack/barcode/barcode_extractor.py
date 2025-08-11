@@ -122,10 +122,10 @@ class BarcodeExtractor:
             os.path.join(output_dir, prefix + ".bc_counts_stats.csv"), "w"
         ) as bc_counts_stats_file:
             bc_counts_stats_file.write(
-                "full_match_fraction,corr_match_fraction,fail_match_fraction,fail_spc_notfnd_fraction,fail_corr_indl_fraction,fail_corr_base_sub_fraction,top_10_fractions\n"
+                "full_match_fraction,corr_match_fraction,fail_match_fraction,fail_spc_notfnd_fraction,fail_corr_indl_fraction,fail_corr_base_sub_fraction,top_10_fractions,fail_primc_notfnd_count,fail_prima_notfnd_count,fail_seqlen_short_count,fail_bc1_corrfail_count,fail_bc2_corrfail_count,fail_bc3_corrfail_count,fail_indel_with_corrfail_count,fail_substitution_only_corrfail_count,fail_multiple_chunks_count\n"
             )
             bc_counts_stats_file.write(
-                f"{round(stats_dict['full_match_fraction'], 3)},{round(stats_dict['corr_match_fraction'], 3)},{round(stats_dict['fail_match_fraction'] , 3)},{round(stats_dict['fail_spc_notfnd_fraction'], 3)},{round(stats_dict['fail_corr_indl_fraction'], 3)},{round(stats_dict['fail_corr_base_sub_fraction'], 3)},{np.round(stats_dict['top_10_fractions'], 4)}"
+                f"{round(stats_dict['full_match_fraction'], 3)},{round(stats_dict['corr_match_fraction'], 3)},{round(stats_dict['fail_match_fraction'] , 3)},{round(stats_dict['fail_spc_notfnd_fraction'], 3)},{round(stats_dict['fail_corr_indl_fraction'], 3)},{round(stats_dict['fail_corr_base_sub_fraction'], 3)},{np.round(stats_dict['top_10_fractions'], 4)},{stats_dict['fail_primc_notfnd_count']},{stats_dict['fail_prima_notfnd_count']},{stats_dict['fail_seqlen_short_count']},{stats_dict['fail_bc1_corrfail_count']},{stats_dict['fail_bc2_corrfail_count']},{stats_dict['fail_bc3_corrfail_count']},{stats_dict['fail_indel_with_corrfail_count']},{stats_dict['fail_substitution_only_corrfail_count']},{stats_dict['fail_multiple_chunks_count']}"
             )
 
         with open(os.path.join(output_dir, prefix + ".bc_counts.csv"), "w") as bc_counts_file:
@@ -261,10 +261,10 @@ class BarcodeExtractor:
         seq_len = len(seq)
         seq_set.append(seq)
 
-        # Check for N's in seq
-        if "N" in seq:
-            log.error(f"N detected when generating indel set - {seq}")
-            return []
+        # Check for N's in seq ## Allow biological Ns through gen_indel_set; treat them like any other base and let gen_nearby_seqs enforce mindist:
+        # if "N" in seq:
+        #     log.error(f"N detected when generating indel set - {seq}")
+        #     return []
 
         # Return if seq is correct length
         if seq_len == target_len:
@@ -485,6 +485,17 @@ class BarcodeExtractor:
                 - "fail_corr_indl_fraction": Fraction of failed matches due to individual correction failure ("INDL_.*:CORRFAIL") among all failed matches.
                 - "fail_corr_base_sub_fraction": Fraction of failed matches due to base substitution correction failure ("BC.:CORRFAIL") among all failed matches.
                 - "top_10_fractions": Numpy array of fractions of total barcodes that belong to each of the 10 most frequent barcodes (excluding "NO-MATCH").
+                
+                Granular failure statistics for carmack custom seq chemistry:
+                - "fail_primc_notfnd_count": Count of failures due to Primer C not found.
+                - "fail_prima_notfnd_count": Count of failures due to Primer A not found.
+                - "fail_seqlen_short_count": Count of failures due to sequence too short.
+                - "fail_bc1_corrfail_count": Count of BC1 correction failures.
+                - "fail_bc2_corrfail_count": Count of BC2 correction failures.
+                - "fail_bc3_corrfail_count": Count of BC3 correction failures.
+                - "fail_indel_with_corrfail_count": Count of failures with indel detected but correction failed.
+                - "fail_substitution_only_corrfail_count": Count of failures with no indel but correction failed.
+                - "fail_multiple_chunks_count": Count of failures affecting multiple barcode chunks.
         """
 
         # Init
@@ -541,6 +552,42 @@ class BarcodeExtractor:
         top_10_counts = np.array(list(top_10_bcs.values()), dtype=float)
         stats_dict["top_10_fractions"] = np.divide(top_10_counts, total_bc_count)
 
+        # Calculate granular failure statistics for carmack custom seq chemistry
+        # Primer/Anchor Issues
+        stats_dict["fail_primc_notfnd_count"] = sum(
+            dict(filter(lambda x: "PRIMC_NOTFND" in x[0], messages_dict.items())).values()
+        )
+        stats_dict["fail_prima_notfnd_count"] = sum(
+            dict(filter(lambda x: "PRIMA_NOTFND" in x[0], messages_dict.items())).values()
+        )
+        stats_dict["fail_seqlen_short_count"] = sum(
+            dict(filter(lambda x: "SEQLEN<" in x[0], messages_dict.items())).values()
+        )
+
+        # Barcode Chunk-Specific Failures
+        stats_dict["fail_bc1_corrfail_count"] = sum(
+            dict(filter(lambda x: "BC1:CORRFAIL" in x[0], messages_dict.items())).values()
+        )
+        stats_dict["fail_bc2_corrfail_count"] = sum(
+            dict(filter(lambda x: "BC2:CORRFAIL" in x[0], messages_dict.items())).values()
+        )
+        stats_dict["fail_bc3_corrfail_count"] = sum(
+            dict(filter(lambda x: "BC3:CORRFAIL" in x[0], messages_dict.items())).values()
+        )
+
+        # Indel vs Substitution Context
+        stats_dict["fail_indel_with_corrfail_count"] = sum(
+            dict(filter(lambda x: "FAIL|NIM" in x[0] and "SUBSET:INDL" in x[0] and "CORRFAIL" in x[0], messages_dict.items())).values()
+        )
+        stats_dict["fail_substitution_only_corrfail_count"] = sum(
+            dict(filter(lambda x: "FAIL|NIM" in x[0] and "SUBSET:OK" in x[0] and "CORRFAIL" in x[0], messages_dict.items())).values()
+        )
+
+        # Multi-chunk Failures (messages with multiple CORRFAIL occurrences)
+        stats_dict["fail_multiple_chunks_count"] = sum(
+            dict(filter(lambda x: "FAIL|NIM" in x[0] and x[0].count("CORRFAIL") > 1, messages_dict.items())).values()
+        )
+
         return stats_dict
 
     @staticmethod
@@ -559,3 +606,12 @@ class BarcodeExtractor:
             f"FAIL_SPC_NOTFND_FRACT: {round(stats_dict['fail_spc_notfnd_fraction'], 3)}, FAIL_INDL_FRACT: {round(stats_dict['fail_corr_indl_fraction'], 3)}, FAIL_CORR_BASE_SUB_FRACT: {round(stats_dict['fail_corr_base_sub_fraction'], 3)}"
         )
         log.info(f"FRACT_TOP10_BCS: {np.round(stats_dict['top_10_fractions'], 4)}")
+        log.info(
+            f"PRIMER_FAILS: PRIMC={stats_dict['fail_primc_notfnd_count']:,}, PRIMA={stats_dict['fail_prima_notfnd_count']:,}, SEQLEN={stats_dict['fail_seqlen_short_count']:,}"
+        )
+        log.info(
+            f"BC_FAILS: BC1={stats_dict['fail_bc1_corrfail_count']:,}, BC2={stats_dict['fail_bc2_corrfail_count']:,}, BC3={stats_dict['fail_bc3_corrfail_count']:,}"
+        )
+        log.info(
+            f"CONTEXT_FAILS: INDEL={stats_dict['fail_indel_with_corrfail_count']:,}, SUBST={stats_dict['fail_substitution_only_corrfail_count']:,}, MULTI={stats_dict['fail_multiple_chunks_count']:,}"
+        )
