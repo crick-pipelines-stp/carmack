@@ -26,6 +26,8 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
     """
     ChemistryCarmack class.
     """
+    def __init__(self) -> None:
+        self.barcode_set = self.load_barcode_set()
 
     def load_barcode_set(self) -> list:
         """Load barcode set for chemistry."""
@@ -77,7 +79,6 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
         """Subset barcodes from sequence for given chemistry where they are supposed to be found using local alignment"""
 
         # Init
-        barcode_set = self.load_barcode_set()
         max_corrections = 1
         msg = "SUBSET:OK"
 
@@ -86,7 +87,7 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
             return None, None, "SUBSET:SEQLEN<" + str(BC_LENGTH)
 
         # Find BC3 (leftmost barcode) in full sequence
-        bc3_coords = get_best_barcode(seq, barcode_set[2], max_corrections=max_corrections)
+        bc3_coords = get_best_barcode(seq, self.barcode_set[2], max_corrections=max_corrections)
         if bc3_coords[0] is None:
             return None, None, "SUBSET:" + bc3_coords[1] + "3"
 
@@ -98,7 +99,7 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
             return None, None, "SUBSET:SEQSHORT2"
 
         bc2_coords = get_best_barcode(
-            seq[search_start_bc2:], barcode_set[1], max_corrections=max_corrections
+            seq[search_start_bc2:], self.barcode_set[1], max_corrections=max_corrections
         )
         if bc2_coords[0] is None:
             return None, None, "SUBSET:" + bc2_coords[1] + "2"
@@ -114,7 +115,7 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
             return None, None, "SUBSET:SEQSHORT1"
 
         bc1_coords = get_best_barcode(
-            seq[search_start_bc1:], barcode_set[0], max_corrections=max_corrections
+            seq[search_start_bc1:], self.barcode_set[0], max_corrections=max_corrections
         )
         if bc1_coords[0] is None:
             return None, None, "SUBSET:" + bc1_coords[1] + "1"

@@ -129,6 +129,9 @@ def align_sequence(
     max_score = min(len(seq1), len(seq2))
     if alignments.score >= max(0, max_score - max_corrections):
         return res
+    
+    # Else
+    return None
 
 
 def get_best_barcode(

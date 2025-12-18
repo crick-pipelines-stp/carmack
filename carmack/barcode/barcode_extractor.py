@@ -32,7 +32,7 @@ def _process_barcode_batch(reads_batch, chemistry):
     barcode_chunks = {}
 
     for seqname, seq, qs in reads_batch:
-        # Conver the quality score to a numpy array
+        # Convert the quality score to a numpy array
         qs = np.frombuffer(qs.encode("UTF-8"), dtype=np.byte) - ILLUMINA_QUAL_OFFSET
         # First scale qs scores into a range so that the statistics dont get ruined by outliers
         np.clip(qs, ILLUMINA_QUAL_MIN_SCORE, ILLUMINA_QUAL_MAX_SCORE, out=qs)
@@ -106,7 +106,6 @@ class BarcodeExtractor:
         with (
             open(bc_all_path, "w") as file_all,
             open(bc_valid_path, "w") as file_valid,
-            # progress_bar(total=self.total_reads, desc="Assigning barcodes", unit="reads") as progress,
             progress_bar(unit="reads") as progress,
         ):
             task = progress.add_task("Assigning barcodes", total=self.total_reads)
@@ -230,7 +229,7 @@ class BarcodeExtractor:
         completed_reads = 0
 
         # Check batch_size
-        batch_size_checked = min(batch_size, floor(self.total_reads / cpu_count))
+        batch_size_checked = max(min(batch_size, floor(self.total_reads / cpu_count)), 1)
 
         if batch_size != batch_size_checked:
             log.debug(
