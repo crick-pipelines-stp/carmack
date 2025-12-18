@@ -29,7 +29,7 @@ click.rich_click.USE_RICH_MARKUP = True
 click.rich_click.COMMAND_GROUPS = {
     "carmack": [
         {
-            "name": "Commands for users",
+            "name": "Main commands",
             "commands": [
                 "extract-cell-barcodes",
                 "fastq-filter",
@@ -45,10 +45,6 @@ click.rich_click.COMMAND_GROUPS = {
         }
     ]
 }
-# click.rich_click.OPTION_GROUPS = {
-#     "carmack extract-cell-barcodes": [{"options": ["--chemistry", "--maxdist", "--line_count", "--output_dir", "--prefix"]}],
-#     "carmack fastq-filter": [{"options": ["--output_dir", "--prefix"]}]
-# }
 
 # Set up rich stderr console
 stderr = rich.console.Console(stderr=True)
@@ -128,7 +124,6 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
 
 @carmack_cli.command("extract-cell-barcodes")
 @click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
-@click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")
 @click.argument("barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<barcodes>")
 @click.option("-c","--chemistry", required=True, type=str, help="Chemistry class for barcode extraction")
 @click.option("-d", "--max_dist", required=True, type=int, help="Maximal Hamming distance for barcode extraction")
@@ -136,7 +131,8 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
 @click.option("-l", "--log_freq", required=False, type=int, default=10000, help="Number of lines after which stats are logged during barcode extraction")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_stats, log_freq, output_dir, prefix):
+@click.option("-n", "--cpu_count", required=False, type=int, default=get_cpu_count(), show_default=True, help="Number of CPUs to use for barcode extraction. Default is all available CPUs minus 1.")
+def extract_cell_barcodes(read1, barcodes, chemistry, max_dist, print_stats, log_freq, output_dir, prefix, cpu_count):
     """
     Extracts valid cell barcodes by correcting for indels and sequencing errors, using a specified maximal Hamming distance and barcode chemistry.
 
@@ -144,8 +140,15 @@ def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_sta
     Additional files containing barcode stats and counts are also saved to the output directory.
     """
 
-    barcode_ext = BarcodeExtractor(read1, read2, barcodes, chemistry)
-    barcode_ext.extract_cell_barcodes(max_dist, print_stats, log_freq, output_dir, prefix)
+    barcode_ext = BarcodeExtractor(read1, barcodes, chemistry)
+    barcode_ext.extract_cell_barcodes(
+        output_dir = output_dir,
+        max_corrections = max_dist,
+        print_stats = print_stats,
+        log_freq = log_freq,
+        prefix = prefix,
+        cpu_count = cpu_count
+    )
 
 
 @carmack_cli.command("fastq-filter")

@@ -7,7 +7,8 @@ readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
 keywords = []
 authors = [
-    { name = "Chris Cheshire", email = "chris.cheshire@crick.ac.uk" }
+    { name = "Chris Cheshire", email = "chris.cheshire@crick.ac.uk" },
+    { name = "Hiranyamaya (Hiru) Dash", email = "hdash.work@gmail.com" }
 ]
 dependencies = [
     "click",
@@ -15,11 +16,11 @@ dependencies = [
     "rich",
     "numpy",
     "pysam",
-    "tqdm",
     "matplotlib",
     "scipy",
     "kneed",
     "numba",
+    "biopython"
 ]
 scripts = { "carmack" = "carmack.__main__:run_carmack" }
 

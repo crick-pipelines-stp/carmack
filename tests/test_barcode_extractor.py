@@ -30,7 +30,7 @@ class TestBarcodeExtractor(unittest.TestCase):
         # Setup
         expected_hash = "21f54e9372a0b5b304064cb88cff39f6"
         test_file = os.path.join(temp_path, "barcode_counts.txt")
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
 
         # Test
         bc_counts = barcode_ext.calc_raw_barcode_match_counts()
@@ -52,7 +52,7 @@ class TestBarcodeExtractor(unittest.TestCase):
         # Setup
         expected_hash = "3b2ee579aaa8e472c635cfc04e6cdeca"
         test_file = os.path.join(temp_path, "barcode_dist.txt")
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
 
         # Test
         bc_dist = barcode_ext.calc_raw_barcode_match_dist()
@@ -73,23 +73,27 @@ class TestBarcodeExtractor(unittest.TestCase):
 
         expected_hash_file_all = "880f4312a753e63d9d8a81f1e7010f6a"
         expected_hash_file_valid = "55a3edbc0adf3a4552f9cdf5cfaeeb4d"
-        expected_hash_file_bc_stats = "2b7a4a1062480fe2df561b6ab8fbc53e"
+        expected_hash_file_bc_stats = "287dddba1fa60acdbfcffd8b18d691a0"
         expected_hash_file_bc_counts = "b49cdb0ad6b3fc4178a10f4e75e8b4be"
 
         # Init
         max_corrections = 2
         log_freq = 100
-        prefix = ""
+        prefix = utils.get_prefix(R1_PATH)
         print_stats = True
         test_file_all = os.path.join(temp_path, prefix + ".bc_all.csv")
         test_file_valid = os.path.join(temp_path, prefix + ".bc_valid.csv")
         test_file_bc_stats = os.path.join(temp_path, prefix + ".bc_counts_stats.csv")
         test_file_bc_counts = os.path.join(temp_path, prefix + ".bc_counts.csv")
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
 
         # Run extract_cell_barcodes
         barcode_ext.extract_cell_barcodes(
-            max_corrections, print_stats, log_freq, temp_path, prefix
+            output_dir=temp_path,
+            max_corrections=max_corrections,
+            log_freq=log_freq,
+            print_stats=print_stats,
+            prefix=prefix,
         )
 
         # Check md5
@@ -102,14 +106,18 @@ class TestBarcodeExtractor(unittest.TestCase):
     def test_bcext_extract_cell_barcodes_prefix(self, temp_path):
         """Test barcode extraction using either no or a user-specified prefix"""
         # Init
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
         max_corrections = 2
         log_freq = 100
         print_stats = True
 
         # Run extract_cell_barcodes
         barcode_ext.extract_cell_barcodes(
-            max_corrections, print_stats, log_freq, temp_path, prefix="hydrop_scatac_1_S2_R2_001"
+            output_dir=temp_path,
+            max_corrections=max_corrections,
+            log_freq=log_freq,
+            print_stats=print_stats,
+            prefix="hydrop_scatac_1_S2_R2_001",
         )
 
         # Get files
@@ -122,17 +130,22 @@ class TestBarcodeExtractor(unittest.TestCase):
     def test_bcext_extract_cell_barcodes_no_prefix(self, temp_path):
         """Test barcode extraction using either no or a user-specified prefix"""
         # Init
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
         max_corrections = 2
         log_freq = 100
         print_stats = True
 
         # Run extract_cell_barcodes
-        barcode_ext.extract_cell_barcodes(max_corrections, print_stats, log_freq, temp_path)
+        barcode_ext.extract_cell_barcodes(
+            output_dir=temp_path,
+            max_corrections=max_corrections,
+            log_freq=log_freq,
+            print_stats=print_stats,
+        )
 
         # Get files
         files = os.listdir(temp_path)
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
         prefix = barcode_ext.read1.rsplit("/", 1)[-1].split(".", 1)[0]
 
         # assert prefix in all filenames
@@ -238,21 +251,6 @@ class TestBarcodeExtractorFixtures:
     # ------------------------------------------------------------------------------ #
     # gen_indel_set
     # ------------------------------------------------------------------------------ #
-
-    @pytest.mark.parametrize(
-        "seq,target_len", [("TGTAGCAAGN", 10), ("NNTAGCAAGC", 10), ("NNTAGCAAGC", 8)]
-    )
-    def test_bcext_gen_indel_set_n_in_seq(self, seq, target_len):
-        """Test generation of indel sets with N in input sequence raises a ValueError."""
-        with pytest.raises(ValueError):
-
-            # Init
-            qs = np.full(len(seq), 30)
-
-            # Generate indels
-            seq_set, qs_set = BarcodeExtractor.gen_indel_set(
-                seq, qs, target_len, 2
-            )  # pylint: disable=unused-variable
 
     @pytest.mark.parametrize(
         "seq,target_len,expected",
@@ -410,7 +408,7 @@ class TestBarcodeExtractorFixtures:
         barcode_sets = chemistry.load_barcode_set()
 
         # Get bc counts
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
         bc_counts = barcode_ext.calc_raw_barcode_match_counts()
 
         # Set either very high or very low counts for target barcodes
@@ -484,12 +482,13 @@ class TestBarcodeExtractorFixtures:
         barcode_set = chemistry.load_barcode_set()
         barcode_wl = chemistry.construct_whitelist(barcode_set)
 
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
         bc_dist = barcode_ext.calc_raw_barcode_match_dist()
+        barcode_chunk = chemistry.subset_barcode_chunks(seq, qs)
 
         # Test
         bc, msg = barcode_ext.correct_barcode(
-            seq, qs, barcode_wl, barcode_set, bc_dist, chemistry, 2
+            seq, barcode_chunk, barcode_wl, barcode_set, bc_dist, chemistry, 2
         )
 
         # Assert
@@ -508,7 +507,7 @@ class TestBarcodeExtractorFixtures:
         chemistry = ChemistryFactory.get_chemistry("hydrop")
         barcode_set = chemistry.load_barcode_set()
         barcode_wl = chemistry.construct_whitelist(barcode_set)
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
         bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
         # Iterate cell barcode reads and correct barcodes
@@ -516,12 +515,13 @@ class TestBarcodeExtractorFixtures:
         fq_file = FastqFile(barcode_ext.cell_barcode)
         stream = fq_file.open_read_iterator(as_string=True)
         with open(test_file, "w") as out_file:
-            for name, seq, qs in stream:
+            for _, seq, qs in stream:
+                dqs = np.frombuffer(qs.encode("UTF-8"), dtype=np.byte) - 33
+                barcode_chunk = chemistry.subset_barcode_chunks(seq, dqs)
 
                 if count % skip_op == 0:
-                    dqs = np.frombuffer(qs.encode("UTF-8"), dtype=np.byte) - 33
                     bc, msg = barcode_ext.correct_barcode(
-                        seq, dqs, barcode_wl, barcode_set, bc_dist, chemistry, 2
+                        seq, barcode_chunk, barcode_wl, barcode_set, bc_dist, chemistry, 2
                     )
 
                     if bc is None:
@@ -529,8 +529,6 @@ class TestBarcodeExtractorFixtures:
 
                     line = bc + "," + msg
                     out_file.write(line + "\n")
-
-                    # print(line)
 
                 count = count + 1
 
@@ -577,7 +575,7 @@ class TestBarcodeExtractorFixtures:
         chemistry = ChemistryFactory.get_chemistry("hydrop")
         barcode_set = chemistry.load_barcode_set()
         barcode_wl = chemistry.construct_whitelist(barcode_set)
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
         bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
         count = 0
@@ -610,7 +608,7 @@ class TestBarcodeExtractorFixtures:
         chemistry = ChemistryFactory.get_chemistry("hydrop")
         barcode_set = chemistry.load_barcode_set()
         barcode_wl = chemistry.construct_whitelist(barcode_set)
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
         bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
         # Iterate over all cell barcodes, correct them and write the output to a file
@@ -661,7 +659,7 @@ class TestBarcodeExtractorFixtures:
         chemistry = ChemistryFactory.get_chemistry("hydrop")
         barcode_set = chemistry.load_barcode_set()
         barcode_wl = chemistry.construct_whitelist(barcode_set)
-        barcode_ext = BarcodeExtractor(R1_PATH, R2_PATH, CB_PATH, "hydrop")
+        barcode_ext = BarcodeExtractor(R1_PATH, CB_PATH, "hydrop")
         bc_dist = barcode_ext.calc_raw_barcode_match_dist()
 
         # Iterate over all cell barcodes, correct them and write the output to a file
@@ -704,9 +702,15 @@ class TestBarcodeExtractorFixtures:
         msg_dict = {
             "OK|WL_MATCH": 100,
             "OK|NIM|SUBSET:OK|BC1:CORROK|BC2:CORROK|BC3:CORROK": 50,
-            "FAIL|NIM|SUBSET:PRIMC_NOTFND": 30,
-            "FAIL|NIM|SUBSET:PRIMA_NOTFND": 20,
-            "FAIL|NIM|SUBSET:SEQLEN<96": 10,
+            "FAIL|NIM|SUBSET:SEQLEN<96": 17,
+            "FAIL|NIM|SUBSET:SEQSHORT1": 19,
+            "FAIL|NIM|SUBSET:SEQSHORT2": 23,
+            "FAIL|NIM|SUBSET:NOTFNDBC1": 29,
+            "FAIL|NIM|SUBSET:NOTFNDBC2": 31,
+            "FAIL|NIM|SUBSET:NOTFNDBC3": 37,
+            "FAIL|NIM|SUBSET:AMBIGBC1": 41,
+            "FAIL|NIM|SUBSET:AMBIGBC2": 43,
+            "FAIL|NIM|SUBSET:AMBIGBC3": 47,
             "FAIL|NIM|SUBSET:INDL|BC1:CORRFAIL|BC2:CORROK|BC3:CORROK": 15,
             "FAIL|NIM|SUBSET:INDL|BC1:CORROK|BC2:CORRFAIL|BC3:CORROK": 12,
             "FAIL|NIM|SUBSET:INDL|BC1:CORROK|BC2:CORROK|BC3:CORRFAIL": 8,
@@ -726,13 +730,23 @@ class TestBarcodeExtractorFixtures:
         # Test
         stats_dict = BarcodeExtractor.stats_calc(msg_dict, bc_dict)
 
-        # Assert new granular statistics
-        # Primer/Anchor Issues
-        assert stats_dict["fail_primc_notfnd_count"] == 30
-        assert stats_dict["fail_prima_notfnd_count"] == 20
-        assert stats_dict["fail_seqlen_short_count"] == 10
+        # Assert granular statistics (keys in barcode_extractor.py)
+        # Sequence too short buckets
+        assert stats_dict["fail_seqlen_short_count"] == 17
+        assert stats_dict["fail_seqlen_short_count_bc1"] == 19
+        assert stats_dict["fail_seqlen_short_count_bc2"] == 23
 
-        # Barcode Chunk-Specific Failures
+        # No-alignments buckets
+        assert stats_dict["fail_noalignments_bc1"] == 29
+        assert stats_dict["fail_noalignments_bc2"] == 31
+        assert stats_dict["fail_noalignments_bc3"] == 37
+
+        # Ambiguous-alignment buckets
+        assert stats_dict["fail_ambigalignment_bc1"] == 41
+        assert stats_dict["fail_ambigalignment_bc2"] == 43
+        assert stats_dict["fail_ambigalignment_bc3"] == 47
+
+        # Barcode Chunk-Specific Correction Failures
         # BC1 failures: 15 + 25 + 5 + 4 = 49
         assert stats_dict["fail_bc1_corrfail_count"] == 49
         # BC2 failures: 12 + 18 + 5 + 4 = 39

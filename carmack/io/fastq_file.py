@@ -5,6 +5,9 @@ from .subprocess_stream import SubprocessStream
 GZIP_SUFFIX = ".gz"
 LZ4_SUFFIX = ".lz4"
 
+LINES_PER_READ = 4
+LINES_PER_PAIRED_READ = 8
+
 
 class FastqFile(GzipFile):
     """
@@ -17,6 +20,27 @@ class FastqFile(GzipFile):
         """
         self.paired_end = paired_end
         super().__init__(filename)
+
+    def count_reads(self) -> int:
+        """
+        Count the total number of reads in the FASTQ file.
+
+        Returns:
+            int: Total number of reads in the file.
+        """
+        line_count = 0
+
+        if self.compressor is not None:
+            stream = SubprocessStream([self.compressor, "-c", "-d", self.filename], mode="r")
+        else:
+            stream = open(self.filename, "r")
+
+        with stream as fastq_file:
+            for _ in fastq_file:
+                line_count += 1
+
+        lines_per_record = LINES_PER_PAIRED_READ if self.paired_end else LINES_PER_READ
+        return line_count // lines_per_record
 
     def open_read_iterator(self, as_string: bool = False):
         """
@@ -46,10 +70,10 @@ class FastqFile(GzipFile):
                     qual2 = line.strip()
 
                 line_index += 1
-                if not (self.paired_end) and line_index == 4:
+                if not (self.paired_end) and line_index == LINES_PER_READ:
                     line_index = 0
 
-                if line_index == 8:
+                if line_index == LINES_PER_PAIRED_READ:
                     line_index = 0
 
                 if line_index == 0:

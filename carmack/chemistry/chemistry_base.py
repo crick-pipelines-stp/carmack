@@ -19,16 +19,16 @@ class ChemistryBase(ABC):
         pass
 
     @abstractmethod
-    def construct_whitelist(self, barcode_set: list) -> list:
+    def construct_whitelist(self, barcode_set: list) -> set:
         """Construct full whitelist from barcode set"""
         pass
 
     @abstractmethod
-    def subset_whitelist_guess(self, seq: list) -> str:
+    def subset_whitelist_guess(self, seq: str) -> str | None:
         """Make best guess sequence subset based on protocol chemistry for a whitelist match"""
         pass
 
     @abstractmethod
-    def subset_barcode_chunks(self, seq: str, qs: np.ndarray) -> list:
+    def subset_barcode_chunks(self, seq: str, qs: np.ndarray) -> tuple:
         """Subset barcodes locations from sequence for given chemistry."""
         pass

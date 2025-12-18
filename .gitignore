@@ -125,3 +125,6 @@ dump
 
 # Containers
 .devcontainer/container.env
+
+# VSCode
+*.code-workspace

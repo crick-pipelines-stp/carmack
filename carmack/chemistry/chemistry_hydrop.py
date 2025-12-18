@@ -42,7 +42,7 @@ class ChemistryHydrop(ChemistryBase):
 
         return [bc1, bc2, bc3]
 
-    def construct_whitelist(self, barcode_set):
+    def construct_whitelist(self, barcode_set) -> set:
         whitelist = set()
 
         # Create combinations of BC1 + BC2 + BC3
@@ -52,7 +52,7 @@ class ChemistryHydrop(ChemistryBase):
 
         return whitelist
 
-    def subset_whitelist_guess(self, seq: str) -> str:
+    def subset_whitelist_guess(self, seq: str) -> str | None:
         """Make best guess sequence subset based on standard hydrop chemistry for a whitelist match"""
 
         # Return if seq too short for hydrop chemistry
@@ -71,7 +71,7 @@ class ChemistryHydrop(ChemistryBase):
         # Return constructed 30 base hydrop whitelist bc
         return bc1 + bc2 + bc3
 
-    def subset_barcode_chunks(self, seq: str, qs: np.ndarray) -> list:
+    def subset_barcode_chunks(self, seq: str, qs: np.ndarray) -> tuple:
         """Subset barcodes from sequence for given chemistry where they are supposed to be found using locator sequences"""
 
         # Init

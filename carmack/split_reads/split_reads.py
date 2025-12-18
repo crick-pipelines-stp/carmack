@@ -1,14 +1,12 @@
 import csv
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
-from typing import Optional, Set
 
 import pysam
-from tqdm import tqdm
 
-from carmack.utils import get_prefix
+from carmack.utils import get_prefix, progress_bar
 
 
 log = logging.getLogger(__name__)
@@ -19,11 +17,9 @@ class BamSplitter:
     Class that splits a BAM file into two separate files based on barcode (BC) tag value.
     """
 
-    def __init__(self, bam: str, bai: Optional[str]) -> None:
+    def __init__(self, bam: str, bai: str | None) -> None:
         self.bam = bam
         self.bai = bai
-
-        self.barformat = "{l_bar}{bar}| {n_fmt}/{total_fmt}"  # Tqdm bar format prefix
 
         log.debug(f"BamSplitter object created with BAM: {self.bam} and BAI: {self.bai}")
 
@@ -43,7 +39,7 @@ class BamSplitter:
 
     def split_bam(
         self, stack: ExitStack, tagged_bam: pysam.AlignmentFile, output_dir: str, prefix: str
-    ) -> Set[str]:
+    ) -> set[str]:
         """
         Segregate reads based on barcode tag value and save to separate files.
         Additionally, write the barcode counts to a CSV file.
@@ -59,31 +55,30 @@ class BamSplitter:
         barcode_counter = {}
         split_files = set()
 
-        for read in tqdm(
-            tagged_bam.fetch(),
-            bar_format=f"{self.barformat} reads",
-            total=tagged_bam.count(),
-        ):
-            barcode = self.get_barcode_tag(read)
+        with progress_bar(unit="reads") as progress:
+            task = progress.add_task("Splitting reads", total=tagged_bam.count())
+            for read in tagged_bam.fetch():
+                barcode = self.get_barcode_tag(read)
 
-            # Create a new file handle for the barcode
-            if barcode not in file_handles.keys():
-                split_file = os.path.join(output_dir, f"{prefix}_{barcode}.{SPLIT_BAM_SUFFIX}")
-                split_files.add(split_file)
-                file_handles[barcode] = stack.enter_context(
-                    pysam.AlignmentFile(
-                        split_file,
-                        "wb",
-                        header=tagged_bam.header,
+                # Create a new file handle for the barcode
+                if barcode not in file_handles.keys():
+                    split_file = os.path.join(output_dir, f"{prefix}_{barcode}.{SPLIT_BAM_SUFFIX}")
+                    split_files.add(split_file)
+                    file_handles[barcode] = stack.enter_context(
+                        pysam.AlignmentFile(
+                            split_file,
+                            "wb",
+                            header=tagged_bam.header,
+                        )
                     )
-                )
-                barcode_counter[barcode] = 0
+                    barcode_counter[barcode] = 0
 
-                log.debug(f"File and count entry created for barcode: {barcode}")
+                    log.debug(f"File and count entry created for barcode: {barcode}")
 
-            # Write the read to the corresponding barcode file and increment the counter
-            file_handles[barcode].write(read)
-            barcode_counter[barcode] += 1
+                # Write the read to the corresponding barcode file and increment the counter
+                file_handles[barcode].write(read)
+                barcode_counter[barcode] += 1
+                progress.update(task, advance=1)
 
         log.info(
             f"Finished splitting reads in BAM file. Total files created = {len(file_handles)}"
@@ -104,7 +99,7 @@ class BamSplitter:
 
         return split_files
 
-    def split(self, output_dir: str, prefix: Optional[str] = None, cpu_count: int = 1) -> None:
+    def split(self, output_dir: str, prefix: str | None = None, cpu_count: int = 1) -> None:
         """
         Split barcode-tagged BAM file into separate files based on barcode tag (BC) value.
 
@@ -112,9 +107,8 @@ class BamSplitter:
         BAI files.
         Each file is named according to the barcode tag (BC) value.
         """
-        # Set prefix, if non specified
-        if prefix is None:
-            prefix = get_prefix(self.bam)
+        # Set prefix, if none specified
+        prefix = prefix or get_prefix(self.bam)
 
         # Split BAM
         with ExitStack() as stack:
@@ -126,18 +120,20 @@ class BamSplitter:
         SORTED_BAM_SUFFIX = "split.sorted.bam"
 
         def sort_index(split_file: str, logger: logging.Logger = log) -> None:
-            log.debug(f"Sorting and indexing split file: {split_file}")
+            logger.debug(f"Sorting and indexing split file: {split_file}")
             sorted_file = os.path.join(output_dir, f"{get_prefix(split_file)}.{SORTED_BAM_SUFFIX}")
             pysam.sort("-o", sorted_file, split_file)
             pysam.index(sorted_file)
 
         # Multi-threaded sorting and indexing
-        with ThreadPoolExecutor(max_workers=cpu_count) as executor:
-            for _ in tqdm(
-                executor.map(sort_index, split_files),
-                total=len(split_files),
-                bar_format=f"{self.barformat} files",
-            ):
-                pass
+        with (
+            ThreadPoolExecutor(max_workers=cpu_count) as executor,
+            progress_bar(unit="files") as progress,
+        ):
+            task = progress.add_task("Sorting and indexing BAM files", total=len(split_files))
+            futures = [executor.submit(sort_index, split_file, log) for split_file in split_files]
+
+            for _ in as_completed(futures):
+                progress.update(task, advance=1)
 
         log.info("Finished sorting and indexing split BAM files.")

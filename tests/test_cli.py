@@ -78,12 +78,11 @@ class TestCli(unittest.TestCase):
             "log_freq": 100,
             "output_dir": ".",
             "prefix": "",
+            "cpu_count": 1,
         }
 
         # Test
-        cmd = (
-            ["extract-cell-barcodes"] + [R1_PATH, R2_PATH, CB_PATH] + self.assemble_params(params)
-        )
+        cmd = ["extract-cell-barcodes"] + [R1_PATH, CB_PATH] + self.assemble_params(params)
         result = self.invoke_cli(cmd)
 
         # print(mock_barcode_ext.call_args)
@@ -94,9 +93,14 @@ class TestCli(unittest.TestCase):
 
         # Assert
         self.assertTrue(result.exit_code == 0)
-        mock_barcode_ext.assert_called_once_with(R1_PATH, R2_PATH, CB_PATH, params["chemistry"])
+        mock_barcode_ext.assert_called_once_with(R1_PATH, CB_PATH, params["chemistry"])
         mock_barcode_ext.return_value.extract_cell_barcodes.assert_called_once_with(
-            params["max_dist"], False, params["log_freq"], params["output_dir"], params["prefix"]
+            max_corrections=params["max_dist"],
+            print_stats=False,
+            log_freq=params["log_freq"],
+            output_dir=params["output_dir"],
+            prefix=params["prefix"],
+            cpu_count=params["cpu_count"],
         )
 
     @mock.patch("carmack.__main__.FastqFilter", autospec=True)

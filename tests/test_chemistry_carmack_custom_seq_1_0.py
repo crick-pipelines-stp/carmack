@@ -19,7 +19,7 @@ TEST_BC_3 = "TGACCGTACT"
 BC_READS_PATH = "tests/data/carmack/SK462_EKDL250005055-1A_22VGJ7LT4_L6_1.fastq.gz"
 
 
-class TestChemistryCarmackCustomSeq10():
+class TestChemistryCarmackCustomSeq10:
     def test_chem_carmack_cs10_load_barcode_set(self):
         # Setup
         chemistry = ChemistryCarmackCustomSeq10()
@@ -40,10 +40,10 @@ class TestChemistryCarmackCustomSeq10():
         # Setup
         chemistry = ChemistryFactory.get_chemistry("carmack_custom_seq_1_0")
 
-        # Test
+        # Test
         barcode_set = chemistry.load_barcode_set()
 
-        # Assert
+        # Assert
         assert_that(list(barcode_set[0])).contains(TEST_BC_1)
         assert_that(list(barcode_set[1])).contains(TEST_BC_2)
         assert_that(list(barcode_set[2])).contains(TEST_BC_3)
@@ -74,9 +74,8 @@ class TestChemistryCarmackCustomSeq10():
                 out_file.write(bc_wl + "\n")
         utils.validate_file_md5(test_file, expected_hash)
 
-
     def test_chem_carmack_cs10_subset_barcodes_md5(self, tmp_path):
-        expected_hash = "7a71e9a2e2de7ac3a371d5aa0a077c36"
+        expected_hash = "7e2377bdf7f944e426d1147c040f13f3"
 
         test_file = os.path.join(tmp_path, "barcodes.txt")
         fq_file = FastqFile(BC_READS_PATH)
@@ -87,7 +86,6 @@ class TestChemistryCarmackCustomSeq10():
         with open(test_file, "w") as out_file:
             for _, seq, _ in stream:
                 qs = np.full(len(seq), 30)
-                chemistry.subset_barcode_chunks(seq, qs)
                 barcode_chunks, _, _ = chemistry.subset_barcode_chunks(seq, qs)
 
                 if barcode_chunks is not None:
@@ -102,9 +100,18 @@ class TestChemistryCarmackCustomSeq10():
     @pytest.mark.parametrize(
         "seq, expected_seq",
         [
-            ("TGTAGCAAGTATGGAAGCCGACGAATTAGACCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACT", None),  # < 96 bases
-            ("TGTAGCAAGTATGGAAGCCGACGAATTAGACCAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACT", None),  # < 96 bases
-            ("TGTAGCAAGTATGGAAGCCGACGAATTAGACCAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACTTGTGTATAAGGACCTCGTTGCC", "CTTGTGTATAACATGGAAGCGAATTAGACC"),  # >= 96 bases, expect first 96 bases
+            (
+                "TGTAGCAAGTATGGAAGCCGACGAATTAGACCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACT",
+                None,
+            ),  # < 96 bases
+            (
+                "TGTAGCAAGTATGGAAGCCGACGAATTAGACCAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACT",
+                None,
+            ),  # < 96 bases
+            (
+                "TGTAGCAAGTATGGAAGCCGACGAATTAGACCAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACTTGTGTATAAGGACCTCGTTGCC",
+                "CTTGTGTATAACATGGAAGCGAATTAGACC",
+            ),  # >= 96 bases, expect first 96 bases
         ],
     )
     def test_chem_carmack_cs10_subset_whitelist_guess(self, seq, expected_seq):
@@ -115,12 +122,32 @@ class TestChemistryCarmackCustomSeq10():
     @pytest.mark.parametrize(
         "seq, qs, expected_barcodes, expected_qs, expected_msg",
         [
-            ("TGTAGCAAGTATGGAAGCCGACGAATTAGACCAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACTTGTGTATAAGGACCTCGTTGCC", np.array([30]*96), None, None, "SUBSET:PRIMC_NOTFND"),
-            ("TGTAGCAAGTATGGAAGCCGACGAATTAGACCAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACTTGTGTATAAGGACCTCGTTGCCATGGAAGCCGACGAATTAGACC", np.array([30]*120), None, None, "SUBSET:PRIMC_NOTFND"),
-            ("TGTGTATAAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACTATGGAAGCCGACGAATTAGACC", np.array([30]*96), None, None, "SUBSET:SEQLEN<96"),
+            (
+                "TGTAGCAAGTATGGAAGCCGACGAATTAGACCAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACTTGTGTATAAGGACCTCGTTGCC",
+                np.array([30] * 96),
+                None,
+                None,
+                "SUBSET:NOTFNDBC2",
+            ),
+            (
+                "TGTAGCAAGTATGGAAGCCGACGAATTAGACCAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACTTGTGTATAAGGACCTCGTTGCCATGGAAGCCGACGAATTAGACC",
+                np.array([30] * 120),
+                None,
+                None,
+                "SUBSET:NOTFNDBC2",
+            ),
+            (
+                "TGTGTATAAGGACCTCGTTGCCTTAGTTGGACATGGAAGCCGACGAATTAGACCTGACCGTACTATGGAAGCCGACGAATTAGACC",
+                np.array([30] * 96),
+                None,
+                None,
+                "SUBSET:SEQLEN<96",
+            ),
         ],
     )
-    def test_chem_carmack_cs10_subset_barcode_chunks(self, seq, qs, expected_barcodes, expected_qs, expected_msg):
+    def test_chem_carmack_cs10_subset_barcode_chunks(
+        self, seq, qs, expected_barcodes, expected_qs, expected_msg
+    ):
         chemistry = ChemistryFactory.get_chemistry("carmack_custom_seq_1_0")
         barcodes, qs_out, msg = chemistry.subset_barcode_chunks(seq, qs)
         assert_that(msg).is_equal_to(expected_msg)
