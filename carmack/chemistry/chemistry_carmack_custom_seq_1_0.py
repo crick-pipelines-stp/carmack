@@ -3,9 +3,10 @@ from itertools import product
 
 import numpy as np
 
-from carmack.io.gzip_file import GzipFile
-from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.barcode.barcode_utils import get_best_barcode
+from carmack.chemistry.chemistry_base import ChemistryBase
+from carmack.io.gzip_file import GzipFile
+
 
 BC_LENGTH = 96
 BC_CHUNK_LENGTH = 10

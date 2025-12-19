@@ -6,13 +6,14 @@ import hashlib
 import io
 import logging
 from os import cpu_count, path
+
 from rich.progress import (
-    Progress,
     BarColumn,
-    TaskProgressColumn,
     MofNCompleteColumn,
-    TextColumn,
+    Progress,
     SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
 )
 
 

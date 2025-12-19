@@ -1,9 +1,9 @@
 import csv
-import _csv  # for type hinting
 import logging
 import os
 from contextlib import ExitStack
 
+import _csv  # for type hinting
 import pysam
 
 from carmack.utils import get_prefix, progress_bar

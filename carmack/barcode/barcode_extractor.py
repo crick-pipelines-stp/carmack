@@ -1,16 +1,18 @@
 import itertools
 import logging
-from math import floor
 import os
 import re
-import numpy as np
-from functools import partial
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
+from math import floor
+
+import numpy as np
 
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.io.fastq_file import FastqFile
 from carmack.utils import get_prefix, progress_bar
+
 
 log = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 """IUPAC nucleotide ambiguity code handling for sequence alignment."""
 
-from Bio.Align import substitution_matrices
 import numpy as np
+from Bio.Align import substitution_matrices
 
 
 # IUPAC ambiguity codes mapping to possible nucleotides

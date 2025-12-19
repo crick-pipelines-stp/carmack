@@ -1,7 +1,9 @@
+import logging
+
 import numba
 import numpy as np
 from Bio.Align import PairwiseAligner
-import logging
+
 
 log = logging.getLogger(__name__)
 

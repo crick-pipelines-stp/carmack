@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from assertpy import assert_that
 
-from carmack.barcode.barcode_utils import hamming_distance, find_anchor_hamming
+from carmack.barcode.barcode_utils import find_anchor_hamming, hamming_distance
 
 
 def dna_to_array(seq: str) -> np.ndarray:

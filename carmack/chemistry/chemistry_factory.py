@@ -1,6 +1,6 @@
 from carmack.chemistry.chemistry_base import ChemistryBase
-from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ChemistryCarmackCustomSeq10
+from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 
 
 class ChemistryFactory:

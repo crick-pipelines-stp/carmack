@@ -7,8 +7,8 @@ import pytest
 from assertpy import assert_that
 
 import carmack.utils as utils
-from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ChemistryCarmackCustomSeq10
+from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.io.fastq_file import FastqFile
 
 
