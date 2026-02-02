@@ -11,7 +11,6 @@ import rich.traceback
 import rich_click as click
 
 import carmack
-from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.cell_caller.cell_caller import CellCaller
 from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.split_reads.split_reads import BamSplitter
@@ -31,7 +30,6 @@ click.rich_click.COMMAND_GROUPS = {
         {
             "name": "Commands for users",
             "commands": [
-                "extract-cell-barcodes",
                 "fastq-filter",
                 "bam-tag-deduplicate",
                 "call-cells",
@@ -125,27 +123,6 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
         "verbose": verbose,
         "hide_progress": hide_progress or verbose,  # Always hide progress bar with verbose logging
     }
-
-@carmack_cli.command("extract-cell-barcodes")
-@click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
-@click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")
-@click.argument("barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<barcodes>")
-@click.option("-c","--chemistry", required=True, type=str, help="Chemistry class for barcode extraction")
-@click.option("-d", "--max_dist", required=True, type=int, help="Maximal Hamming distance for barcode extraction")
-@click.option("-s", "--print_stats", is_flag=True, default=False, help="Flag describing whether or not to print summary stats during barcode extraction")
-@click.option("-l", "--log_freq", required=False, type=int, default=10000, help="Number of lines after which stats are logged during barcode extraction")
-@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
-@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_stats, log_freq, output_dir, prefix):
-    """
-    Extracts valid cell barcodes by correcting for indels and sequencing errors, using a specified maximal Hamming distance and barcode chemistry.
-
-    The total set of cell barcodes and valid cell barcodes are saved to separate files in the output directory.
-    Additional files containing barcode stats and counts are also saved to the output directory.
-    """
-
-    barcode_ext = BarcodeExtractor(read1, read2, barcodes, chemistry)
-    barcode_ext.extract_cell_barcodes(max_dist, print_stats, log_freq, output_dir, prefix)
 
 
 @carmack_cli.command("fastq-filter")

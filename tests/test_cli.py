@@ -67,38 +67,6 @@ class TestCli(unittest.TestCase):
         # print(result)
         self.assertTrue(result.exit_code == 2)
 
-    @mock.patch("carmack.__main__.BarcodeExtractor", autospec=True)
-    def test_cli_command_extract_cell_barcodes(self, mock_barcode_ext):
-        """Test extract_cell_barcodes"""
-
-        # Init
-        params = {
-            "chemistry": "hydrop",
-            "max_dist": 2,
-            "log_freq": 100,
-            "output_dir": ".",
-            "prefix": "",
-        }
-
-        # Test
-        cmd = (
-            ["extract-cell-barcodes"] + [R1_PATH, R2_PATH, CB_PATH] + self.assemble_params(params)
-        )
-        result = self.invoke_cli(cmd)
-
-        # print(mock_barcode_ext.call_args)
-        # print(mock_barcode_ext.return_value.extract_cell_barcodes.call_args)
-        # print(result)
-        # print(result.output)
-        # print(result.exception)
-
-        # Assert
-        self.assertTrue(result.exit_code == 0)
-        mock_barcode_ext.assert_called_once_with(R1_PATH, R2_PATH, CB_PATH, params["chemistry"])
-        mock_barcode_ext.return_value.extract_cell_barcodes.assert_called_once_with(
-            params["max_dist"], False, params["log_freq"], params["output_dir"], params["prefix"]
-        )
-
     @mock.patch("carmack.__main__.FastqFilter", autospec=True)
     def test_cli_command_fastq_filter(self, mock_fastq_filter):
         """Test fastq_filter"""
