@@ -79,4 +79,5 @@ def get_cpu_count(reserve: int = 1) -> int:
     """
     Get the number of CPUs available on the system minus the reserved amount.
     """
-    return max(1, cpu_count() - reserve)
+    cpus = cpu_count() or 1
+    return max(1, cpus - reserve)
