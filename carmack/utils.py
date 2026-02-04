@@ -7,6 +7,15 @@ import io
 import logging
 from os import cpu_count, path
 
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+)
+
 
 log = logging.getLogger(__name__)
 
@@ -81,3 +90,20 @@ def get_cpu_count(reserve: int = 1) -> int:
     """
     cpus = cpu_count() or 1
     return max(1, cpus - reserve)
+
+
+def progress_bar(unit: str, **kwargs) -> Progress:
+    """
+    Create a rich.progress.Progress progress bar with a custom bar format.
+    """
+    custom_progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TextColumn(unit),
+        expand=True,
+        **kwargs,
+    )
+    return custom_progress
