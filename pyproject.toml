@@ -15,7 +15,6 @@ dependencies = [
     "rich",
     "numpy",
     "pysam",
-    "tqdm",
     "matplotlib",
     "scipy",
     "kneed",

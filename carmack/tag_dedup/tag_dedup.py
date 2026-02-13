@@ -5,9 +5,8 @@ from contextlib import ExitStack
 from typing import List, Optional, Tuple
 
 import pysam
-from tqdm import tqdm
 
-from carmack.utils import get_prefix
+from carmack.utils import get_prefix, progress_bar
 
 
 log = logging.getLogger(__name__)
@@ -29,18 +28,6 @@ class TagDedup:
             f" and valid barcodes CSV: {bc_valid_csv}"
         )
 
-    def _progressbar(self, alignment_file: pysam.AlignmentFile, **kwargs):
-        """
-        Curry tqdm to work with pysam.AlignmentFile objects
-        """
-        return tqdm(
-            alignment_file.fetch(),
-            leave=True,
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} reads",
-            total=alignment_file.count(),
-            **kwargs,
-        )
-
     def _tag(
         self, untagged_bam: pysam.AlignmentFile, tagged_bam: pysam.AlignmentFile, bc_dict: dict
     ) -> None:
@@ -57,53 +44,58 @@ class TagDedup:
         # [(chromosome, start, template_len, barcode), ...]
         dup_index: List[Tuple[str, int, int, str]] = []
 
-        for read in self._progressbar(untagged_bam, desc="Tagging reads"):
-            read_name = read.query_name
+        total_reads = untagged_bam.count()
 
-            # Check if BC tag already exists
-            if read.has_tag("BC"):
-                log.error(
-                    f"Input BAM file read with BC tag detected (read name: {read_name}). Exiting."
+        with progress_bar(unit="reads") as pbar:
+            task = pbar.add_task("Tagging reads", total=total_reads)
+            for read in untagged_bam.fetch():
+                read_name = read.query_name
+
+                # Check if BC tag already exists
+                if read.has_tag("BC"):
+                    log.error(
+                        f"Input BAM file read with BC tag detected (read name: {read_name}). Exiting."
+                    )
+                    raise ValueError("Input BAM file reads already has 'BC' tags.")
+
+                # Log unpaired reads
+                if not read.is_paired:
+                    log.warning(f"Read {read_name} is not paired.")
+
+                # Check if read has a barcode
+                if read_name not in bc_dict:
+                    log.warning(
+                        f"Read {read_name} does not have a barcode in barcodes CSV",
+                        " and will be skipped.",
+                    )
+                    continue
+
+                # Get barcode and tag read
+                barcode = bc_dict[read_name]
+                read.set_tag("BC", barcode)
+                log.debug(
+                    f"Tagged read {read_name} (paired: {read.is_paired})" f" with barcode {barcode}"
                 )
-                raise ValueError("Input BAM file reads already has 'BC' tags.")
 
-            # Log unpaired reads
-            if not read.is_paired:
-                log.warning(f"Read {read_name} is not paired.")
+                # Tag duplicates
+                chr = read.reference_name
+                start = read.reference_start
+                seq_len = read.template_length  # Don't want absolute value
 
-            # Check if read has a barcode
-            if read_name not in bc_dict:
-                log.warning(
-                    f"Read {read_name} does not have a barcode in barcodes CSV",
-                    " and will be skipped.",
-                )
-                continue
+                if (chr, start, seq_len, barcode) in dup_index:
+                    # Only a duplicate if chr, start, seq_len and barcode match
+                    log.debug(f"Duplicate read detected: {read_name}")
+                    read.set_tag("DU", True)
+                else:
+                    read.set_tag("DU", False)
+                    dup_index.append((chr, start, seq_len, barcode))
 
-            # Get barcode and tag read
-            barcode = bc_dict[read_name]
-            read.set_tag("BC", barcode)
-            log.debug(
-                f"Tagged read {read_name} (paired: {read.is_paired})" f" with barcode {barcode}"
-            )
+                # Write tagged read to tagged BAM file
+                tagged_bam.write(read)
+                tag_count += 1
+                pbar.advance(task)
 
-            # Tag duplicates
-            chr = read.reference_name
-            start = read.reference_start
-            seq_len = read.template_length  # Don't want absolute value
-
-            if (chr, start, seq_len, barcode) in dup_index:
-                # Only a duplicate if chr, start, seq_len and barcode match
-                log.debug(f"Duplicate read detected: {read_name}")
-                read.set_tag("DU", True)
-            else:
-                read.set_tag("DU", False)
-                dup_index.append((chr, start, seq_len, barcode))
-
-            # Write tagged read to tagged BAM file
-            tagged_bam.write(read)
-            tag_count += 1
-
-        log.info(f"Finished tagging reads. Total reads tagged:" f"{tag_count}")
+            log.info(f"Finished tagging reads. Total reads tagged:" f"{tag_count}")
 
     def _dedup(
         self,
@@ -141,13 +133,16 @@ class TagDedup:
             # Return True if duplicate, False if not
             return dup_tag == 1
 
-        for read in self._progressbar(tagged_bam, desc="Deduplicating reads"):
-            read_dup = get_dup_tag(read)
+        with progress_bar(unit="reads") as pbar:
+            task = pbar.add_task("Deduplicating reads", total=tagged_bam.count())
+            for read in tagged_bam.fetch():
+                read_dup = get_dup_tag(read)
 
-            if not read_dup:
-                dedup_bam.write(read)
-                unique_count += 1
-
+                if not read_dup:
+                    dedup_bam.write(read)
+                    unique_count += 1
+                pbar.advance(task)
+                
         # MultiQC log
         # Two reads for one read-pair
         if multiqc_log is not None:

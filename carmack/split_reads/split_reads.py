@@ -6,9 +6,8 @@ from contextlib import ExitStack
 from typing import Optional, Set
 
 import pysam
-from tqdm import tqdm
 
-from carmack.utils import get_prefix
+from carmack.utils import get_prefix, progress_bar
 
 
 log = logging.getLogger(__name__)
@@ -22,8 +21,6 @@ class BamSplitter:
     def __init__(self, bam: str, bai: Optional[str]) -> None:
         self.bam = bam
         self.bai = bai
-
-        self.barformat = "{l_bar}{bar}| {n_fmt}/{total_fmt}"  # Tqdm bar format prefix
 
         log.debug(f"BamSplitter object created with BAM: {self.bam} and BAI: {self.bai}")
 
@@ -59,31 +56,31 @@ class BamSplitter:
         barcode_counter = {}
         split_files = set()
 
-        for read in tqdm(
-            tagged_bam.fetch(),
-            bar_format=f"{self.barformat} reads",
-            total=tagged_bam.count(),
-        ):
-            barcode = self.get_barcode_tag(read)
+        total_reads = tagged_bam.count()
+        with progress_bar(unit="reads") as pbar:
+            task = pbar.add_task("Splitting reads", total=total_reads)
+            for read in tagged_bam.fetch():
+                barcode = self.get_barcode_tag(read)
 
-            # Create a new file handle for the barcode
-            if barcode not in file_handles.keys():
-                split_file = os.path.join(output_dir, f"{prefix}_{barcode}.{SPLIT_BAM_SUFFIX}")
-                split_files.add(split_file)
-                file_handles[barcode] = stack.enter_context(
-                    pysam.AlignmentFile(
-                        split_file,
-                        "wb",
-                        header=tagged_bam.header,
+                # Create a new file handle for the barcode
+                if barcode not in file_handles.keys():
+                    split_file = os.path.join(output_dir, f"{prefix}_{barcode}.{SPLIT_BAM_SUFFIX}")
+                    split_files.add(split_file)
+                    file_handles[barcode] = stack.enter_context(
+                        pysam.AlignmentFile(
+                            split_file,
+                            "wb",
+                            header=tagged_bam.header,
+                        )
                     )
-                )
-                barcode_counter[barcode] = 0
+                    barcode_counter[barcode] = 0
 
-                log.debug(f"File and count entry created for barcode: {barcode}")
+                    log.debug(f"File and count entry created for barcode: {barcode}")
 
-            # Write the read to the corresponding barcode file and increment the counter
-            file_handles[barcode].write(read)
-            barcode_counter[barcode] += 1
+                # Write the read to the corresponding barcode file and increment the counter
+                file_handles[barcode].write(read)
+                barcode_counter[barcode] += 1
+                pbar.advance(task)
 
         log.info(
             f"Finished splitting reads in BAM file. Total files created = {len(file_handles)}"
@@ -133,11 +130,9 @@ class BamSplitter:
 
         # Multi-threaded sorting and indexing
         with ThreadPoolExecutor(max_workers=cpu_count) as executor:
-            for _ in tqdm(
-                executor.map(sort_index, split_files),
-                total=len(split_files),
-                bar_format=f"{self.barformat} files",
-            ):
-                pass
+            with progress_bar(unit="files") as pbar:
+                task = pbar.add_task("Sorting and indexing", total=len(split_files))
+                for _ in executor.map(sort_index, split_files):
+                    pbar.advance(task)
 
         log.info("Finished sorting and indexing split BAM files.")
