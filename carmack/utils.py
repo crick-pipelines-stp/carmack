@@ -6,6 +6,7 @@ import hashlib
 import io
 import logging
 from os import cpu_count, path
+from pathlib import Path
 
 from rich.progress import (
     BarColumn,
@@ -62,10 +63,12 @@ def validate_file_md5(file_name: str, expected_md5hex: str):
     return True
 
 
-def get_prefix(file_name: str) -> str:
+def get_prefix(file_name: str | Path) -> str:
     """
     Extracts the prefix from a file name.
     """
+    if isinstance(file_name, Path):
+        file_name = str(file_name)
     return file_name.rsplit("/", 1)[-1].split(".", 1)[0]
 
 
