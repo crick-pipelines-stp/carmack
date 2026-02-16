@@ -74,7 +74,8 @@ class TagDedup:
                 barcode = bc_dict[read_name]
                 read.set_tag("BC", barcode)
                 log.debug(
-                    f"Tagged read {read_name} (paired: {read.is_paired})" f" with barcode {barcode}"
+                    f"Tagged read {read_name} (paired: {read.is_paired})"
+                    f" with barcode {barcode}"
                 )
 
                 # Tag duplicates
@@ -142,7 +143,7 @@ class TagDedup:
                     dedup_bam.write(read)
                     unique_count += 1
                 pbar.advance(task)
-                
+
         # MultiQC log
         # Two reads for one read-pair
         if multiqc_log is not None:

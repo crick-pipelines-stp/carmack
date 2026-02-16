@@ -91,6 +91,24 @@ class TestCli(unittest.TestCase):
         #     BC_VALID_PATH, params["output_dir"], params["prefix"]
         # )
 
+    @mock.patch("carmack.__main__.BarcodeExtractor", autospec=True)
+    def test_cli_command_barcode_extractor(self, mock_barcode_extractor):
+        """Test barcode_extractor"""
+
+        # Init
+        params = {"chemistry": "hydrop", "output_dir": ".", "prefix": "", "cpu_count": "1"}
+
+        # Test
+        cmd = ["extract-barcodes"] + [R1_PATH] + self.assemble_params(params)
+        result = self.invoke_cli(cmd)
+
+        print(result.output)
+        print(result.exception)
+
+        # Assert
+        self.assertTrue(result.exit_code == 0)
+        mock_barcode_extractor.assert_called_once_with(R1_PATH, "hydrop", n_workers=1)
+
     # @mock.patch("carmack.__main__.DuplicateRemoval", autospec=True)
     # def test_cli_command_duplicate_removal(self, mock_duplicate_removal):
     #     """Test duplicate_removal"""

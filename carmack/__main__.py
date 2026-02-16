@@ -11,6 +11,7 @@ import rich.traceback
 import rich_click as click
 
 import carmack
+from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.cell_caller.cell_caller import CellCaller
 from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.split_reads.split_reads import BamSplitter
@@ -123,6 +124,27 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
         "verbose": verbose,
         "hide_progress": hide_progress or verbose,  # Always hide progress bar with verbose logging
     }
+
+
+@carmack_cli.command("extract-barcodes")
+@click.argument("fastq", required=True, nargs=1, type=click.Path(exists=True), metavar="<fastq>", help="Path to FASTQ file")
+@click.option("-c", "--chemistry", required=True, type=str, help="Chemistry name for barcode layout")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+@click.option("-n", "--cpu_count", required=False, type=int, default=get_cpu_count(), show_default=True, help="Number of CPU workers to use. Default is all available CPUs minus 1.")
+def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count):
+    """
+    Extract cell barcodes from FASTQ reads using hybrid matching strategy.
+
+    Uses a three-stage extraction pipeline:
+    1. Fixed position matching (exact match at expected positions)
+    2. Kmer seed-and-extend (handles indels within tolerance)
+    3. Local alignment (handles complex errors)
+    """
+    
+    log.info("Extracting barcodes from FASTQ files...")
+    extractor = BarcodeExtractor(fastq, chemistry, n_workers=cpu_count)
+    extractor.extract_barcodes(output_dir, prefix)
 
 
 @carmack_cli.command("fastq-filter")
