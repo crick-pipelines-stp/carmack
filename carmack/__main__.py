@@ -25,7 +25,7 @@ log = logging.getLogger()
 
 # # Set up nicer formatting of click cli help messages
 click.rich_click.MAX_WIDTH = 120
-click.rich_click.USE_RICH_MARKUP = True
+click.rich_click.TEXT_MARKUP = "rich"
 click.rich_click.COMMAND_GROUPS = {
     "carmack": [
         {
@@ -44,10 +44,6 @@ click.rich_click.COMMAND_GROUPS = {
         }
     ]
 }
-# click.rich_click.OPTION_GROUPS = {
-#     "carmack extract-cell-barcodes": [{"options": ["--chemistry", "--maxdist", "--line_count", "--output_dir", "--prefix"]}],
-#     "carmack fastq-filter": [{"options": ["--output_dir", "--prefix"]}]
-# }
 
 # Set up rich stderr console
 stderr = rich.console.Console(stderr=True)
