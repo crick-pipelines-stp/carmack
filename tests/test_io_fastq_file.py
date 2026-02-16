@@ -23,6 +23,8 @@ class TestFastqFile(unittest.TestCase):
             self.assertEqual(qual, TEST_QUAL)
             break
 
+        self.assertEqual(fq_file.reads_count, 10000)
+
     def test_fastq_file_raw_read(self):
         """Test reading raw fastq file"""
         fq_file = FastqFile("tests/data/small.fastq", paired_end=False)
@@ -32,6 +34,8 @@ class TestFastqFile(unittest.TestCase):
             self.assertEqual(seq, TEST_SEQ)
             self.assertEqual(qual, TEST_QUAL)
             break
+
+        self.assertEqual(fq_file.reads_count, 2500)
 
     @with_temporary_folder
     def test_fastq_file_gzip_write(self, tmp_path):
