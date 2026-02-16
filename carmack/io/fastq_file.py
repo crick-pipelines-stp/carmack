@@ -1,4 +1,5 @@
 from functools import cached_property
+
 from .gzip_file import GzipFile
 from .subprocess_stream import SubprocessStream
 
@@ -18,6 +19,7 @@ class FastqFile(GzipFile):
         """
         Initialise the FastqFile object
         """
+        self.filename = filename
         self.paired_end = paired_end
         super().__init__(filename)
 

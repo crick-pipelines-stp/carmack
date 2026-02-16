@@ -15,7 +15,8 @@ TEST_QUAL = "AAAAAEEEEE"
 class TestFastqFile(unittest.TestCase):
     def test_fastq_file_gzip_read(self):
         """Test reading gzip fastq file"""
-        fq_file = FastqFile("tests/data/sc_10k.fastq.gz", paired_end=False)
+        fq_path = "tests/data/sc_10k.fastq.gz"
+        fq_file = FastqFile(fq_path, paired_end=False)
 
         for name, seq, qual in fq_file.open_read_iterator(as_string=True):
             self.assertEqual(name, TEST_NAME)
@@ -23,11 +24,13 @@ class TestFastqFile(unittest.TestCase):
             self.assertEqual(qual, TEST_QUAL)
             break
 
+        self.assertEqual(fq_file.filename, fq_path)
         self.assertEqual(fq_file.reads_count, 10000)
 
     def test_fastq_file_raw_read(self):
         """Test reading raw fastq file"""
-        fq_file = FastqFile("tests/data/small.fastq", paired_end=False)
+        fq_path = "tests/data/small.fastq"
+        fq_file = FastqFile(fq_path, paired_end=False)
 
         for name, seq, qual in fq_file.open_read_iterator(as_string=True):
             self.assertEqual(name, TEST_NAME)
@@ -35,6 +38,7 @@ class TestFastqFile(unittest.TestCase):
             self.assertEqual(qual, TEST_QUAL)
             break
 
+        self.assertEqual(fq_file.filename, fq_path)
         self.assertEqual(fq_file.reads_count, 2500)
 
     @with_temporary_folder
