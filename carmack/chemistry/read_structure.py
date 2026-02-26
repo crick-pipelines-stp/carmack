@@ -61,34 +61,46 @@ class ReadStructure:
                 known_sequences[comp.name] = comp.sequence
         return known_sequences
 
-    def get_next(self, component: ReadComponent) -> ReadComponent | None:
+    def get_next(self, component: ReadComponent, bc_only: bool = False) -> ReadComponent | None:
         """
         Get the next component after the given component.
 
         Args:
             component: The component to find the next one for.
+            bc_only: If True, only consider barcode components when looking for the next component.
 
         Returns:
             The next ReadComponent or None if it's the last one or not found.
         """
         idx = self._index_map.get(component.name)
         if idx is not None and idx + 1 < len(self.components):
-            return self.components[idx + 1]
+            next_comp = self.components[idx + 1]
+            if bc_only and not next_comp.is_barcode:
+                # If bc_only is True, skip non-barcode components
+                return self.get_next(next_comp, bc_only=True)
+            return next_comp
         return None
 
-    def get_previous(self, component: ReadComponent) -> ReadComponent | None:
+    def get_previous(
+        self, component: ReadComponent, bc_only: bool = False
+    ) -> ReadComponent | None:
         """
         Get the previous component before the given component.
 
         Args:
             component: The component to find the previous one for.
+            bc_only: If True, only consider barcode components when looking for the previous component.
 
         Returns:
             The previous ReadComponent or None if it's the first one or not found.
         """
         idx = self._index_map.get(component.name)
         if idx is not None and idx - 1 >= 0:
-            return self.components[idx - 1]
+            prev_comp = self.components[idx - 1]
+            if bc_only and not prev_comp.is_barcode:
+                # If bc_only is True, skip non-barcode components
+                return self.get_previous(prev_comp, bc_only=True)
+            return prev_comp
         return None
 
     def __iter__(self) -> Iterator[ReadComponent]:

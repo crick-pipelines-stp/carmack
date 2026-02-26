@@ -32,8 +32,8 @@ class BarcodeMatchAttempt:
         spacer_downstream: Optional spacer name of the downstream to the match, if searched for.
     """
 
-    candidate: str
     method: MatchMethod
+    candidate: str | None = None
     match: str | None = None
     read_idx: tuple[int, int] | None = None
     edit_distance: int | None = None

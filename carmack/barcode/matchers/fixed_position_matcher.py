@@ -15,14 +15,16 @@ class FixedPositionMatcher(MatcherBase):
     This is the fastest method but requires no indels in the read.
     """
 
-    def match(self, read: str) -> BarcodeMatchAttempt:
+    def match(self, read: str, start_idx: int = 0) -> list[BarcodeMatchAttempt]:
         """
         Attempt to match barcodes in the given read based on fixed positions.
 
         Args:
             read: The sequencing read to match against.
+            start_idx: The index in the read to start matching from (default is 0). Only used if the
+            barcode component does not have a defined start position.
         """
-        start = self.barcode_component.start or 0
+        start = self.barcode_component.start or start_idx
         end = start + self.barcode_component.length
         candidate = read[start:end]
 
@@ -34,7 +36,7 @@ class FixedPositionMatcher(MatcherBase):
             log.debug(
                 f"Read too short for fixed position matching: read length {len(read)}, required {end}"
             )
-            return result
+            return [result]
 
         if candidate in self.whitelist_set:
             log.debug(f"Fixed position match found: {candidate} at position {start}-{end}")
@@ -44,4 +46,4 @@ class FixedPositionMatcher(MatcherBase):
         else:
             log.debug(f"No fixed position match: {candidate} not in whitelist")
 
-        return result
+        return [result]

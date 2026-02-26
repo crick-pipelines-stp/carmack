@@ -554,16 +554,18 @@ class TestHybridExtractor:
     @pytest.fixture
     def hydrop_matchers(
         self, hydrop_chemistry: ChemistryHydrop
-    ) -> dict[str, dict[str, FixedPositionMatcher]]:
+    ) -> dict[MatchMethod, dict[str, FixedPositionMatcher]]:
         """Build a matchers dict with FixedPositionMatcher for each barcode component."""
         whitelists = hydrop_chemistry.barcode_whitelists
         fixed_matchers: dict[str, FixedPositionMatcher] = {}
         for comp in hydrop_chemistry.read_structure.components:
             if comp.is_barcode:
                 fixed_matchers[comp.name] = FixedPositionMatcher(
-                    whitelist=whitelists[comp.name], barcode_component=comp
+                    whitelist=whitelists[comp.name],
+                    barcode_component=comp,
+                    chemistry=hydrop_chemistry,
                 )
-        return {"fixed": fixed_matchers}
+        return {MatchMethod.EXACTMATCH: fixed_matchers}
 
     @pytest.fixture
     def hybrid_extractor(
@@ -573,24 +575,6 @@ class TestHybridExtractor:
     ) -> HybridExtractor:
         """Provide a HybridExtractor instance configured with HyDrop chemistry."""
         return HybridExtractor(chemistry=hydrop_chemistry, matchers=hydrop_matchers)
-
-    # ===== trim_read =====
-
-    def test_trim_read_basic(self, hybrid_extractor: HybridExtractor) -> None:
-        """Test that trim_read returns the substring from the given start position."""
-        assert_that(hybrid_extractor.trim_read("ACGTACGT", 4)).is_equal_to("ACGT")
-
-    def test_trim_read_start_zero(self, hybrid_extractor: HybridExtractor) -> None:
-        """Test that trim_read with start=0 returns the full read."""
-        assert_that(hybrid_extractor.trim_read("ACGTACGT", 0)).is_equal_to("ACGTACGT")
-
-    def test_trim_read_start_beyond_length(self, hybrid_extractor: HybridExtractor) -> None:
-        """Test that trim_read returns empty string when start is beyond read length."""
-        assert_that(hybrid_extractor.trim_read("ACGT", 10)).is_equal_to("")
-
-    def test_trim_read_start_at_length(self, hybrid_extractor: HybridExtractor) -> None:
-        """Test that trim_read returns empty string when start equals read length."""
-        assert_that(hybrid_extractor.trim_read("ACGT", 4)).is_equal_to("")
 
     # ===== process_read =====
 
@@ -625,25 +609,18 @@ class TestHybridExtractor:
         self, hybrid_extractor: HybridExtractor
     ) -> None:
         """Test that a random DNA sequence produces no matches."""
-        random_seq = "ATATATAT" * 7  # 56bp of alternating AT — unlikely in any whitelist
+        random_seq = "ATATATAT" * 7  # 56bp of alternating AT — not in any whitelist
         result = hybrid_extractor.process_read("random", random_seq, "I" * len(random_seq))
         assert_that(result.success).is_false()
 
-    def test_process_read_dev_case1_full_barcode(self, hybrid_extractor: HybridExtractor) -> None:
+    def test_process_read_full_barcode(self, hybrid_extractor: HybridExtractor) -> None:
         """Test that Case 1 (WL_MATCH) produces the correct full barcode."""
         seq = "CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT"
         result = hybrid_extractor.process_read("case1", seq, "I" * len(seq))
         assert_that(result.full_barcode).is_equal_to("CAGTGTGGAAACGGTGGACTGAACAGTAGT")
-
-    def test_process_read_dev_case1_is_perfect(self, hybrid_extractor: HybridExtractor) -> None:
-        """Test that Case 1 (WL_MATCH) is a perfect match."""
-        seq = "CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT"
-        result = hybrid_extractor.process_read("case1", seq, "I" * len(seq))
         assert_that(result.is_perfect).is_true()
 
-    def test_process_read_dev_case1_annotated_readname(
-        self, hybrid_extractor: HybridExtractor
-    ) -> None:
+    def test_process_read_annotated_readname(self, hybrid_extractor: HybridExtractor) -> None:
         """Test that Case 1 produces a SUCCESS:PERFECT annotated readname."""
         seq = "CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT"
         result = hybrid_extractor.process_read("case1", seq, "I" * len(seq))
@@ -729,11 +706,13 @@ class TestHybridExtractor:
         for comp in hydrop_chemistry.read_structure.components:
             if comp.is_barcode and comp.name != "BC3":
                 incomplete_matchers[comp.name] = FixedPositionMatcher(
-                    whitelist=whitelists[comp.name], barcode_component=comp
+                    whitelist=whitelists[comp.name],
+                    barcode_component=comp,
+                    chemistry=hydrop_chemistry,
                 )
 
         extractor = HybridExtractor(
-            chemistry=hydrop_chemistry, matchers={"fixed": incomplete_matchers}
+            chemistry=hydrop_chemistry, matchers={MatchMethod.EXACTMATCH: incomplete_matchers}
         )
 
         with pytest.raises(ValueError, match="BC3"):

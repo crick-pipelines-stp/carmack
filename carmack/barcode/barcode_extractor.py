@@ -4,9 +4,10 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from math import ceil
 from pathlib import Path
 
-from carmack.barcode.extraction_dataclasses import ReadMatchResult
+from carmack.barcode.extraction_dataclasses import MatchMethod, ReadMatchResult
 from carmack.barcode.hybrid_extractor import HybridExtractor
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher, MatcherBase
+from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.io.fastq_file import FastqFile
 from carmack.utils import get_prefix, progress_bar
@@ -46,9 +47,9 @@ class BarcodeExtractor:
         self.whitelists = self.chemistry.barcode_whitelists
 
         # Init matchers
-        self.matchers: dict[str, dict[str, MatcherBase]] = self.init_matchers()
+        self.matchers: dict[MatchMethod, dict[str, MatcherBase]] = self.init_matchers()
 
-        log.info(f"BarcodeExtractor initialized for {fastq_file}")
+        log.debug(f"BarcodeExtractor initialized for {fastq_file}")
         log.debug(
             f"Parameters: chemistry={chemistry_name}, kmer_size={self.kmer_size}, batch_size={self.batch_size}, workers={self.n_workers}"
         )
@@ -66,7 +67,7 @@ class BarcodeExtractor:
         log.debug(f"Calculated default batch size: {batch_size} (total reads: {total_reads})")
         return batch_size
 
-    def init_matchers(self) -> dict[str, dict[str, MatcherBase]]:
+    def init_matchers(self) -> dict[MatchMethod, dict[str, MatcherBase]]:
         """
         Initialize the barcode matchers based on the chemistry definition.
 
@@ -76,17 +77,28 @@ class BarcodeExtractor:
 
         # {bc_name: Matcher}
         fixed_matchers: dict[str, FixedPositionMatcher] = {}
-        # TODO: Add other matchers
+        kmer_matchers: dict[str, KmerMatcher] = {}
+        # TODO: Add align_matcher
 
         for component in self.chemistry.read_structure.components:
+            common_kwargs = {
+                "barcode_component": component,
+                "whitelist": self.whitelists[component.name],
+                "chemistry": self.chemistry,
+            }
+
             if component.is_barcode:
-                fixed_matchers[component.name] = FixedPositionMatcher(
-                    barcode_component=component, whitelist=self.whitelists[component.name]
+                fixed_matchers[component.name] = FixedPositionMatcher(**common_kwargs)
+                kmer_matchers[component.name] = KmerMatcher(
+                    **common_kwargs,
+                    k=self.kmer_size,
                 )
 
+        # The order of matchers is important
+        # We want to try the fastest methods first to reduce search space for slower methods
         matchers = {
-            "fixed": fixed_matchers,
-            # "kmer": kmer_matchers,
+            MatchMethod.EXACTMATCH: fixed_matchers,
+            MatchMethod.KMERMATCH: kmer_matchers,
             # "local": local_matchers,
         }
 
