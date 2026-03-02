@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """ carmack: Helper tools for analysis of single-cell mutli-omic data """
+import atexit
 import logging
 import os
-import sys
+import time
 
 import rich
 import rich.console
@@ -16,7 +17,7 @@ from carmack.cell_caller.cell_caller import CellCaller
 from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.split_reads.split_reads import BamSplitter
 from carmack.tag_dedup.tag_dedup import TagDedup
-from carmack.utils import get_bai, get_cpu_count
+from carmack.utils import format_duration, get_bai, get_cpu_count
 
 
 # Set up logging as the root logger
@@ -57,6 +58,15 @@ def run_carmack():
     """
     Print programme header and then use to click for the command line interface.
     """
+    # Time logging
+    start_time = time.perf_counter()
+
+    def log_runtime() -> None:
+        elapsed = time.perf_counter() - start_time
+        log.info(f"Wall time: {format_duration(elapsed)}")
+
+    # Register the log_runtime function to be called on exit
+    atexit.register(log_runtime)
 
     # Print carmack header (ANSI Shadow)
     stderr.print("\n\n", highlight=False)
@@ -138,7 +148,7 @@ def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count):
     3. Local alignment (handles complex errors)
     """
     
-    log.info("Extracting barcodes from FASTQ files...")
+    log.info("Extracting barcodes from FASTQ file...")
     extractor = BarcodeExtractor(fastq, chemistry, n_workers=cpu_count)
     extractor.extract_barcodes(output_dir, prefix)
 
@@ -243,3 +253,4 @@ def call_cells(bed, bam, bai, force_n, min_overlap, visualise, output_dir, prefi
 # Main script is being run - launch the CLI
 if __name__ == "__main__":
     run_carmack()
+

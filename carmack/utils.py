@@ -110,3 +110,20 @@ def progress_bar(unit: str, **kwargs) -> Progress:
         **kwargs,
     )
     return custom_progress
+
+
+def format_duration(seconds):
+    seconds = int(seconds)
+
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+
+    parts = []
+    if h:
+        parts.append(f"{h}h")
+    if m:
+        parts.append(f"{m}m")
+    if s or not parts:
+        parts.append(f"{s}s")
+
+    return " ".join(parts)

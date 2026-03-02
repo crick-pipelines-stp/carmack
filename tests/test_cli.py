@@ -109,6 +109,42 @@ class TestCli(unittest.TestCase):
         self.assertTrue(result.exit_code == 0)
         mock_barcode_extractor.assert_called_once_with(R1_PATH, "hydrop", n_workers=1)
 
+    @mock.patch("carmack.__main__.time.perf_counter")
+    @mock.patch("carmack.__main__.atexit.register")
+    @mock.patch("carmack.__main__.format_duration")
+    def test_cli_time_logging(self, mock_format_duration, mock_atexit_register, mock_perf_counter):
+        """Test that time logging is set up correctly in run_carmack"""
+
+        # Setup mock return values
+        mock_perf_counter.return_value = 100.0
+
+        # Track the registered function
+        registered_func = None
+
+        def capture_register(func):
+            nonlocal registered_func
+            registered_func = func
+
+        mock_atexit_register.side_effect = capture_register
+
+        # Call run_carmack (we need to mock the carmack_cli call to avoid running the actual CLI)
+        with mock.patch("carmack.__main__.carmack_cli") as mock_carmack_cli:
+            with mock.patch("carmack.__main__.stderr.print"):
+                carmack.__main__.run_carmack()
+
+        # Verify atexit.register was called
+        mock_atexit_register.assert_called_once()
+        self.assertIsNotNone(registered_func)
+
+        # Simulate time passing and call the registered function
+        mock_perf_counter.return_value = 150.5
+        with mock.patch("carmack.__main__.log") as mock_log:
+            registered_func()
+
+        # Verify format_duration was called with elapsed time (50.5 seconds)
+        mock_format_duration.assert_called_once_with(50.5)
+        mock_log.info.assert_called_once()
+
     # @mock.patch("carmack.__main__.DuplicateRemoval", autospec=True)
     # def test_cli_command_duplicate_removal(self, mock_duplicate_removal):
     #     """Test duplicate_removal"""
