@@ -181,7 +181,7 @@ class TestBarcodeExtractorDataclasses:
                     ("ZZZZ", MatchMethod.EXACTMATCH, None, None, None, None),
                     ("ACGT", MatchMethod.KMERMATCH, "ACGT", None, None, None),
                 ],
-                "BC1:NOMATCH:KMERMATCH",
+                "BC1:KMERMATCH",
             ),
             # Match with edit distance
             (

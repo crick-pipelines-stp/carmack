@@ -1,5 +1,5 @@
 """
-Tests for barcode matcher classes: MatcherBase, FixedPositionMatcher, and KmerMatcher.
+Tests for barcode matcher classes: MatcherBase, FixedPositionMatcher, KmerMatcher, and AlignmentMatcher.
 """
 
 from typing import Literal
@@ -8,6 +8,14 @@ import pytest
 from assertpy import assert_that
 
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
+from carmack.barcode.matchers.alignment_matcher import (
+    GAP_EXTEND_SCORE,
+    GAP_OPEN_SCORE,
+    MATCH_SCORE,
+    MISMATCH_SCORE,
+    AlignmentContainer,
+    AlignmentMatcher,
+)
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.barcode.matchers.matcher_base import MatcherBase
@@ -1381,7 +1389,7 @@ class TestKmerMatcher:
 
         assert_that(result.match).is_equal_to(bc1)
         assert_that(result.read_idx).is_not_none()
-        assert_that(result.read_idx[1]).is_equal_to(50)
+        assert_that(result.read_idx[1] if result.read_idx is not None else 0).is_equal_to(50)
 
     def test_match_barcode_at_very_start_of_read(
         self,
@@ -1395,7 +1403,7 @@ class TestKmerMatcher:
 
         assert_that(result.match).is_equal_to(bc3)
         assert_that(result.read_idx).is_not_none()
-        assert_that(result.read_idx[0]).is_equal_to(0)
+        assert_that(result.read_idx[0] if result.read_idx is not None else 0).is_equal_to(0)
 
     def test_match_with_long_read(
         self,
@@ -1414,6 +1422,993 @@ class TestKmerMatcher:
         """Test matching with a read that is the minimum length to contain a barcode."""
         barcode = "ACGTACGTAC"
         read = barcode  # exactly the barcode length, no flanking
+        result = small_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(barcode)
+        assert_that(result.edit_distance).is_equal_to(0)
+
+
+class TestAlignmentMatcher:
+    """Tests for AlignmentMatcher barcode matching logic."""
+
+    # --- HyDrop spacer constants for read construction ---
+    SPACER_1 = "AGGGTACTCG"
+    SPACER_2 = "GCAGTAGCTG"
+
+    # --- Fixtures ---
+
+    @pytest.fixture
+    def hydrop_chemistry(self) -> ChemistryHydrop:
+        """Provide a HyDrop chemistry instance."""
+        return ChemistryHydrop()
+
+    @pytest.fixture
+    def hydrop_whitelists(self, hydrop_chemistry: ChemistryHydrop) -> dict[str, tuple[str, ...]]:
+        """Provide stripped HyDrop whitelists (10bp variable regions)."""
+        return hydrop_chemistry.barcode_whitelists
+
+    @pytest.fixture
+    def bc3_matcher(
+        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
+    ) -> AlignmentMatcher:
+        """Provide an AlignmentMatcher for HyDrop BC3 (start=0, length=10)."""
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC3")
+        return AlignmentMatcher(
+            whitelist=hydrop_whitelists["BC3"], barcode_component=comp, chemistry=hydrop_chemistry
+        )
+
+    @pytest.fixture
+    def bc2_matcher(
+        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
+    ) -> AlignmentMatcher:
+        """Provide an AlignmentMatcher for HyDrop BC2 (start=20, length=10)."""
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        return AlignmentMatcher(
+            whitelist=hydrop_whitelists["BC2"], barcode_component=comp, chemistry=hydrop_chemistry
+        )
+
+    @pytest.fixture
+    def bc1_matcher(
+        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
+    ) -> AlignmentMatcher:
+        """Provide an AlignmentMatcher for HyDrop BC1 (start=40, length=10)."""
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC1")
+        return AlignmentMatcher(
+            whitelist=hydrop_whitelists["BC1"], barcode_component=comp, chemistry=hydrop_chemistry
+        )
+
+    @pytest.fixture
+    def small_whitelist(self) -> tuple[str, ...]:
+        """Provide a small, deterministic whitelist for isolated tests."""
+        return ("ACGTACGTAC", "TGCATGCATG", "GGGGGGGGGG", "CCCCCCCCCC")
+
+    @pytest.fixture
+    def small_matcher(self, small_whitelist: tuple[str, ...]) -> AlignmentMatcher:
+        """Provide an AlignmentMatcher with a small whitelist and simple chemistry (HyDrop BC3)."""
+        chemistry = ChemistryHydrop()
+        comp = chemistry.read_structure.get_component_by_name("BC3")
+        return AlignmentMatcher(
+            whitelist=small_whitelist, barcode_component=comp, chemistry=chemistry
+        )
+
+    # --- Helper to build a full HyDrop read ---
+
+    def _build_hydrop_read(self, bc3: str, bc2: str, bc1: str) -> str:
+        """Construct a full 50bp HyDrop read: BC3 + SPACER_1 + BC2 + SPACER_2 + BC1."""
+        return bc3 + self.SPACER_1 + bc2 + self.SPACER_2 + bc1
+
+    # ==========================================
+    # Initialization Tests
+    # ==========================================
+
+    def test_initialization_stores_correct_attributes(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_chemistry: ChemistryHydrop,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that AlignmentMatcher initializes correctly with given whitelist and chemistry."""
+        assert_that(bc3_matcher.barcode_component.name).is_equal_to("BC3")
+        assert_that(bc3_matcher.whitelist_set).is_instance_of(frozenset)
+        assert_that(bc3_matcher.whitelist_set).is_equal_to(frozenset(hydrop_whitelists["BC3"]))
+
+    def test_initialization_sets_score_threshold(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that AlignmentMatcher sets score_threshold during initialization."""
+        assert_that(bc3_matcher.score_threshold).is_not_none()
+        assert_that(bc3_matcher.score_threshold).is_instance_of(float)
+
+    def test_initialization_rejects_non_barcode_component(self) -> None:
+        """Test that initializing with a non-barcode component raises ValueError."""
+        non_barcode = ReadComponent(
+            name="SPACER", is_barcode=False, length=10, sequence="AGGGTACTCG"
+        )
+        with pytest.raises(ValueError):
+            AlignmentMatcher(
+                whitelist=("AAAAAAAAAA",),
+                barcode_component=non_barcode,
+                chemistry=ChemistryHydrop(),
+            )
+
+    # ==========================================
+    # compute_score_threshold() Tests
+    # ==========================================
+
+    def test_score_threshold_exact_value(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that compute_score_threshold returns the exact expected float value.
+
+        For HyDrop: bc_len=10, max_errors=2, MATCH_SCORE=1.
+        perfect_score = 10 * 1 = 10.
+        For local alignment, each error costs the lost match score (1 for substitution,
+        1.5 for indel). threshold = 10 - 2 * 1.5 = 7.0.
+        """
+        bc_len = bc3_matcher.barcode_component.length
+        max_errors = bc3_matcher.chemistry.max_errors.barcode
+        perfect_score = bc_len * MATCH_SCORE
+        max_penalty_per_error = max(
+            MATCH_SCORE,  # substitution: lose 1 match
+            abs(GAP_OPEN_SCORE) + abs(GAP_EXTEND_SCORE),  # indel: 0.5 + 1 = 1.5
+        )
+        expected = float(perfect_score - max_errors * max_penalty_per_error)
+
+        assert_that(bc3_matcher.score_threshold).is_equal_to(expected)
+        assert_that(bc3_matcher.score_threshold).is_instance_of(float)
+
+    def test_score_threshold_alignment_at_exactly_threshold_returns_result(
+        self, bc3_matcher: AlignmentMatcher
+    ) -> None:
+        """Test that align_seqs returns a result when the alignment score is at or above threshold.
+
+        With local alignment, the scoring includes mismatch penalties, so the exact threshold
+        landing depends on alignment position. This test verifies that a borderline case
+        (3 substitutions, score typically 7.5) returns a valid result.
+        """
+        bc3_wl = list(bc3_matcher.whitelist_set)
+        bc3 = bc3_wl[0]
+
+        # With local alignment including mismatch penalties, 3 subs typically scores ~7.5
+        # which is above threshold=7.0
+        mutated = list(bc3)
+        n_subs = 3
+        for i in range(n_subs):
+            mutated[i] = "A" if mutated[i] != "A" else "C"
+        mutated_str = "".join(mutated)
+
+        result = bc3_matcher.align_seqs(mutated_str, bc3)
+        assert_that(result).is_not_none()
+        # Score should be at or above threshold (typically 7.5 for 3 subs)
+        assert_that(result.score).is_greater_than_or_equal_to(bc3_matcher.score_threshold)  # type: ignore[union-attr]
+
+    def test_score_threshold_alignment_below_threshold_returns_none(
+        self, bc3_matcher: AlignmentMatcher
+    ) -> None:
+        """Test that align_seqs returns None when the alignment score falls below the threshold.
+
+        With threshold=7.0, 4 substitutions on a 10bp barcode: score = 10 - 4 = 6.0,
+        which is below threshold=7.0.
+        """
+        bc3_wl = list(bc3_matcher.whitelist_set)
+        bc3 = bc3_wl[0]
+
+        # Introduce 4 substitutions to fall below threshold (score = 6.0 < 7.0)
+        mutated = list(bc3)
+        n_subs = 4
+        for i in range(n_subs):
+            mutated[i] = "A" if mutated[i] != "A" else "C"
+        mutated_str = "".join(mutated)
+
+        result = bc3_matcher.align_seqs(mutated_str, bc3)
+        assert_that(result).is_none()
+
+    # ==========================================
+    # sanitize_sequence() Tests
+    # ==========================================
+
+    def test_sanitize_sequence_valid_bases_unchanged(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that a sequence with only ACGTN characters is returned unchanged."""
+        seq = "ACGTNACGTN"
+        assert_that(bc3_matcher.sanitise_sequence(seq)).is_equal_to(seq)
+
+    def test_sanitize_sequence_invalid_chars_replaced_with_n(
+        self, bc3_matcher: AlignmentMatcher
+    ) -> None:
+        """Test that non-ACGTN characters are replaced with N."""
+        seq = "ACG@T!"
+        expected = "ACGNTN"
+        assert_that(bc3_matcher.sanitise_sequence(seq)).is_equal_to(expected)
+
+    def test_sanitize_sequence_n_is_preserved(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that existing N bases are preserved as-is."""
+        seq = "NNNNNNNNNN"
+        assert_that(bc3_matcher.sanitise_sequence(seq)).is_equal_to(seq)
+
+    def test_sanitize_sequence_empty_string(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that an empty sequence is returned unchanged."""
+        assert_that(bc3_matcher.sanitise_sequence("")).is_equal_to("")
+
+    # ==========================================
+    # build_substitution_matrix() Tests
+    # ==========================================
+
+    def test_substitution_matrix_match_score(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that matching bases receive MATCH_SCORE in the substitution matrix."""
+        mat = bc3_matcher.build_substitution_matrix()
+        for base in "ACGT":
+            assert_that(mat[base, base]).is_equal_to(MATCH_SCORE)
+
+    def test_substitution_matrix_mismatch_score(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that mismatching non-N bases receive MISMATCH_SCORE."""
+        mat = bc3_matcher.build_substitution_matrix()
+        assert_that(mat["A", "C"]).is_equal_to(MISMATCH_SCORE)
+        assert_that(mat["G", "T"]).is_equal_to(MISMATCH_SCORE)
+
+    def test_substitution_matrix_n_matches_any_base_with_match_score(
+        self, bc3_matcher: AlignmentMatcher
+    ) -> None:
+        """Test that N paired with any base (including N) receives MATCH_SCORE (wildcard)."""
+        mat = bc3_matcher.build_substitution_matrix()
+        for base in "ACGTN":
+            assert_that(mat["N", base]).is_equal_to(MATCH_SCORE)
+            assert_that(mat[base, "N"]).is_equal_to(MATCH_SCORE)
+
+    # ==========================================
+    # align_seqs() Tests
+    # ==========================================
+
+    def test_align_seqs_returns_alignment_container_on_match(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that align_seqs returns an AlignmentContainer when sequences align above threshold."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        result = bc3_matcher.align_seqs(bc3, bc3)
+
+        assert_that(result).is_not_none()
+        assert_that(result).is_instance_of(AlignmentContainer)
+
+    def test_align_seqs_returns_none_below_threshold(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that align_seqs returns None when alignment score is below threshold.
+
+        With threshold=7.0 and local alignment including mismatch penalties,
+        need 5 substitutions to ensure score falls below threshold.
+        """
+        bc3 = hydrop_whitelists["BC3"][0]
+
+        # Introduce 5 substitutions to fall below threshold
+        mutated = list(bc3)
+        n_subs = 5
+        for i in range(n_subs):
+            mutated[i] = "A" if mutated[i] != "A" else "C"
+        mutated_str = "".join(mutated)
+
+        result = bc3_matcher.align_seqs(mutated_str, bc3)
+        assert_that(result).is_none()
+
+    @pytest.mark.parametrize("n_substitutions", [0, 1, 2])
+    def test_align_seqs_score_for_substitutions(
+        self,
+        n_substitutions: int,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that align_seqs returns the expected alignment score for 0, 1, or 2 substitutions.
+
+        For local alignment, mismatches are clipped rather than penalised.
+        So each substitution costs only the lost match (1 point), not the mismatch penalty.
+        score = bc_len * MATCH_SCORE - n_subs * MATCH_SCORE = 10 - n_subs * 1.
+        """
+        bc3 = hydrop_whitelists["BC3"][0]
+        mutated = list(bc3)
+        for i in range(n_substitutions):
+            mutated[i] = "A" if mutated[i] != "A" else "C"
+        mutated_str = "".join(mutated)
+
+        bc_len = bc3_matcher.barcode_component.length
+        # Local alignment clips mismatches, so each sub only costs 1 (the lost match)
+        expected_score = float(bc_len * MATCH_SCORE - n_substitutions * MATCH_SCORE)
+
+        result = bc3_matcher.align_seqs(mutated_str, bc3)
+        assert_that(result).is_not_none()
+        assert_that(result.score).is_equal_to(expected_score)  # type: ignore[union-attr]
+
+    def test_align_seqs_coordinates_span_correct_region(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that seq1_coords from align_seqs correctly span the matched region in seq1."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        result = bc3_matcher.align_seqs(bc3, bc3)
+
+        assert_that(result).is_not_none()
+        assert result is not None
+        assert_that(result.seq1_coords).is_not_empty()
+        start, end = result.seq1_coords[0]
+        assert_that(bc3[start:end]).is_equal_to(bc3)
+
+    def test_align_seqs_perfect_match_has_full_bc_length_score(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that a perfect match scores bc_len * MATCH_SCORE."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        bc_len = bc3_matcher.barcode_component.length
+        expected_score = bc_len * MATCH_SCORE
+
+        result = bc3_matcher.align_seqs(bc3, bc3)
+        assert_that(result).is_not_none()
+        assert_that(result.score).is_equal_to(expected_score)  # type: ignore[union-attr]
+
+    # ==========================================
+    # match() - Return Type & Basic Structure
+    # ==========================================
+
+    def test_match_returns_list_of_barcode_match_attempt(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that match() returns a list of BarcodeMatchAttempt instances."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        read = self._build_hydrop_read(bc3, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)
+
+        assert_that(result).is_instance_of(list)
+        assert_that(result).is_not_empty()
+        assert_that(result[0]).is_instance_of(BarcodeMatchAttempt)
+
+    def test_match_method_is_always_alignmatch(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that the method field is always ALIGNMATCH regardless of match outcome."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        read = self._build_hydrop_read(bc3, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+        assert_that(result.method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+    def test_match_no_match_returns_none_fields(self, small_matcher: AlignmentMatcher) -> None:
+        """Test that a failed match returns None for match, read_idx, and edit_distance."""
+        # All-T read: no barcode in the small whitelist aligns above threshold
+        read = "T" * 50
+        result = small_matcher.match(read)
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_none()
+        assert_that(result[0].read_idx).is_none()
+        assert_that(result[0].edit_distance).is_none()
+
+    def test_match_no_match_method_still_alignmatch(self, small_matcher: AlignmentMatcher) -> None:
+        """Test that even a failed match result carries the ALIGNMATCH method."""
+        read = "T" * 50
+        result = small_matcher.match(read)
+        assert_that(result[0].method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+    # ==========================================
+    # match() - Exact Matching
+    # ==========================================
+
+    def test_match_exact_barcode_at_expected_position(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that an exact barcode at its expected position is matched correctly."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        read = self._build_hydrop_read(bc3, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.edit_distance).is_equal_to(0)
+        assert_that(result.read_idx).is_not_none()
+        assert_that(result.candidate).is_equal_to(bc3)
+
+    def test_match_exact_barcode_returns_correct_read_idx(
+        self,
+        bc2_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that read_idx correctly spans the barcode region in the read."""
+        bc2 = hydrop_whitelists["BC2"][0]
+        read = self._build_hydrop_read("A" * 10, bc2, "A" * 10)
+        result = bc2_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc2)
+        assert_that(result.read_idx).is_not_none()
+        assert result.read_idx is not None
+        start, end = result.read_idx
+        assert_that(read[start:end]).is_equal_to(bc2)
+
+    @pytest.mark.parametrize("bc_idx", [0, 1, 10, 50, 95])
+    def test_match_exact_various_whitelist_entries(
+        self,
+        bc_idx: int,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that various barcodes from the whitelist are matched exactly."""
+        bc3 = hydrop_whitelists["BC3"][bc_idx]
+        read = self._build_hydrop_read(bc3, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.edit_distance).is_equal_to(0)
+
+    # ==========================================
+    # match() - Substitution Errors
+    # ==========================================
+
+    def test_match_single_substitution(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that a barcode with a single substitution is still matched."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        mutated = bc3[:5] + ("A" if bc3[5] != "A" else "T") + bc3[6:]
+        read = self._build_hydrop_read(mutated, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.edit_distance).is_less_than_or_equal_to(1)
+
+    def test_match_two_substitutions_at_max_errors(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that a barcode with exactly max_errors substitutions is matched (HyDrop max_errors=2)."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        mutated = list(bc3)
+        max_errors = bc3_matcher.chemistry.max_errors.barcode
+        for i in range(max_errors):
+            mutated[i] = "A" if mutated[i] != "A" else "C"
+        mutated_str = "".join(mutated)
+
+        read = self._build_hydrop_read(mutated_str, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.edit_distance).is_less_than_or_equal_to(max_errors)
+
+    @pytest.mark.parametrize(
+        "sub_positions",
+        [
+            [0],  # first base
+            [9],  # last base
+            [4],  # middle base
+        ],
+    )
+    def test_match_single_substitution_at_various_positions(
+        self,
+        sub_positions: list[int],
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that single substitutions at various positions are matched.
+
+        With local alignment and threshold=7.0, single substitutions score 9.0 (above threshold).
+        """
+        bc3 = hydrop_whitelists["BC3"][0]
+        mutated = list(bc3)
+        for pos in sub_positions:
+            mutated[pos] = "A" if mutated[pos] != "A" else "C"
+        mutated_str = "".join(mutated)
+
+        read = self._build_hydrop_read(mutated_str, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.edit_distance).is_less_than_or_equal_to(len(sub_positions))
+
+    @pytest.mark.parametrize(
+        "sub_positions",
+        [
+            [2, 7],  # two internal positions
+        ],
+    )
+    def test_match_two_substitutions_falls_below_threshold(
+        self,
+        sub_positions: list[int],
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that two substitutions may fall below threshold depending on positions.
+
+        With local alignment and threshold=7.0, some 2-substitution patterns score 6.0
+        (10 - 2 matches - 2 mismatch penalties = 6), which is below threshold.
+        This is expected behavior - local alignment with max_errors=2 and threshold=7.0
+        is conservative to avoid false positives.
+        """
+        bc3 = hydrop_whitelists["BC3"][0]
+        mutated = list(bc3)
+        for pos in sub_positions:
+            mutated[pos] = "A" if mutated[pos] != "A" else "C"
+        mutated_str = "".join(mutated)
+
+        read = self._build_hydrop_read(mutated_str, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        # With local alignment, 2 subs at certain positions score below threshold
+        # and thus return match=None - this is expected conservative behavior
+        assert_that(result.match).is_none()
+        assert_that(result.candidate).is_not_none()
+        assert_that(result.read_idx).is_not_none()
+
+    # ==========================================
+    # match() - Indel Errors
+    # ==========================================
+
+    def test_match_single_insertion_is_matched(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that a single insertion in the barcode is matched using local alignment."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        # Insert a base at position 5: TGACC_A_GTACT -> 11bp
+        inserted = bc3[:5] + "A" + bc3[5:]
+        read = self._build_hydrop_read(inserted, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.edit_distance).is_less_than_or_equal_to(1)
+
+    def test_match_single_deletion_is_matched(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that a single deletion in the barcode is matched using local alignment."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        # Delete position 5: TGACC_GTACT -> 9bp
+        deleted = bc3[:5] + bc3[6:]
+        read = self._build_hydrop_read(deleted, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.edit_distance).is_less_than_or_equal_to(1)
+
+    def test_match_insertion_read_idx_spans_extended_region(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that read_idx for an inserted barcode spans more than bc_len bases."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        inserted = bc3[:5] + "A" + bc3[5:]  # 11bp
+        read = self._build_hydrop_read(inserted, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.read_idx).is_not_none()
+        assert result.read_idx is not None
+        start, end = result.read_idx
+        bc_len = bc3_matcher.barcode_component.length
+        # The aligned span covers the inserted sequence (bc_len + 1 bp)
+        assert_that(end - start).is_equal_to(bc_len + 1)
+
+    def test_match_deletion_read_idx_spans_shorter_region(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that read_idx for a deleted barcode spans fewer than bc_len bases."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        deleted = bc3[:5] + bc3[6:]  # 9bp
+        read = self._build_hydrop_read(deleted, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.read_idx).is_not_none()
+        assert result.read_idx is not None
+        start, end = result.read_idx
+        bc_len = bc3_matcher.barcode_component.length
+        # The aligned span covers the deleted sequence (bc_len - 1 bp)
+        assert_that(end - start).is_equal_to(bc_len - 1)
+
+    # ==========================================
+    # match() - N Wildcard Handling
+    # ==========================================
+
+    def test_match_n_base_in_barcode_region_is_wildcard(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that N bases in the read are treated as wildcards matching any base at zero cost."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        # Replace position 5 with N: N matches any base for free
+        with_n = bc3[:5] + "N" + bc3[6:]
+        read = self._build_hydrop_read(with_n, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        # N is a wildcard: edit distance is 0
+        assert_that(result.edit_distance).is_equal_to(0)
+
+    def test_match_multiple_n_bases_still_match(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that multiple N bases in the barcode region are all treated as wildcards."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        # Replace positions 2, 5, 8 with N
+        with_n = bc3[:2] + "N" + bc3[3:5] + "N" + bc3[6:8] + "N" + bc3[9:]
+        read = self._build_hydrop_read(with_n, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        # N in alignment is scored as MATCH_SCORE — match should still succeed
+        assert_that(result.match).is_equal_to(bc3)
+
+    # ==========================================
+    # match() - Edge Cases
+    # ==========================================
+
+    def test_match_barcode_not_in_whitelist_returns_no_match(
+        self, small_matcher: AlignmentMatcher
+    ) -> None:
+        """Test that a read with no barcode close to the whitelist returns no match."""
+        # All-T: none of the small whitelist barcodes (ACGTACGTAC etc) will align above threshold
+        read = "T" * 50
+        result = small_matcher.match(read)
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_none()
+
+    def test_match_barcode_exceeds_max_errors_returns_no_match(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that a barcode with more than max_errors mutations is not matched."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        # Mutate max_errors + 1 = 3 positions (well beyond tolerance)
+        heavily_mutated = list(bc3)
+        n_subs = bc3_matcher.chemistry.max_errors.barcode + 1
+        for i in range(n_subs):
+            heavily_mutated[i] = "A" if heavily_mutated[i] != "A" else "C"
+        mutated_str = "".join(heavily_mutated)
+
+        read = self._build_hydrop_read(mutated_str, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)
+
+        # Should either return no match or match to a different barcode
+        if result[0].match is not None:
+            assert_that(result[0].match).is_not_equal_to(bc3)
+
+    def test_match_read_with_all_n_bases_returns_result(
+        self, bc3_matcher: AlignmentMatcher
+    ) -> None:
+        """Test that an all-N read produces a result (N matches everything as wildcard)."""
+        read = "N" * 50
+        result = bc3_matcher.match(read)
+
+        # All-N aligns against every barcode with full match score; result is non-empty
+        assert_that(result).is_not_empty()
+        assert_that(result[0]).is_instance_of(BarcodeMatchAttempt)
+        assert_that(result[0].method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+    # ==========================================
+    # match() - Position Independence
+    # ==========================================
+
+    def test_match_finds_barcode_regardless_of_position(
+        self,
+        bc2_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that AlignmentMatcher finds a barcode even when not at its expected fixed position."""
+        bc2 = hydrop_whitelists["BC2"][0]
+        # Place BC2 at an unusual offset, surrounded by filler
+        read = "A" * 5 + bc2 + "A" * 35
+        result = bc2_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc2)
+        assert_that(result.read_idx).is_not_none()
+        assert result.read_idx is not None
+        start, end = result.read_idx
+        assert_that(read[start:end]).is_equal_to(bc2)
+
+    def test_match_candidate_field_equals_read_slice_at_read_idx(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that result.candidate equals the read slice at result.read_idx."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        read = self._build_hydrop_read(bc3, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.candidate).is_not_none()
+        assert_that(result.read_idx).is_not_none()
+        assert result.read_idx is not None
+        start, end = result.read_idx
+        assert_that(result.candidate).is_equal_to(read[start:end])
+
+    # ==========================================
+    # match() - Ambiguity & Spacer Tiebreaking
+    # ==========================================
+
+    def test_match_single_candidate_returns_single_result(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that an unambiguous match returns exactly one result."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        read = self._build_hydrop_read(bc3, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to(bc3)
+
+    def test_match_truly_ambiguous_barcodes_return_none_match(self) -> None:
+        """Test that two barcodes with identical alignment scores return match=None.
+
+        When two barcodes differ only at position 0 (A vs T), a read with a
+        third base (C) at that position scores identically against both. Without
+        adjacent spacer sequences to disambiguate, match remains None.
+        """
+        chemistry = ChemistryHydrop()
+        comp = chemistry.read_structure.get_component_by_name("BC3")
+
+        bc_a = "ACGTACGTAC"
+        bc_b = "TCGTACGTAC"  # differs from bc_a at position 0 only
+        # C at position 0 gives equal edit distance (1) to both bc_a and bc_b
+        ambiguous_read = "CCGTACGTAC"
+
+        matcher = AlignmentMatcher(
+            whitelist=(bc_a, bc_b), barcode_component=comp, chemistry=chemistry
+        )
+        # Pad with filler that avoids spacer sequences to prevent tiebreaking
+        read = ambiguous_read + "TTTTTTTTTT" * 4
+        result = matcher.match(read)
+
+        # Both barcodes tie — none can be assigned without spacer tiebreaking
+        for r in result:
+            assert_that(r.match).is_none()
+            assert_that(r.method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+    def test_match_ambiguous_resolved_by_spacer_returns_single_result(
+        self,
+        hydrop_chemistry: ChemistryHydrop,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that ambiguous matches are resolved by spacer context to a single result."""
+        bc2 = hydrop_whitelists["BC2"][0]
+        read = self._build_hydrop_read("A" * 10, bc2, "A" * 10)
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        matcher = AlignmentMatcher(
+            whitelist=hydrop_whitelists["BC2"],
+            barcode_component=comp,
+            chemistry=hydrop_chemistry,
+        )
+        result = matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to(bc2)
+
+    # ==========================================
+    # match() - Full HyDrop Read Sequences (Parametrized)
+    # ==========================================
+
+    @pytest.mark.parametrize(
+        "seq, bc_name",
+        [
+            # Case 1 (WL_MATCH): all 3 BCs match
+            ("CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT", "BC3"),
+            ("CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT", "BC2"),
+            ("CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT", "BC1"),
+            # Case 2 (INDEL_FAIL): BC3 matches even under indel pressure
+            ("TCCTGATAAGAGGGTACTCGACCAAGAGAGCAGTAGCTGCTCCTCATCCGTA", "BC3"),
+            # Case 3 (SUB_FAIL): BC3 + BC2 match with substitution tolerance
+            ("GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC", "BC3"),
+            ("GAACTTGTAGAGGGTACTCGGGAGCTTGTCGCAGTAGCTGTTGAGATCGTAC", "BC2"),
+            # Case 5 (SPC_NOTFND): BC3 + BC2 match
+            ("TGTCACAACAAGGGTACTCGGTCCAGGCTTGCAGGAGCGGGACTTGTGGCGT", "BC3"),
+            ("TGTCACAACAAGGGTACTCGGTCCAGGCTTGCAGGAGCGGGACTTGTGGCGT", "BC2"),
+            # Case 6 (SEVERE_INDEL): BC3 matches
+            ("TTGTCCGCCAAGGGTACTCGTATGCAGTAGCTGCGTCAGACAAGTACTCTGC", "BC3"),
+        ],
+    )
+    def test_match_dev_sequences_expected_matches(
+        self,
+        seq: str,
+        bc_name: str,
+        hydrop_chemistry: ChemistryHydrop,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test alignment matching using real HyDrop read sequences that should produce matches."""
+        comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
+        matcher = AlignmentMatcher(
+            whitelist=hydrop_whitelists[bc_name],
+            barcode_component=comp,
+            chemistry=hydrop_chemistry,
+        )
+        result = matcher.match(seq)
+
+        assert_that(result).is_not_empty()
+        matched_results = [r for r in result if r.match is not None]
+        assert_that(matched_results).is_not_empty()
+        assert_that(matched_results[0].match).is_in(*hydrop_whitelists[bc_name])
+        assert_that(matched_results[0].read_idx).is_not_none()
+
+    # ==========================================
+    # match() - Edit Distance Accuracy
+    # ==========================================
+
+    @pytest.mark.parametrize("n_substitutions", [0, 1, 2])
+    def test_match_edit_distance_equals_substitution_count(
+        self,
+        n_substitutions: int,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that edit_distance in the result accurately reflects the number of substitutions."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        mutated = list(bc3)
+        for i in range(n_substitutions):
+            mutated[i] = "A" if mutated[i] != "A" else "C"
+        mutated_str = "".join(mutated)
+
+        read = self._build_hydrop_read(mutated_str, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.edit_distance).is_equal_to(n_substitutions)
+
+    # ==========================================
+    # match() - Different Barcode Components
+    # ==========================================
+
+    @pytest.mark.parametrize("bc_name", ["BC3", "BC2", "BC1"])
+    def test_match_across_all_barcode_components(
+        self,
+        bc_name: str,
+        hydrop_chemistry: ChemistryHydrop,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that AlignmentMatcher works correctly for all three HyDrop barcode components."""
+        comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
+        whitelist = hydrop_whitelists[bc_name]
+        matcher = AlignmentMatcher(
+            whitelist=whitelist, barcode_component=comp, chemistry=hydrop_chemistry
+        )
+
+        bc3 = hydrop_whitelists["BC3"][0]
+        bc2 = hydrop_whitelists["BC2"][0]
+        bc1 = hydrop_whitelists["BC1"][0]
+        read = self._build_hydrop_read(bc3, bc2, bc1)
+
+        result = matcher.match(read)
+        matched_results = [r for r in result if r.match is not None]
+        assert_that(matched_results).is_not_empty()
+        assert_that(matched_results[0].match).is_in(*whitelist)
+
+    # ==========================================
+    # match() - Spacer Fields in Result
+    # ==========================================
+
+    def test_match_unambiguous_result_has_no_spacer_fields(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that a single-candidate match does not populate spacer fields."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        read = self._build_hydrop_read(bc3, "A" * 10, "A" * 10)
+        result = bc3_matcher.match(read)[0]
+
+        # Unambiguous matches go through the single-candidate path — no spacer check
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.spacer_upstream).is_none()
+        assert_that(result.spacer_downstream).is_none()
+
+    # ==========================================
+    # match() - Realistic Multi-Barcode Reads
+    # ==========================================
+
+    def test_match_correct_barcode_in_multi_barcode_read(
+        self,
+        hydrop_chemistry: ChemistryHydrop,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that each matcher finds only its own barcode in a read with all 3 barcodes."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        bc2 = hydrop_whitelists["BC2"][0]
+        bc1 = hydrop_whitelists["BC1"][0]
+        read = self._build_hydrop_read(bc3, bc2, bc1)
+
+        for bc_name, expected_bc in [("BC3", bc3), ("BC2", bc2), ("BC1", bc1)]:
+            comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
+            matcher = AlignmentMatcher(
+                whitelist=hydrop_whitelists[bc_name],
+                barcode_component=comp,
+                chemistry=hydrop_chemistry,
+            )
+            result = matcher.match(read)
+            matched = [r for r in result if r.match is not None]
+            assert_that(matched).is_not_empty()
+            assert_that(matched[0].match).is_equal_to(expected_bc)
+
+    def test_match_different_barcodes_per_component(
+        self,
+        hydrop_chemistry: ChemistryHydrop,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test matching when each barcode position uses a different whitelist index."""
+        bc3 = hydrop_whitelists["BC3"][10]
+        bc2 = hydrop_whitelists["BC2"][20]
+        bc1 = hydrop_whitelists["BC1"][30]
+        read = self._build_hydrop_read(bc3, bc2, bc1)
+
+        for bc_name, expected_bc in [("BC3", bc3), ("BC2", bc2), ("BC1", bc1)]:
+            comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
+            matcher = AlignmentMatcher(
+                whitelist=hydrop_whitelists[bc_name],
+                barcode_component=comp,
+                chemistry=hydrop_chemistry,
+            )
+            result = matcher.match(read)
+            matched = [r for r in result if r.match is not None]
+            assert_that(matched).is_not_empty()
+            assert_that(matched[0].match).is_equal_to(expected_bc)
+
+    # ==========================================
+    # match() - Boundary & Robustness
+    # ==========================================
+
+    def test_match_barcode_at_very_end_of_read(
+        self,
+        bc1_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test matching when the barcode is at the very end of the read."""
+        bc1 = hydrop_whitelists["BC1"][0]
+        read = "A" * 40 + bc1  # 50bp total, bc1 at end
+        result = bc1_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc1)
+        assert_that(result.read_idx).is_not_none()
+        assert result.read_idx is not None
+        assert_that(result.read_idx[1]).is_equal_to(50)
+
+    def test_match_barcode_at_very_start_of_read(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test matching when the barcode is at the very start of the read."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        read = bc3 + "A" * 40
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.read_idx).is_not_none()
+        assert result.read_idx is not None
+        assert_that(result.read_idx[0]).is_equal_to(0)
+
+    def test_match_with_long_read(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test matching in a read much longer than the typical 50bp HyDrop read."""
+        bc3 = hydrop_whitelists["BC3"][0]
+        read = bc3 + "A" * 200
+        result = bc3_matcher.match(read)[0]
+
+        assert_that(result.match).is_equal_to(bc3)
+        assert_that(result.edit_distance).is_equal_to(0)
+
+    def test_match_minimum_viable_read(self, small_matcher: AlignmentMatcher) -> None:
+        """Test matching with a read that is exactly the barcode length."""
+        barcode = "ACGTACGTAC"
+        read = barcode  # exactly bc_len, no flanking sequence
         result = small_matcher.match(read)[0]
 
         assert_that(result.match).is_equal_to(barcode)

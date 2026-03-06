@@ -86,13 +86,12 @@ class HybridExtractor:
                     # Handle other matcher types if any
                     results = matcher[bc_name].match(read, start_idx=search_start_idx)
 
-                if len(results) == 1:
+                if len(results) == 1 and results[0].match is not None:
                     result = results[0]
-                    success = result.match is not None
-                    barcode_match_tracker[bc_name].record_attempt(result, success=success)
+                    barcode_match_tracker[bc_name].record_attempt(result, success=True)
 
                     # Update search start index with the end of the matched barcode for the next matcher
-                    if success and result.read_idx:
+                    if result.read_idx:
                         search_start_idx_tracker[bc_name] = result.read_idx[1]
                 else:
                     # If multiple attempts, we have ambiguity. We record all attempts but mark success as False.
