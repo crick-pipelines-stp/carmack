@@ -1,17 +1,19 @@
 import logging
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from collections.abc import Mapping
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from math import ceil
 from pathlib import Path
 
 from carmack.barcode.extraction_dataclasses import MatchMethod, ReadMatchResult
+from carmack.barcode.extraction_reporting import ExtractionStats
 from carmack.barcode.hybrid_extractor import HybridExtractor
+from carmack.barcode.matchers.alignment_matcher import AlignmentMatcher
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher, MatcherBase
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.io.fastq_file import FastqFile
 from carmack.utils import get_prefix, progress_bar
-
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +41,11 @@ class BarcodeExtractor:
         self.kmer_size = kmer_size
         self.n_workers = n_workers
 
+        # Check reads
+        self.total_reads = self.fastq.reads_count
+        if self.total_reads == 0:
+            raise ValueError(f"No reads found in FASTQ file: {fastq_file}")
+
         # Determine ideal batch size based on total reads and number of workers, but allow override
         self.batch_size = batch_size or self.calc_batch_size()
 
@@ -47,7 +54,7 @@ class BarcodeExtractor:
         self.whitelists = self.chemistry.barcode_whitelists
 
         # Init matchers
-        self.matchers: dict[MatchMethod, dict[str, MatcherBase]] = self.init_matchers()
+        self.matchers: dict[MatchMethod, Mapping[str, MatcherBase]] = self.init_matchers()
 
         log.debug(f"BarcodeExtractor initialized for {fastq_file}")
         log.debug(
@@ -61,13 +68,12 @@ class BarcodeExtractor:
         If a batch size was provided during initialization, use that. Otherwise, calculate a default
         batch size based on the number of workers and the total number of reads in the FASTQ file.
         """
-        total_reads = self.fastq.reads_count
-        batch_size = max(MIN_READS_PER_BATCH, ceil(total_reads / self.n_workers))
+        batch_size = max(MIN_READS_PER_BATCH, ceil(self.total_reads / self.n_workers))
         batch_size = min(batch_size, MAX_READS_PER_BATCH)
-        log.debug(f"Calculated default batch size: {batch_size} (total reads: {total_reads})")
+        log.debug(f"Calculated default batch size: {batch_size} (total reads: {self.total_reads})")
         return batch_size
 
-    def init_matchers(self) -> dict[MatchMethod, dict[str, MatcherBase]]:
+    def init_matchers(self) -> dict[MatchMethod, Mapping[str, MatcherBase]]:
         """
         Initialize the barcode matchers based on the chemistry definition.
 
@@ -78,28 +84,31 @@ class BarcodeExtractor:
         # {bc_name: Matcher}
         fixed_matchers: dict[str, FixedPositionMatcher] = {}
         kmer_matchers: dict[str, KmerMatcher] = {}
-        # TODO: Add align_matcher
+        alignment_matchers: dict[str, AlignmentMatcher] = {}
 
         for component in self.chemistry.read_structure.components:
+            if not component.is_barcode:
+                continue
+
             common_kwargs = {
                 "barcode_component": component,
                 "whitelist": self.whitelists[component.name],
                 "chemistry": self.chemistry,
             }
 
-            if component.is_barcode:
-                fixed_matchers[component.name] = FixedPositionMatcher(**common_kwargs)
-                kmer_matchers[component.name] = KmerMatcher(
-                    **common_kwargs,
-                    k=self.kmer_size,
-                )
+            fixed_matchers[component.name] = FixedPositionMatcher(**common_kwargs)
+            kmer_matchers[component.name] = KmerMatcher(
+                **common_kwargs,
+                k=self.kmer_size,
+            )
+            alignment_matchers[component.name] = AlignmentMatcher(**common_kwargs)
 
         # The order of matchers is important
         # We want to try the fastest methods first to reduce search space for slower methods
         matchers = {
             MatchMethod.EXACTMATCH: fixed_matchers,
             MatchMethod.KMERMATCH: kmer_matchers,
-            # "local": local_matchers,
+            MatchMethod.ALIGNMATCH: alignment_matchers,
         }
 
         return matchers
@@ -160,44 +169,43 @@ class BarcodeExtractor:
 
             hybrid_extractor = HybridExtractor(chemistry=self.chemistry, matchers=self.matchers)
 
-            futures = {
-                executor.submit(
-                    process_read_batch, read_batches, hybrid_extractor=hybrid_extractor
-                )
-                for read_batches in read_batches
-            }
+            futures = [
+                executor.submit(process_read_batch, batch, hybrid_extractor=hybrid_extractor)
+                for batch in read_batches
+            ]
 
             with progress_bar(unit="reads") as pbar:
                 task = pbar.add_task("Extracting barcodes...", total=self.fastq.reads_count)
 
-                for future in futures:
+                for future in as_completed(futures):
                     batch_results, batch_len = future.result()
                     results.extend(batch_results)
                     pbar.update(task, advance=batch_len)
 
         # Write output files
-        with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
-            futures = [
-                executor.submit(self.write_bc_all, bc_all_path, results),
-                executor.submit(self.write_bc_valid, bc_valid_path, results),
-                executor.submit(self.write_bc_counts, bc_counts_path, results),
-                # executor.submit(self.write_bc_stats, bc_stats_path, results)
-            ]
+        with progress_bar(unit="files") as pbar:
+            task = pbar.add_task("Writing output files...", total=4)
 
-            with progress_bar(unit="files") as pbar:
-                task = pbar.add_task("Writing output files...", total=len(futures))
-                for future in futures:
-                    future.result()
-                    pbar.update(task, advance=1)
+            self.write_bc_all(bc_all_path, results)
+            pbar.update(task, advance=1)
+
+            self.write_bc_valid(bc_valid_path, results)
+            pbar.update(task, advance=1)
+
+            self.write_bc_counts(bc_counts_path, results)
+            pbar.update(task, advance=1)
+
+            self.write_bc_stats(bc_stats_path, results)
+            pbar.update(task, advance=1)
 
     def write_bc_all(self, bc_all_path: Path, results: list[ReadMatchResult]) -> None:
-        """Write the full barcode extraction results for all reads to a TSV file."""
+        """Write the full barcode extraction results for all reads to a TXT file."""
         with bc_all_path.open("w") as f:
             for r in results:
                 f.write(f"{r.get_annotated_readname()}\n")
 
     def write_bc_valid(self, bc_valid_path: Path, results: list[ReadMatchResult]) -> None:
-        """Write the valid barcodes (those that matched the whitelist) to a CSV file."""
+        """Write the valid barcodes (those that matched the whitelist) to a TXT file."""
         with bc_valid_path.open("w") as f:
             for r in results:
                 if r.success and r.full_barcode is not None:
@@ -213,9 +221,27 @@ class BarcodeExtractor:
             for bc, count in barcode_counts.most_common():
                 f.write(f"{bc},{count}\n")
 
-    def write_bc_stats(self, bc_stats_path: Path, results: list[ReadMatchResult]) -> None:
-        """Write summary statistics of the barcode extraction results to a CSV file."""
-        ...
+    def write_bc_stats(
+        self, bc_stats_path: Path, results: list[ReadMatchResult], log_stats: bool = True
+    ) -> None:
+        """Write summary statistics of the barcode extraction results to a TXT file."""
+        ex_stats: ExtractionStats = ExtractionStats.from_results(results, self.matchers)
+        stats_out: str = ex_stats.get_report()
+
+        with bc_stats_path.open("w") as f:
+            f.write(stats_out)
+
+        if log_stats:
+            log.info(f"Completed barcode extraction for {ex_stats.overall.total_reads} reads")
+            log.info(
+                f"Overall success rate: {(ex_stats.overall.perfect+ex_stats.overall.corrok)/ex_stats.overall.total_reads:.2%}"
+            )
+            log.info(
+                f"Perfect matches: {ex_stats.overall.perfect} ({ex_stats.overall.perfect / ex_stats.overall.total_reads:.2%})"
+            )
+            log.info(
+                f"Corrected matches: {ex_stats.overall.corrok} ({ex_stats.overall.corrok / ex_stats.overall.total_reads:.2%})"
+            )
 
 
 # Module-level function for processing a batch of reads, used for multiprocessing

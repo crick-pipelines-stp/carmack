@@ -100,8 +100,9 @@ class BarcodeMatchHistory:
                     status += "-spUp"
                 if attempt.spacer_downstream:
                     status += "-spDown"
-            else:
-                status += ":NOMATCH"
+
+        if not self.success:
+            status += ":NOMATCH"
 
         return status
 
@@ -148,6 +149,13 @@ class ReadMatchResult:
             if bc.attempts and bc.attempts[-1].match is not None
         }
         return self.chemistry.construct_full_barcode(result_dict)
+
+    def get_attempts(self, bc_name: str, method: MatchMethod) -> list[BarcodeMatchAttempt]:
+        """Get all attempts for a given barcode component and method."""
+        for bc_history in self.bc_results:
+            if bc_history.bc_name == bc_name:
+                return [a for a in bc_history.attempts if a.method == method]
+        return []
 
     def get_annotated_readname(self) -> str:
         """Generate an annotated read name with matching status of each barcode component."""
