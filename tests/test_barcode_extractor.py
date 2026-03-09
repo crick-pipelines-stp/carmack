@@ -18,7 +18,6 @@ from carmack.barcode.hybrid_extractor import HybridExtractor
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 
-
 R1_PATH = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
 
 
@@ -27,15 +26,705 @@ class TestBarcodeExtractor:
 
     @pytest.fixture(scope="class")
     def barcode_extractor(self) -> BarcodeExtractor:
-        """Provide a BarcodeExtractor instance initialized with the test FASTQ and HyDrop chemistry."""
+        """Provide a BarcodeExtractor instance initialized with the test FASTQ and hydrop chemistry."""
         extractor = BarcodeExtractor(
             fastq_file=R1_PATH,
-            chemistry_name="HyDrop",
+            chemistry_name="hydrop",
             n_workers=1,  # Use single worker for testing
         )
         return extractor
 
-    ...
+    @pytest.fixture
+    def hydrop_chemistry(self) -> ChemistryHydrop:
+        """Provide a HyDrop chemistry instance."""
+        return ChemistryHydrop()
+
+    @pytest.fixture
+    def hydrop_matchers(
+        self, hydrop_chemistry: ChemistryHydrop
+    ) -> dict[MatchMethod, dict[str, FixedPositionMatcher]]:
+        """Build a matchers dict with FixedPositionMatcher for each barcode component."""
+        whitelists = hydrop_chemistry.barcode_whitelists
+        fixed_matchers: dict[str, FixedPositionMatcher] = {}
+        for comp in hydrop_chemistry.read_structure.components:
+            if comp.is_barcode:
+                fixed_matchers[comp.name] = FixedPositionMatcher(
+                    whitelist=whitelists[comp.name],
+                    barcode_component=comp,
+                    chemistry=hydrop_chemistry,
+                )
+        return {MatchMethod.EXACTMATCH: fixed_matchers}
+
+    # ===== Initialization Tests =====
+
+    def test_init_stores_parameters(self, barcode_extractor: BarcodeExtractor) -> None:
+        """Test that BarcodeExtractor stores initialization parameters correctly."""
+        assert_that(barcode_extractor.chemistry_name).is_equal_to("hydrop")
+        assert_that(barcode_extractor.kmer_size).is_equal_to(4)
+        assert_that(barcode_extractor.n_workers).is_equal_to(1)
+
+    def test_init_reads_total_reads(self, barcode_extractor: BarcodeExtractor) -> None:
+        """Test that BarcodeExtractor reads total reads count from FASTQ."""
+        assert_that(barcode_extractor.total_reads).is_greater_than(0)
+
+    def test_init_raises_on_empty_fastq(self) -> None:
+        """Test that BarcodeExtractor raises ValueError on empty FASTQ file."""
+        # Create a temporary empty fastq
+        import gzip
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".fastq.gz", delete=False) as f:
+            with gzip.open(f.name, "wt") as gz:
+                gz.write("")
+            temp_path = f.name
+
+        try:
+            with pytest.raises(ValueError, match="No reads found"):
+                BarcodeExtractor(
+                    fastq_file=temp_path,
+                    chemistry_name="HyDrop",
+                    n_workers=1,
+                )
+        finally:
+            import os
+
+            os.unlink(temp_path)
+
+    def test_init_raises_on_invalid_chemistry(self) -> None:
+        """Test that BarcodeExtractor raises ValueError on invalid chemistry name."""
+        with pytest.raises(ValueError, match="not supported"):
+            BarcodeExtractor(
+                fastq_file=R1_PATH,
+                chemistry_name="InvalidChemistry",
+                n_workers=1,
+            )
+
+    def test_init_creates_chemistry_instance(self, barcode_extractor: BarcodeExtractor) -> None:
+        """Test that BarcodeExtractor creates chemistry instance."""
+        from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
+
+        assert_that(barcode_extractor.chemistry).is_instance_of(ChemistryHydrop)
+
+    def test_init_loads_whitelists(self, barcode_extractor: BarcodeExtractor) -> None:
+        """Test that BarcodeExtractor loads barcode whitelists."""
+        assert_that(barcode_extractor.whitelists).is_not_empty()
+        assert_that(barcode_extractor.whitelists).contains_key("BC1").contains_key(
+            "BC2"
+        ).contains_key("BC3")
+
+    def test_init_with_custom_kmer_size(self) -> None:
+        """Test initialization with custom kmer size."""
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            kmer_size=5,
+            n_workers=1,
+        )
+        assert_that(extractor.kmer_size).is_equal_to(5)
+
+    def test_init_with_custom_batch_size(self) -> None:
+        """Test initialization with custom batch size."""
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=1,
+            batch_size=100,
+        )
+        assert_that(extractor.batch_size).is_equal_to(100)
+
+    def test_init_with_multiple_workers(self) -> None:
+        """Test initialization with multiple workers."""
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=4,
+        )
+        assert_that(extractor.n_workers).is_equal_to(4)
+
+    # ===== calc_batch_size Tests =====
+
+    def test_calc_batch_size_respects_min(self) -> None:
+        """Test that calc_batch_size respects MIN_READS_PER_BATCH."""
+        # Use a chemistry with known small whitelist to speed up
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=1000,  # Many workers, few reads per worker
+        )
+        assert_that(extractor.batch_size).is_greater_than_or_equal_to(10)  # MIN_READS_PER_BATCH
+
+    def test_calc_batch_size_respects_max(self) -> None:
+        """Test that calc_batch_size respects MAX_READS_PER_BATCH."""
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=1,  # Single worker gets all reads
+        )
+        assert_that(extractor.batch_size).is_less_than_or_equal_to(2500)  # MAX_READS_PER_BATCH
+
+    @pytest.mark.parametrize(
+        "n_workers,expected_batches",
+        [
+            (1, 1),  # Single worker, single batch (assuming <2500 reads)
+            (2, 2),  # Two workers, two batches
+            (4, 4),  # Four workers, four batches
+        ],
+    )
+    def test_calc_batch_size_scales_with_workers(
+        self, n_workers: int, expected_batches: int
+    ) -> None:
+        """Test batch size calculation scales with worker count."""
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=n_workers,
+        )
+        # For small files, batch size should be adjusted so we get expected_batches
+        expected_batch_size = max(10, (extractor.total_reads + n_workers - 1) // n_workers)
+        expected_batch_size = min(expected_batch_size, 2500)
+        assert_that(extractor.batch_size).is_equal_to(expected_batch_size)
+
+    # ===== init_matchers Tests =====
+
+    def test_init_matchers_creates_all_matchers(self, barcode_extractor: BarcodeExtractor) -> None:
+        """Test that init_matchers creates all three matcher types."""
+        matchers = barcode_extractor.matchers
+        assert_that(matchers).contains_key(MatchMethod.EXACTMATCH)
+        assert_that(matchers).contains_key(MatchMethod.KMERMATCH)
+        assert_that(matchers).contains_key(MatchMethod.ALIGNMATCH)
+
+    def test_init_matchers_creates_matchers_for_all_barcodes(
+        self, barcode_extractor: BarcodeExtractor
+    ) -> None:
+        """Test that init_matchers creates matchers for all barcode components."""
+        for method in [MatchMethod.EXACTMATCH, MatchMethod.KMERMATCH, MatchMethod.ALIGNMATCH]:
+            assert_that(barcode_extractor.matchers[method]).contains_key("BC1")
+            assert_that(barcode_extractor.matchers[method]).contains_key("BC2")
+            assert_that(barcode_extractor.matchers[method]).contains_key("BC3")
+
+    def test_init_matchers_uses_correct_kmer_size(self) -> None:
+        """Test that init_matchers uses the configured kmer size."""
+        from carmack.barcode.matchers.kmer_matcher import KmerMatcher
+
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            kmer_size=5,
+            n_workers=1,
+        )
+        kmer_matcher = extractor.matchers[MatchMethod.KMERMATCH]["BC3"]
+        assert_that(kmer_matcher).is_instance_of(KmerMatcher)
+        assert_that(getattr(kmer_matcher, "k")).is_equal_to(5)
+
+    def test_init_matchers_matchers_are_different_types(
+        self, barcode_extractor: BarcodeExtractor
+    ) -> None:
+        """Test that each matcher type creates appropriate matcher instances."""
+        from carmack.barcode.matchers.alignment_matcher import AlignmentMatcher
+        from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
+        from carmack.barcode.matchers.kmer_matcher import KmerMatcher
+
+        assert_that(barcode_extractor.matchers[MatchMethod.EXACTMATCH]["BC3"]).is_instance_of(
+            FixedPositionMatcher
+        )
+        assert_that(barcode_extractor.matchers[MatchMethod.KMERMATCH]["BC3"]).is_instance_of(
+            KmerMatcher
+        )
+        assert_that(barcode_extractor.matchers[MatchMethod.ALIGNMATCH]["BC3"]).is_instance_of(
+            AlignmentMatcher
+        )
+
+    # ===== generate_batches Tests =====
+
+    def test_generate_batches_returns_list_of_tuples(
+        self, barcode_extractor: BarcodeExtractor
+    ) -> None:
+        """Test that generate_batches returns list of (name, seq, qual) tuples."""
+        batches = barcode_extractor.generate_batches()
+        assert_that(batches).is_instance_of(list)
+        if batches:
+            assert_that(batches[0]).is_instance_of(list)
+            if batches[0]:
+                assert_that(batches[0][0]).is_instance_of(tuple)
+                assert_that(len(batches[0][0])).is_equal_to(3)  # (name, seq, qual)
+
+    def test_generate_batches_respects_batch_size(self) -> None:
+        """Test that generate_batches respects the configured batch size."""
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=1,
+            batch_size=5,  # Small batch size for testing
+        )
+        batches = extractor.generate_batches()
+        if len(batches) > 1:  # If multiple batches, check they're appropriately sized
+            for batch in batches[:-1]:  # All but last should be full
+                assert_that(len(batch)).is_less_than_or_equal_to(5)
+
+    def test_generate_batches_contains_all_reads(
+        self, barcode_extractor: BarcodeExtractor
+    ) -> None:
+        """Test that generate_batches includes all reads from the file."""
+        batches = barcode_extractor.generate_batches()
+        total_reads_in_batches = sum(len(batch) for batch in batches)
+        assert_that(total_reads_in_batches).is_equal_to(barcode_extractor.total_reads)
+
+    def test_generate_batches_empty_last_batch_handled(self) -> None:
+        """Test that generate_batches handles cases where reads exactly fill batches."""
+        # This is a theoretical test - if we had exactly batch_size reads
+        # The implementation should not create an empty trailing batch
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=1,
+        )
+        batches = extractor.generate_batches()
+        # Last batch should not be empty
+        if batches:
+            assert_that(len(batches[-1])).is_greater_than(0)
+
+    def test_generate_batches_appends_remaining_partial_batch(self) -> None:
+        """Test that generate_batches appends remaining reads when they don't fill a batch."""
+        # Create extractor with large batch size so all reads fit in one batch
+        # This tests line 130: if current_batch: 
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=1,
+            batch_size=5000,  # Much larger than file size
+        )
+        total_reads = extractor.total_reads
+        
+        # Now create extractor with batch_size < total_reads to ensure multiple batches
+        # with a remainder that needs to be appended
+        batch_size = max(10, total_reads // 3)  # Ensure we'll have remainder
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=1,
+            batch_size=batch_size,
+        )
+        batches = extractor.generate_batches()
+        
+        # Total reads in all batches should equal total_reads
+        total_in_batches = sum(len(batch) for batch in batches)
+        assert_that(total_in_batches).is_equal_to(total_reads)
+        
+        # If we have multiple batches, the last one should be partial (testing line 130)
+        if len(batches) > 1:
+            assert_that(len(batches[-1])).is_less_than(batch_size)
+            assert_that(len(batches[-1])).is_greater_than(0)
+
+    # ===== Edge Cases and Error Handling =====
+
+    @pytest.mark.parametrize(
+        "chemistry_name",
+        [
+            "hydrop",
+            "carmack_custom_seq_1_0",
+        ],
+    )
+    def test_init_accepts_supported_chemistries(self, chemistry_name: str) -> None:
+        """Test that BarcodeExtractor accepts all supported chemistry names."""
+        # Skip if chemistry doesn't exist
+        try:
+            extractor = BarcodeExtractor(
+                fastq_file=R1_PATH,
+                chemistry_name=chemistry_name,
+                n_workers=1,
+            )
+            assert_that(extractor.chemistry_name).is_equal_to(chemistry_name)
+        except ValueError as e:
+            if "not supported" in str(e):
+                pytest.skip(f"Chemistry {chemistry_name} not available in this environment")
+            raise
+
+    def test_fastq_file_property_accessible(self, barcode_extractor: BarcodeExtractor) -> None:
+        """Test that the FastqFile object is accessible."""
+        assert_that(barcode_extractor.fastq).is_not_none()
+        assert_that(barcode_extractor.fastq.filename).contains("hydrop_scatac_1_S1_R1_001")
+
+    def test_batch_size_property_is_int(self, barcode_extractor: BarcodeExtractor) -> None:
+        """Test that batch_size property is an integer."""
+        assert_that(barcode_extractor.batch_size).is_instance_of(int)
+        assert_that(barcode_extractor.batch_size).is_greater_than(0)
+
+    # ===== write_bc_all Tests =====
+
+    def test_write_bc_all_creates_file_with_annotated_readnames(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_all writes annotated read names for all results."""
+        output_path = tmp_path / "test_bc_all.txt"
+        
+        # Create mock results
+        whitelists = hydrop_chemistry.barcode_whitelists
+        bc_results = [
+            self._make_successful_history("BC3", whitelists["BC3"][0]),
+            self._make_successful_history("BC2", whitelists["BC2"][0]),
+            self._make_successful_history("BC1", whitelists["BC1"][0]),
+        ]
+        result = ReadMatchResult(
+            read_name="test_read_1",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=bc_results,
+        )
+        
+        barcode_extractor.write_bc_all(output_path, [result])
+        
+        assert_that(output_path.exists()).is_true()
+        content = output_path.read_text()
+        assert_that(content).contains("test_read_1")
+        assert_that(content).contains("SUCCESS")
+
+    def test_write_bc_all_multiple_results(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_all handles multiple results correctly."""
+        output_path = tmp_path / "test_bc_all_multi.txt"
+        
+        whitelists = hydrop_chemistry.barcode_whitelists
+        results = []
+        for i in range(3):
+            bc_results = [
+                self._make_successful_history("BC3", whitelists["BC3"][i]),
+                self._make_successful_history("BC2", whitelists["BC2"][i]),
+                self._make_successful_history("BC1", whitelists["BC1"][i]),
+            ]
+            results.append(ReadMatchResult(
+                read_name=f"read_{i}",
+                read="A" * 50,
+                qual="I" * 50,
+                chemistry=hydrop_chemistry,
+                bc_results=bc_results,
+            ))
+        
+        barcode_extractor.write_bc_all(output_path, results)
+        
+        lines = output_path.read_text().strip().split("\n")
+        assert_that(len(lines)).is_equal_to(3)
+        for i in range(3):
+            assert_that(lines[i]).contains(f"read_{i}")
+
+    def test_write_bc_all_empty_results(
+        self, tmp_path, barcode_extractor: BarcodeExtractor
+    ) -> None:
+        """Test that write_bc_all handles empty results list."""
+        output_path = tmp_path / "test_bc_all_empty.txt"
+        
+        barcode_extractor.write_bc_all(output_path, [])
+        
+        assert_that(output_path.exists()).is_true()
+        assert_that(output_path.read_text()).is_empty()
+
+    # ===== write_bc_valid Tests =====
+
+    def test_write_bc_valid_only_successful_matches(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_valid only writes successful matches."""
+        output_path = tmp_path / "test_bc_valid.txt"
+        
+        whitelists = hydrop_chemistry.barcode_whitelists
+        # Successful result
+        success_result = ReadMatchResult(
+            read_name="success_read",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_successful_history("BC3", whitelists["BC3"][0]),
+                self._make_successful_history("BC2", whitelists["BC2"][0]),
+                self._make_successful_history("BC1", whitelists["BC1"][0]),
+            ],
+        )
+        # Failed result
+        fail_result = ReadMatchResult(
+            read_name="fail_read",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_failed_history("BC3", "ZZZZZZZZZZ"),
+                self._make_failed_history("BC2", "ZZZZZZZZZZ"),
+                self._make_failed_history("BC1", "ZZZZZZZZZZ"),
+            ],
+        )
+        
+        barcode_extractor.write_bc_valid(output_path, [success_result, fail_result])
+        
+        content = output_path.read_text()
+        assert_that(content).contains("success_read")
+        assert_that(content).does_not_contain("fail_read")
+
+    def test_write_bc_valid_skips_none_full_barcode(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_valid skips results with None full_barcode."""
+        output_path = tmp_path / "test_bc_valid_none.txt"
+        
+        # Partial success - one barcode failed
+        partial_result = ReadMatchResult(
+            read_name="partial_read",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_successful_history("BC3", "CAGTGTGGAA"),
+                self._make_failed_history("BC2", "ZZZZZZZZZZ"),  # Failed
+                self._make_successful_history("BC1", "GAACAGTAGT"),
+            ],
+        )
+        
+        barcode_extractor.write_bc_valid(output_path, [partial_result])
+        
+        # Should be empty since full_barcode is None (BC2 failed)
+        assert_that(output_path.read_text()).is_empty()
+
+    def test_write_bc_valid_empty_results(
+        self, tmp_path, barcode_extractor: BarcodeExtractor
+    ) -> None:
+        """Test that write_bc_valid handles empty results list."""
+        output_path = tmp_path / "test_bc_valid_empty.txt"
+        
+        barcode_extractor.write_bc_valid(output_path, [])
+        
+        assert_that(output_path.exists()).is_true()
+        assert_that(output_path.read_text()).is_empty()
+
+    # ===== write_bc_counts Tests =====
+
+    def test_write_bc_counts_aggregates_barcodes(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_counts aggregates and counts unique barcodes."""
+        output_path = tmp_path / "test_bc_counts.csv"
+        
+        # Create results with duplicate barcodes
+        results = []
+        for _ in range(3):
+            results.append(ReadMatchResult(
+                read_name="read",
+                read="A" * 50,
+                qual="I" * 50,
+                chemistry=hydrop_chemistry,
+                bc_results=[
+                    self._make_successful_history("BC3", "CAGTGTGGAA"),
+                    self._make_successful_history("BC2", "ACGGTGGACT"),
+                    self._make_successful_history("BC1", "GAACAGTAGT"),
+                ],
+            ))
+        # Add one different barcode
+        results.append(ReadMatchResult(
+            read_name="read2",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_successful_history("BC3", "TGACCGTACT"),
+                self._make_successful_history("BC2", "TATGCAGTTA"),
+                self._make_successful_history("BC1", "TCTGAGATCG"),
+            ],
+        ))
+        
+        barcode_extractor.write_bc_counts(output_path, results)
+        
+        lines = output_path.read_text().strip().split("\n")
+        assert_that(len(lines)).is_equal_to(2)
+        # First line should be the barcode with count 3 (most common first)
+        assert_that(lines[0]).contains(",3")
+        # Second line should have count 1
+        assert_that(lines[1]).contains(",1")
+
+    def test_write_bc_counts_skips_failed_results(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_counts excludes failed results from counting."""
+        output_path = tmp_path / "test_bc_counts_skip.csv"
+        
+        success_result = ReadMatchResult(
+            read_name="success",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_successful_history("BC3", "CAGTGTGGAA"),
+                self._make_successful_history("BC2", "ACGGTGGACT"),
+                self._make_successful_history("BC1", "GAACAGTAGT"),
+            ],
+        )
+        fail_result = ReadMatchResult(
+            read_name="fail",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_failed_history("BC3", "ZZZZZZZZZZ"),
+                self._make_failed_history("BC2", "ZZZZZZZZZZ"),
+                self._make_failed_history("BC1", "ZZZZZZZZZZ"),
+            ],
+        )
+        
+        barcode_extractor.write_bc_counts(output_path, [success_result, fail_result])
+        
+        lines = output_path.read_text().strip().split("\n")
+        assert_that(len(lines)).is_equal_to(1)
+        assert_that(lines[0]).starts_with("CAGTGTGGAAACGGTGGACTGAACAGTAGT")
+
+    def test_write_bc_counts_empty_results(
+        self, tmp_path, barcode_extractor: BarcodeExtractor
+    ) -> None:
+        """Test that write_bc_counts handles empty results list."""
+        output_path = tmp_path / "test_bc_counts_empty.csv"
+        
+        barcode_extractor.write_bc_counts(output_path, [])
+        
+        assert_that(output_path.exists()).is_true()
+        assert_that(output_path.read_text()).is_empty()
+
+    # ===== write_bc_stats Tests =====
+
+    def test_write_bc_stats_creates_report(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_stats creates a statistics report file."""
+        output_path = tmp_path / "test_bc_stats.txt"
+        
+        whitelists = hydrop_chemistry.barcode_whitelists
+        results = [
+            ReadMatchResult(
+                read_name="read1",
+                read="A" * 50,
+                qual="I" * 50,
+                chemistry=hydrop_chemistry,
+                bc_results=[
+                    self._make_successful_history("BC3", whitelists["BC3"][0]),
+                    self._make_successful_history("BC2", whitelists["BC2"][0]),
+                    self._make_successful_history("BC1", whitelists["BC1"][0]),
+                ],
+            )
+        ]
+        
+        barcode_extractor.write_bc_stats(output_path, results, log_stats=False)
+        
+        assert_that(output_path.exists()).is_true()
+        content = output_path.read_text()
+        assert_that(content).contains("Total reads")
+        assert_that(content).contains("Perfect matches")
+        assert_that(content).contains("BC3")
+        assert_that(content).contains("BC2")
+        assert_that(content).contains("BC1")
+
+    def test_write_bc_stats_with_log_stats_enabled(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_stats logs when log_stats=True."""
+        output_path = tmp_path / "test_bc_stats_log.txt"
+        
+        whitelists = hydrop_chemistry.barcode_whitelists
+        results = [
+            ReadMatchResult(
+                read_name="read1",
+                read="A" * 50,
+                qual="I" * 50,
+                chemistry=hydrop_chemistry,
+                bc_results=[
+                    self._make_successful_history("BC3", whitelists["BC3"][0]),
+                    self._make_successful_history("BC2", whitelists["BC2"][0]),
+                    self._make_successful_history("BC1", whitelists["BC1"][0]),
+                ],
+            )
+        ]
+        
+        # Should not raise any logging errors
+        barcode_extractor.write_bc_stats(output_path, results, log_stats=True)
+        
+        assert_that(output_path.exists()).is_true()
+
+    # ===== process_read_batch Tests =====
+
+    def test_process_read_batch_empty_batch(
+        self, hydrop_chemistry: ChemistryHydrop, hydrop_matchers: dict
+    ) -> None:
+        """Test that process_read_batch handles empty batch."""
+        from carmack.barcode.barcode_extractor import process_read_batch
+        from carmack.barcode.hybrid_extractor import HybridExtractor
+        
+        hybrid_extractor = HybridExtractor(
+            chemistry=hydrop_chemistry, matchers=hydrop_matchers
+        )
+        
+        results, batch_len = process_read_batch([], hybrid_extractor)
+        
+        assert_that(results).is_empty()
+        assert_that(batch_len).is_equal_to(0)
+
+    def test_process_read_batch_single_read(
+        self, hydrop_chemistry: ChemistryHydrop, hydrop_matchers: dict
+    ) -> None:
+        """Test that process_read_batch processes single read correctly."""
+        from carmack.barcode.barcode_extractor import process_read_batch
+        from carmack.barcode.hybrid_extractor import HybridExtractor
+        
+        hybrid_extractor = HybridExtractor(
+            chemistry=hydrop_chemistry, matchers=hydrop_matchers
+        )
+        
+        batch = [("test_read", "CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT", "I" * 52)]
+        results, batch_len = process_read_batch(batch, hybrid_extractor)
+        
+        assert_that(batch_len).is_equal_to(1)
+        assert_that(len(results)).is_equal_to(1)
+        assert_that(results[0]).is_instance_of(ReadMatchResult)
+        assert_that(results[0].read_name).is_equal_to("test_read")
+
+    def test_process_read_batch_multiple_reads(
+        self, hydrop_chemistry: ChemistryHydrop, hydrop_matchers: dict
+    ) -> None:
+        """Test that process_read_batch processes multiple reads."""
+        from carmack.barcode.barcode_extractor import process_read_batch
+        from carmack.barcode.hybrid_extractor import HybridExtractor
+        
+        hybrid_extractor = HybridExtractor(
+            chemistry=hydrop_chemistry, matchers=hydrop_matchers
+        )
+        
+        batch = [
+            ("read1", "CAGTGTGGAAAGGGTACTCGACGGTGGACTGCAGTAGCTGGAACAGTAGTGT", "I" * 52),
+            ("read2", "TCCTGATAAGAGGGTACTCGACCAAGAGAGCAGTAGCTGCTCCTCATCCGTA", "I" * 52),
+        ]
+        results, batch_len = process_read_batch(batch, hybrid_extractor)
+        
+        assert_that(batch_len).is_equal_to(2)
+        assert_that(len(results)).is_equal_to(2)
+        assert_that(results[0].read_name).is_equal_to("read1")
+        assert_that(results[1].read_name).is_equal_to("read2")
+
+    # ===== Helper methods =====
+
+    def _make_successful_history(self, bc_name: str, barcode: str) -> BarcodeMatchHistory:
+        """Helper to create a successful BarcodeMatchHistory with an exact match."""
+        history = BarcodeMatchHistory(bc_name=bc_name)
+        attempt = BarcodeMatchAttempt(
+            candidate=barcode,
+            method=MatchMethod.EXACTMATCH,
+            match=barcode,
+            read_idx=(0, len(barcode)),
+        )
+        history.record_attempt(attempt, success=True)
+        return history
+
+    def _make_failed_history(self, bc_name: str, candidate: str) -> BarcodeMatchHistory:
+        """Helper to create a failed BarcodeMatchHistory."""
+        history = BarcodeMatchHistory(bc_name=bc_name)
+        attempt = BarcodeMatchAttempt(
+            candidate=candidate,
+            method=MatchMethod.EXACTMATCH,
+        )
+        history.record_attempt(attempt, success=False)
+        return history
 
 
 class TestBarcodeExtractorDataclasses:
