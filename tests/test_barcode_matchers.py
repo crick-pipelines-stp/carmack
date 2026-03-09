@@ -186,8 +186,6 @@ class TestBarcodeMatcherBase:
 
         spacer_results = matcher.check_spacers(read, match_idx)
 
-        print(spacer_results)
-
         assert_that(spacer_results).contains_key("upstream").contains_key("downstream")
         assert_that(spacer_results["upstream"]).is_equal_to(upstream_spacer)
         assert_that(spacer_results["downstream"]).is_equal_to(downstream_spacer)

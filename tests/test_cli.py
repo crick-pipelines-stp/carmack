@@ -102,9 +102,6 @@ class TestCli(unittest.TestCase):
         cmd = ["extract-barcodes"] + [R1_PATH] + self.assemble_params(params)
         result = self.invoke_cli(cmd)
 
-        print(result.output)
-        print(result.exception)
-
         # Assert
         self.assertTrue(result.exit_code == 0)
         mock_barcode_extractor.assert_called_once_with(R1_PATH, "hydrop", n_workers=1)

@@ -164,9 +164,6 @@ class CellCaller:
         barcode_sums = sorted(self.matrix.sum_barcodes(), reverse=True)
         ranks = list(range(1, len(barcode_sums) + 1))
 
-        print(min(barcode_sums), max(barcode_sums), len(barcode_sums))
-        print(min(ranks), max(ranks), len(ranks))
-
         if force_n is not None:
             # Force n-cells
             log.debug(f"Forcing selection of top n-cells. ({force_n})")
