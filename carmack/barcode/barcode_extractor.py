@@ -15,6 +15,7 @@ from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.io.fastq_file import FastqFile
 from carmack.utils import get_prefix, progress_bar
 
+
 log = logging.getLogger(__name__)
 
 MIN_READS_PER_BATCH = 10
@@ -141,7 +142,6 @@ class BarcodeExtractor:
         Args:
             output_dir: Output directory for result files
             prefix: Prefix for output files (default: derived from input filename)
-            hide_progress: If True, hide progress bar
         """
 
         log.info("Starting barcode extraction pipeline...")

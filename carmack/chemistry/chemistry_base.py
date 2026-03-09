@@ -33,19 +33,19 @@ class ChemistryBase(ABC):
     load barcode whitelists, and provide chemistry-specific parameters.
     """
 
-    @property
+    @cached_property
     @abstractmethod
     def name(self) -> str:
         """Name of the chemistry."""
         pass
 
-    @property
+    @cached_property
     @abstractmethod
     def read_structure(self) -> ReadStructure:
         """Defines the layout of barcodes and other components within reads."""
         pass
 
-    @property
+    @cached_property
     @abstractmethod
     def max_errors(self) -> MatchErrors:
         """Maximum allowed errors (substitutions/indels) for barcode matching."""

@@ -28,7 +28,7 @@ class ReadComponent:
             raise ValueError("Barcode components should not be instantiated with a sequence.")
 
     @property
-    def start(self) -> int | None:
+    def start(self) -> int:
         """Return the start position of this component within the read."""
         return self._start
 

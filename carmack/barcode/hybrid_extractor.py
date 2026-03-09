@@ -79,7 +79,7 @@ class HybridExtractor:
                     # No ambiguous barcode handling needed for fixed position matcher, so we can directly record the match attempts
                     results = matcher[bc_name].match(read)
                 else:
-                    # Skip other matchers if barcode extraction succedeed for this barcode component
+                    # Skip other matchers if barcode extraction succeeded for this barcode component
                     if barcode_match_tracker[bc_name].success:
                         continue
 

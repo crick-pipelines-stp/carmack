@@ -42,7 +42,7 @@ class PerBarcodeStats:
     fail: int
     edit_distance_dist: Counter[int] | None
     reads_w_ambiguous_match: int  # Number of reads where this method produced an ambiguous match (multiple candidates tied)
-    spacer_present: int  # Number of reads where atleast one spacer was preset (if checked for)
+    spacer_present: int  # Number of reads where at least one spacer was present (if checked for)
 
 
 @dataclass(frozen=True)

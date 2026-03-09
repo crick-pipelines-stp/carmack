@@ -18,7 +18,6 @@ dependencies = [
     "matplotlib",
     "scipy",
     "kneed",
-    "numba",
     "biopython",
 ]
 scripts = { "carmack" = "carmack.__main__:run_carmack" }

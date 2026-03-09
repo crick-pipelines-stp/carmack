@@ -203,7 +203,7 @@ class KmerMatcher(MatcherBase):
             elif len(validated_candidates) == 1:
                 best_bc, start, end, edit_dist, spacers_check = validated_candidates[0]
             else:
-                # If still ambigious, check if only one of the validated candidate has two spacers present, which would make it more likely to be correct
+                # If still ambiguous, check if only one of the validated candidate has two spacers present, which would make it more likely to be correct
                 # If more than one candidate has two adjacent spacers, then we have to consider it ambiguous and cannot confidently call a single best match
                 best_candidates_with_two_spacers = [
                     c

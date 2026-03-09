@@ -254,7 +254,7 @@ class AlignmentMatcher(MatcherBase):
                 result.spacer_upstream = spacers_check["upstream"]
                 result.spacer_downstream = spacers_check["downstream"]
 
-                # Validate if atleast one adjacent spacer is present
+                # Validate if at least one adjacent spacer is present
                 if any(spacers_check.values()):
                     validated_results.append((result, spacers_check))
 

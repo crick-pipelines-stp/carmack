@@ -2,10 +2,12 @@
 Carmack Custom Sequencing 1.0 chemistry definition.
 
 Read structure (5' to 3'):
-BC3 (10bp) -> PRIMER_C (22bp) -> BC2 (10bp) -> PRIMER_A (22bp) -> BC1 (10bp) -> ...
+PRIMER_D (22bp) -> BC3 (10bp) -> PRIMER_C (22bp) -> BC2 (10bp) -> PRIMER_A (22bp) -> BC1 (10bp)
+-> ...
 """
 
 import logging
+from functools import cached_property
 from importlib.resources import files
 
 from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
@@ -44,12 +46,12 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
     and two primer sequences. Barcode whitelists are loaded from TSV files.
     """
 
-    @property
+    @cached_property
     def name(self) -> str:
         """Return the unique identifier for this chemistry."""
         return "carmack_custom_seq_1_0"
 
-    @property
+    @cached_property
     def read_structure(self) -> ReadStructure:
         """Define the layout of barcodes and primers within the read."""
         structure = [
@@ -67,7 +69,7 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
 
         return ReadStructure(structure)
 
-    @property
+    @cached_property
     def max_errors(self) -> MatchErrors:
         """Return the maximum allowed errors for barcode matching."""
         return MatchErrors(barcode=1, spacer=2)

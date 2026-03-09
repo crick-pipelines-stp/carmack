@@ -151,7 +151,11 @@ class TestCli(unittest.TestCase):
         params = {"output_dir": ".", "prefix": ""}
 
         # Test
-        cmd = ["bam-tag-deduplicate"] + [BAM_PATH, BAI_PATH, BC_VALID_PATH] + self.assemble_params(params)
+        cmd = (
+            ["bam-tag-deduplicate"]
+            + [BAM_PATH, BAI_PATH, BC_VALID_PATH]
+            + self.assemble_params(params)
+        )
         result = self.invoke_cli(cmd)
 
         # Assert
@@ -166,7 +170,12 @@ class TestCli(unittest.TestCase):
         params = {"output_dir": ".", "prefix": "test"}
 
         # Test
-        cmd = ["bam-tag-deduplicate"] + [BAM_PATH, BAI_PATH, BC_VALID_PATH] + self.assemble_params(params) + ["--dedup"]
+        cmd = (
+            ["bam-tag-deduplicate"]
+            + [BAM_PATH, BAI_PATH, BC_VALID_PATH]
+            + self.assemble_params(params)
+            + ["--dedup"]
+        )
         result = self.invoke_cli(cmd)
 
         # Assert
@@ -192,7 +201,7 @@ class TestCli(unittest.TestCase):
     def test_cli_command_bam_tag_deduplicate_help(self, mock_tag_dedup):
         """Test bam-tag-deduplicate --help displays help message."""
         result = self.invoke_cli(["bam-tag-deduplicate", "--help"])
-        
+
         self.assertEqual(result.exit_code, 0)
         self.assertIn("bam", result.output.lower())
         self.assertIn("valid_barcodes", result.output.lower())
@@ -235,7 +244,7 @@ class TestCli(unittest.TestCase):
     def test_cli_command_split_bam_help(self, mock_bam_splitter):
         """Test split-bam --help displays help message."""
         result = self.invoke_cli(["split-bam", "--help"])
-        
+
         self.assertEqual(result.exit_code, 0)
         self.assertIn("split", result.output.lower())
 
@@ -264,7 +273,12 @@ class TestCli(unittest.TestCase):
         """Test call-cells command with visualise flag."""
         params = {"output_dir": ".", "prefix": "test", "min_overlap": "1"}
 
-        cmd = ["call-cells"] + [BED_PATH, TAGGED_BAM_PATH, BAI_PATH] + self.assemble_params(params) + ["--visualise"]
+        cmd = (
+            ["call-cells"]
+            + [BED_PATH, TAGGED_BAM_PATH, BAI_PATH]
+            + self.assemble_params(params)
+            + ["--visualise"]
+        )
         result = self.invoke_cli(cmd)
 
         self.assertEqual(result.exit_code, 0)
@@ -295,14 +309,14 @@ class TestCli(unittest.TestCase):
     def test_cli_command_call_cells_help(self, mock_cell_caller):
         """Test call-cells --help displays help message."""
         result = self.invoke_cli(["call-cells", "--help"])
-        
+
         self.assertEqual(result.exit_code, 0)
         self.assertIn("cell", result.output.lower())
 
     def test_cli_commands_listed_in_help(self):
         """Test that all commands are listed in the main help output."""
         result = self.invoke_cli(["--help"])
-        
+
         self.assertEqual(result.exit_code, 0)
         # Check for command names in help output
         self.assertIn("extract-barcodes", result.output)

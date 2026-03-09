@@ -32,6 +32,7 @@ click.rich_click.COMMAND_GROUPS = {
         {
             "name": "Commands for users",
             "commands": [
+                "extract-barcodes",
                 "fastq-filter",
                 "bam-tag-deduplicate",
                 "call-cells",

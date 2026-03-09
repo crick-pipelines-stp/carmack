@@ -21,10 +21,10 @@ class FixedPositionMatcher(MatcherBase):
 
         Args:
             read: The sequencing read to match against.
-            start_idx: The index in the read to start matching from (default is 0). Only used if the
-            barcode component does not have a defined start position.
+            start_idx: Not used for this matcher since it relies on fixed positions defined in the
+            read structure.
         """
-        start = self.barcode_component.start or start_idx
+        start = self.barcode_component.start
         end = start + self.barcode_component.length
         candidate = read[start:end]
 

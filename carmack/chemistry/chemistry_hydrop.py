@@ -6,6 +6,7 @@ BC3 (10bp) -> SPACER_1 (10bp) -> BC2 (10bp) -> SPACER_2 (10bp) -> BC1 (10bp) -> 
 """
 
 import logging
+from functools import cached_property
 from importlib.resources import files
 
 from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
@@ -36,12 +37,12 @@ class ChemistryHydrop(ChemistryBase):
     and two spacer sequences. Barcode whitelists are loaded from TSV files.
     """
 
-    @property
+    @cached_property
     def name(self) -> str:
         """Return the unique identifier for this chemistry."""
         return "hydrop"
 
-    @property
+    @cached_property
     def read_structure(self) -> ReadStructure:
         """Define the layout of barcodes and spacers within the read."""
         structure = [
@@ -58,7 +59,7 @@ class ChemistryHydrop(ChemistryBase):
 
         return ReadStructure(structure)
 
-    @property
+    @cached_property
     def max_errors(self) -> MatchErrors:
         """Return the maximum allowed errors for barcode matching."""
         return MatchErrors(barcode=2, spacer=1)

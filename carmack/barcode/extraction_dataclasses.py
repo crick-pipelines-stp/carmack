@@ -75,7 +75,7 @@ class BarcodeMatchHistory:
         """
         Return a dict indicating whether each method had ambiguous matches that failed tiebreaking.
 
-        We only record ambigous BarcodeMatchAttempts if spacer validation failed.
+        We only record ambiguous BarcodeMatchAttempts if spacer validation failed.
         """
         methods = [a.method for a in self.attempts if a.match is not None]
 

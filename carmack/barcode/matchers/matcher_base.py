@@ -52,7 +52,7 @@ class MatcherBase(ABC):
     # Helper funcs
     def check_read_len(self, read: str) -> bool:
         """Check if the read is long enough to contain the barcode component."""
-        end = (self.barcode_component.start or 0) + self.barcode_component.length
+        end = self.barcode_component.start + self.barcode_component.length
         return len(read) >= end
 
     def trim_read(self, read: str, start_idx: int) -> str:
