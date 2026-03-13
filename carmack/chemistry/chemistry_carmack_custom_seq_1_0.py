@@ -1,111 +1,119 @@
-import os
+"""
+Carmack Custom Sequencing 1.0 chemistry definition.
+
+Read structure (5' to 3'):
+PRIMER_D (22bp) -> BC3 (10bp) -> PRIMER_C (22bp) -> BC2 (10bp) -> PRIMER_A (22bp) -> BC1 (10bp)
+-> ...
+"""
+
+import logging
+from functools import cached_property
 from importlib.resources import files
-from itertools import product
 
-import numpy as np
+from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
+from carmack.chemistry.chemistry_factory import ChemistryFactory
+from carmack.chemistry.read_component import ReadComponent
+from carmack.chemistry.read_structure import ReadStructure
+from carmack.io.gzip_file import GzipFile
 
-from ..io.gzip_file import GzipFile
-from .chemistry_base import ChemistryBase
-from carmack.barcode.barcode_utils import find_anchor_hamming
 
-BC_LENGTH = 96
-BC_CHUNK_LENGTH = 10
-BC1_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath("carmack_custom_seq_1_0_96_bc1.tsv")
-BC2_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath("carmack_custom_seq_1_0_96_bc2.tsv")
-BC3_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath("carmack_custom_seq_1_0_96_bc3.tsv")
+log = logging.getLogger(__name__)
+
+
+# Primer sequences
 PRIMER_C = "TGTGTATAAGGACCTCGTTGCC"
 PRIMER_A = "ATGGAAGCCGACGAATTAGACC"
+
+BC_CHUNK_LEN = 10
+
+# Barcode file paths
+BC1_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
+    "carmack_custom_seq_1_0_96_bc1.tsv"
+)
+BC2_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
+    "carmack_custom_seq_1_0_96_bc2.tsv"
+)
+BC3_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
+    "carmack_custom_seq_1_0_96_bc3.tsv"
+)
 
 
 class ChemistryCarmackCustomSeq10(ChemistryBase):
     """
-    ChemistryCarmack class.
+    Chemistry definition for Carmack Custom Sequencing 1.0.
+
+    This chemistry has a specific read structure with three barcode components
+    and two primer sequences. Barcode whitelists are loaded from TSV files.
     """
 
-    def load_barcode_set(self) -> list:
-        """Load barcode set for chemistry."""
+    @cached_property
+    def name(self) -> str:
+        """Return the unique identifier for this chemistry."""
+        return "carmack_custom_seq_1_0"
 
-        stream1 = GzipFile(str(BC1_PATH)).open_read_iterator(as_string=True)
-        bc1 = {line.strip() for line in stream1}
-        stream1.close()
+    @cached_property
+    def read_structure(self) -> ReadStructure:
+        """Define the layout of barcodes and primers within the read."""
+        structure = [
+            ReadComponent(name="PRIMER_D", is_barcode=False, length=len(PRIMER_C)),
+            ReadComponent(name="BC3", is_barcode=True, length=BC_CHUNK_LEN),
+            ReadComponent(
+                name="PRIMER_C", is_barcode=False, length=len(PRIMER_C), sequence=PRIMER_C
+            ),
+            ReadComponent(name="BC2", is_barcode=True, length=BC_CHUNK_LEN),
+            ReadComponent(
+                name="PRIMER_A", is_barcode=False, length=len(PRIMER_A), sequence=PRIMER_A
+            ),
+            ReadComponent(name="BC1", is_barcode=True, length=BC_CHUNK_LEN),
+        ]
 
-        stream2 = GzipFile(str(BC2_PATH)).open_read_iterator(as_string=True)
-        bc2 = {line.strip() for line in stream2}
-        stream2.close()
+        return ReadStructure(structure)
 
-        stream3 = GzipFile(str(BC3_PATH)).open_read_iterator(as_string=True)
-        bc3 = {line.strip() for line in stream3}
-        stream3.close()
+    @cached_property
+    def max_errors(self) -> MatchErrors:
+        """Return the maximum allowed errors for barcode matching."""
+        return MatchErrors(barcode=1, spacer=2)
 
-        return [bc1, bc2, bc3]
+    def load_barcode_whitelist(self, barcode_name: str) -> tuple[str, ...]:
+        """
+        Load the barcode whitelist for a specific barcode component.
 
-    def construct_whitelist(self, barcode_set):
-        whitelist = set()
+        Args:
+            barcode_name: The name of the barcode component ("BC1", "BC2", or "BC3")
+                Must match the names defined in get_read_structure() for barcode components.
 
-        # Create combinations of BC1 + BC2 + BC3
-        for b_combination in product(*barcode_set):
-            curr_wl = "".join(b_combination)
-            whitelist.add(curr_wl)
+        Returns:
+            Tuple of valid barcode sequences
 
-        return whitelist
+        Raises:
+            ValueError: If the barcode name is not recognized
+        """
+        path_map = {
+            "BC1": BC1_PATH,
+            "BC2": BC2_PATH,
+            "BC3": BC3_PATH,
+        }
 
-    def subset_whitelist_guess(self, seq: str) -> str:
-        """Make best guess sequence subset based on standard chemistry for a whitelist match"""
+        if barcode_name not in path_map:
+            raise ValueError(
+                f"Unknown barcode name: {barcode_name}. Valid names: {list(path_map.keys())}"
+            )
 
-        # Return if seq too short for chemistry
-        if len(seq) < BC_LENGTH:
-            return None
+        path = path_map[barcode_name]
+        log.debug(f"Loading barcode whitelist for {barcode_name} from {path}")
 
-        # Subset seq if more than 50 to the left most 50 bases
-        if len(seq) > BC_LENGTH:
-            seq = seq[:BC_LENGTH]
+        barcodes = []
+        stream = GzipFile(str(path)).open_read_iterator(as_string=True)
+        for line in stream:
+            barcode = line.strip()
+            if barcode:
+                barcodes.append(barcode)
+        stream.close()
 
-        # Subset barcodes
-        bc3 = seq[22:32]
-        bc2 = seq[54:64]
-        bc1 = seq[86:96]
+        result = tuple(barcodes)
+        log.debug(f"Loaded {len(result)} barcodes for {barcode_name}")
+        return result
 
-        # Return constructed 30 base hydrop whitelist bc
-        return bc1 + bc2 + bc3
 
-    def subset_barcode_chunks(self, seq: str, qs: np.ndarray) -> list:
-        """Subset barcodes from sequence for given chemistry where they are supposed to be found using locator sequences"""
-
-        # Init
-        msg = "SUBSET:OK"
-
-        # Return nothing if the sequence is too short for hydrop chemistry
-        if len(seq) < BC_LENGTH:
-            return None, None, "SUBSET:SEQLEN<" + str(BC_LENGTH)
-
-        # Subset seq if more than 96 for efficiency
-        if len(seq) > BC_LENGTH:
-            seq = seq[:BC_LENGTH]
-
-        # Try to find spacer seqs
-        idx_primer_c = find_anchor_hamming(seq, PRIMER_C, 2)
-        idx_primer_a = find_anchor_hamming(seq, PRIMER_A, 2)
-
-        # Error if we cant find them
-        if idx_primer_c == -1:
-            return None, None, "SUBSET:PRIMC_NOTFND"
-        if idx_primer_a == -1:
-            return None, None, "SUBSET:PRIMA_NOTFND"
-
-        # Set message to indel if detected
-        if idx_primer_c != 32:
-            msg = "SUBSET:INDL"
-        if idx_primer_a != 64:
-            msg = "SUBSET:INDL"
-
-        # Subset the barcodes
-        bc3 = seq[idx_primer_c - BC_CHUNK_LENGTH : idx_primer_c]
-        bc2 = seq[idx_primer_c + len(PRIMER_C) : idx_primer_a]
-        bc1 = seq[idx_primer_a + len(PRIMER_A) :]
-
-        # Subset the qs scores
-        qs3 = qs[idx_primer_c - BC_CHUNK_LENGTH : idx_primer_c]
-        qs2 = qs[idx_primer_c + len(PRIMER_C) : idx_primer_a]
-        qs1 = qs[idx_primer_a + len(PRIMER_A) :]
-
-        return [bc1, bc2, bc3], [qs1, qs2, qs3], msg
+# Register this chemistry with the factory
+ChemistryFactory.register(ChemistryCarmackCustomSeq10)

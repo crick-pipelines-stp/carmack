@@ -1,7 +1,7 @@
 # Copilot Instructions for This Repository
 
 ## Installation Instructions
-- Use python 3.11
+- Use python 3.12
 - Install the dev environment with `pip install -e ".[dev,tests]"`
 
 ## Agent Instructions

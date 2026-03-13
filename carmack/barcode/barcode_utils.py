@@ -1,8 +1,7 @@
-import numba
 import numpy as np
 
-@numba.njit
-def hamming_distance(a, b):
+
+def hamming_distance(a: np.ndarray, b: np.ndarray) -> int:
     """
     Calculate the Hamming distance between two arrays.
 
@@ -13,29 +12,73 @@ def hamming_distance(a, b):
     Returns:
         int: Number of positions where a and b differ.
     """
-    mismatches = 0
-    for i in range(len(a)):
-        if a[i] != b[i]:
-            mismatches += a[i] != b[i]
-    return mismatches
+    if len(a) != len(b):
+        raise ValueError("Sequences must have equal length.")
+    if a.ndim != 1 or b.ndim != 1:
+        raise ValueError("Arrays must be 1D.")
+    return int(np.count_nonzero(a != b))
 
-@numba.njit
-def find_anchor_hamming(read, anchor, max_mismatches):
+
+def edit_distance(seq1, seq2, n_char="N", n_matches_any=True):
     """
-    Find the start index of the first window in 'read' where the Hamming distance to 'anchor' is <= max_mismatches.
+    Calculate the Levenshtein (edit) distance between two sequences.
 
-    Args:
-        read (np.ndarray): The array to search within.
-        anchor (np.ndarray): The anchor array to match.
-        max_mismatches (int): Maximum allowed mismatches (Hamming distance).
+    Parameters:
+    -----------
+    seq1 : str
+        First sequence
+    seq2 : str
+        Second sequence
+    n_char : str, optional
+        Character to treat as wildcard (default: 'N')
+    n_matches_any : bool, optional
+        If True, n_char matches any character with cost 0 (default: True)
+        If False, n_char is treated as a regular character
 
     Returns:
-        int: Start index of the first matching window, or -1 if not found.
+    --------
+    int or float
+        The Levenshtein distance between seq1 and seq2
+
+    Examples:
+    ---------
+    >>> edit_distance("ACGT", "ACNT")
+    0  # N matches T with no penalty
+
+    >>> edit_distance("ACGT", "ACNT", n_matches_any=False)
+    1  # N is treated as a different character from T
+
+    >>> edit_distance("kitten", "sitting")
+    3
     """
-    read_len = len(read)
-    anchor_len = len(anchor)
-    for i in range(read_len - anchor_len + 1):
-        window = read[i:i + anchor_len]
-        if hamming_distance(window, anchor) <= max_mismatches:
-            return i
-    return -1
+    m, n = len(seq1), len(seq2)
+
+    # Create a matrix to store distances
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+
+    # Initialize first row and column
+    for i in range(m + 1):
+        dp[i][0] = i
+    for j in range(n + 1):
+        dp[0][j] = j
+
+    # Fill the matrix
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            # Determine substitution cost
+            if seq1[i - 1] == seq2[j - 1]:
+                substitution_cost = 0
+            elif n_matches_any and (seq1[i - 1] == n_char or seq2[j - 1] == n_char):
+                # If either character is N and n_matches_any is True, no penalty
+                substitution_cost = 0
+            else:
+                substitution_cost = 1
+
+            # Calculate minimum cost
+            dp[i][j] = min(
+                dp[i - 1][j] + 1,  # Deletion
+                dp[i][j - 1] + 1,  # Insertion
+                dp[i - 1][j - 1] + substitution_cost,  # Substitution
+            )
+
+    return dp[m][n]

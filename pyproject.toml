@@ -15,11 +15,10 @@ dependencies = [
     "rich",
     "numpy",
     "pysam",
-    "tqdm",
     "matplotlib",
     "scipy",
     "kneed",
-    "numba",
+    "biopython",
 ]
 scripts = { "carmack" = "carmack.__main__:run_carmack" }
 
@@ -41,6 +40,9 @@ tests = [
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.package-data]
+carmack = ["data/**/*"]
 
 [tool.setuptools.packages.find]
 exclude = [

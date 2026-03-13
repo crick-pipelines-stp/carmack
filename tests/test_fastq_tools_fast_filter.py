@@ -59,7 +59,9 @@ class TestFastqFilter(unittest.TestCase):
 
         # Run filter_valid_reads with trimming
         fastq_filter = FastqFilter(R1_PATH, R2_PATH)
-        fastq_filter.filter_valid_reads(BC_VALID_PATH, temp_path, prefix, trim_r1=trim_r1, trim_r2=trim_r2)
+        fastq_filter.filter_valid_reads(
+            BC_VALID_PATH, temp_path, prefix, trim_r1=trim_r1, trim_r2=trim_r2
+        )
 
         # Check files exist
         files = os.listdir(temp_path)
@@ -82,6 +84,10 @@ class TestFastqFilter(unittest.TestCase):
             break
 
         # Count nr of lines and check they are expected and equal
-        line_count_r1 = sum(1 for _ in FastqFile(test_file_valid_r1).open_read_iterator(as_string=True))
-        line_count_r2 = sum(1 for _ in FastqFile(test_file_valid_r2).open_read_iterator(as_string=True))
+        line_count_r1 = sum(
+            1 for _ in FastqFile(test_file_valid_r1).open_read_iterator(as_string=True)
+        )
+        line_count_r2 = sum(
+            1 for _ in FastqFile(test_file_valid_r2).open_read_iterator(as_string=True)
+        )
         assert line_count_r1 == line_count_r2 == exp_line_count
