@@ -422,14 +422,12 @@ class TestChemistryCarmackCustomSeq10:
         """Test that the start positions of read components are computed correctly."""
         read_structure = chemistry.read_structure
         known_seqs = read_structure.get_known_sequences()
-        PRIMER_D_len = read_structure.get_component_by_name("PRIMER_D").length
         expected_starts = {
-            "PRIMER_D": 0,
-            "BC3": 0 + PRIMER_D_len,
-            "PRIMER_C": 10 + PRIMER_D_len,
-            "BC2": 10 + PRIMER_D_len + len(known_seqs["PRIMER_C"]),
-            "PRIMER_A": 20 + PRIMER_D_len + len(known_seqs["PRIMER_C"]),
-            "BC1": 20 + PRIMER_D_len + len(known_seqs["PRIMER_C"]) + len(known_seqs["PRIMER_A"]),
+            "BC3": 0,
+            "PRIMER_C": 10,
+            "BC2": 10 + len(known_seqs["PRIMER_C"]),
+            "PRIMER_A": 20 + len(known_seqs["PRIMER_C"]),
+            "BC1": 20 + len(known_seqs["PRIMER_C"]) + len(known_seqs["PRIMER_A"]),
         }
         for component in read_structure:
             assert_that(component.start).is_equal_to(expected_starts[component.name])

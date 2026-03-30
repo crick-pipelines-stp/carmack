@@ -16,7 +16,6 @@ from carmack.chemistry.read_component import ReadComponent
 from carmack.chemistry.read_structure import ReadStructure
 from carmack.io.gzip_file import GzipFile
 
-
 log = logging.getLogger(__name__)
 
 
@@ -55,7 +54,6 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
     def read_structure(self) -> ReadStructure:
         """Define the layout of barcodes and primers within the read."""
         structure = [
-            ReadComponent(name="PRIMER_D", is_barcode=False, length=len(PRIMER_C)),
             ReadComponent(name="BC3", is_barcode=True, length=BC_CHUNK_LEN),
             ReadComponent(
                 name="PRIMER_C", is_barcode=False, length=len(PRIMER_C), sequence=PRIMER_C
