@@ -36,11 +36,13 @@ class BarcodeExtractor:
         kmer_size: int = 4,
         n_workers: int = 1,
         batch_size: int | None = None,
+        fast: bool = False,
     ) -> None:
         self.fastq = FastqFile(fastq_file)
         self.chemistry_name = chemistry_name
         self.kmer_size = kmer_size
         self.n_workers = n_workers
+        self.fast = fast
 
         # Check reads
         self.total_reads = self.fastq.reads_count
@@ -59,7 +61,7 @@ class BarcodeExtractor:
 
         log.debug(f"BarcodeExtractor initialized for {fastq_file}")
         log.debug(
-            f"Parameters: chemistry={chemistry_name}, kmer_size={self.kmer_size}, batch_size={self.batch_size}, workers={self.n_workers}"
+            f"Parameters: chemistry={chemistry_name}, kmer_size={self.kmer_size}, batch_size={self.batch_size}, workers={self.n_workers}, fast={self.fast}"
         )
 
     def calc_batch_size(self) -> int:
@@ -102,15 +104,18 @@ class BarcodeExtractor:
                 **common_kwargs,
                 k=self.kmer_size,
             )
-            alignment_matchers[component.name] = AlignmentMatcher(**common_kwargs)
+            if not self.fast:
+                alignment_matchers[component.name] = AlignmentMatcher(**common_kwargs)
 
         # The order of matchers is important
         # We want to try the fastest methods first to reduce search space for slower methods
         matchers = {
             MatchMethod.EXACTMATCH: fixed_matchers,
             MatchMethod.KMERMATCH: kmer_matchers,
-            MatchMethod.ALIGNMATCH: alignment_matchers,
         }
+
+        if not self.fast:
+            matchers[MatchMethod.ALIGNMATCH] = alignment_matchers
 
         return matchers
 
@@ -234,7 +239,7 @@ class BarcodeExtractor:
         if log_stats:
             log.info(f"Completed barcode extraction for {ex_stats.overall.total_reads} reads")
             log.info(
-                f"Overall success rate: {(ex_stats.overall.perfect+ex_stats.overall.corrok)/ex_stats.overall.total_reads:.2%}"
+                f"Overall success rate: {(ex_stats.overall.perfect + ex_stats.overall.corrok) / ex_stats.overall.total_reads:.2%}"
             )
             log.info(
                 f"Perfect matches: {ex_stats.overall.perfect} ({ex_stats.overall.perfect / ex_stats.overall.total_reads:.2%})"

@@ -106,7 +106,25 @@ class TestCli(unittest.TestCase):
 
         # Assert
         self.assertTrue(result.exit_code == 0)
-        mock_barcode_extractor.assert_called_once_with(R1_PATH, "hydrop", n_workers=1)
+        mock_barcode_extractor.assert_called_once_with(R1_PATH, "hydrop", n_workers=1, fast=False)
+
+    @mock.patch("carmack.__main__.BarcodeExtractor", autospec=True)
+    def test_cli_command_barcode_extractor_fast_mode(self, mock_barcode_extractor):
+        """Test barcode_extractor with fast mode enabled."""
+
+        params = {
+            "chemistry": "hydrop",
+            "output_dir": ".",
+            "prefix": "",
+            "cpu_count": "1",
+            "fast": None,
+        }
+
+        cmd = ["extract-barcodes"] + [R1_PATH] + self.assemble_params(params)
+        result = self.invoke_cli(cmd)
+
+        self.assertTrue(result.exit_code == 0)
+        mock_barcode_extractor.assert_called_once_with(R1_PATH, "hydrop", n_workers=1, fast=True)
 
     @mock.patch("carmack.__main__.time.perf_counter")
     @mock.patch("carmack.__main__.atexit.register")

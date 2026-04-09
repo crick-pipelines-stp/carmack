@@ -142,6 +142,16 @@ class TestBarcodeExtractor:
         )
         assert_that(extractor.n_workers).is_equal_to(4)
 
+    def test_init_with_fast_mode(self) -> None:
+        """Test initialization with fast mode enabled."""
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=1,
+            fast=True,
+        )
+        assert_that(extractor.fast).is_true()
+
     # ===== calc_batch_size Tests =====
 
     def test_calc_batch_size_respects_min(self) -> None:
@@ -234,6 +244,19 @@ class TestBarcodeExtractor:
         assert_that(barcode_extractor.matchers[MatchMethod.ALIGNMATCH]["BC3"]).is_instance_of(
             AlignmentMatcher
         )
+
+    def test_init_matchers_skips_alignment_matchers_in_fast_mode(self) -> None:
+        """Test that fast mode omits alignment matchers from the pipeline."""
+        extractor = BarcodeExtractor(
+            fastq_file=R1_PATH,
+            chemistry_name="hydrop",
+            n_workers=1,
+            fast=True,
+        )
+
+        assert_that(extractor.matchers).contains_key(MatchMethod.EXACTMATCH)
+        assert_that(extractor.matchers).contains_key(MatchMethod.KMERMATCH)
+        assert_that(extractor.matchers).does_not_contain_key(MatchMethod.ALIGNMATCH)
 
     # ===== generate_batches Tests =====
 

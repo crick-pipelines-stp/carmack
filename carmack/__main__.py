@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-""" carmack: Helper tools for analysis of single-cell mutli-omic data """
+"""carmack: Helper tools for analysis of single-cell mutli-omic data"""
+
 import atexit
 import logging
 import os
@@ -40,10 +41,8 @@ click.rich_click.COMMAND_GROUPS = {
         },
         {
             "name": "Additional utility commands",
-            "commands": [
-                "split-bam"
-            ],
-        }
+            "commands": ["split-bam"],
+        },
     ]
 }
 
@@ -139,18 +138,19 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
 @click.option("-n", "--cpu_count", required=False, type=int, default=get_cpu_count(), show_default=True, help="Number of CPU workers to use. Default is all available CPUs minus 1.")
-def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count):
+@click.option("--fast", is_flag=True, default=False, help="Skip local alignment fallback for faster extraction, at the cost of reduced sensitivity.")
+def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count, fast):
     """
     Extract cell barcodes from FASTQ reads using hybrid matching strategy.
 
-    Uses a three-stage extraction pipeline:
+    Uses a staged extraction pipeline:
     1. Fixed position matching (exact match at expected positions)
     2. Kmer seed-and-extend (handles indels within tolerance)
-    3. Local alignment (handles complex errors)
+    3. Local alignment (handles complex errors unless --fast is set)
     """
-    
+
     log.info("Extracting barcodes from FASTQ file...")
-    extractor = BarcodeExtractor(fastq, chemistry, n_workers=cpu_count)
+    extractor = BarcodeExtractor(fastq, chemistry, n_workers=cpu_count, fast=fast)
     extractor.extract_barcodes(output_dir, prefix)
 
 
@@ -174,6 +174,7 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix, trim_r1, trim
     fastq_filter = FastqFilter(read1, read2)
     fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix, trim_r1=trim_r1, trim_r2=trim_r2)
 
+
 @carmack_cli.command("bam-tag-deduplicate")
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
 @click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
@@ -196,12 +197,21 @@ def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
     tag_dedup = TagDedup(bam, bai, valid_barcodes)
     tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
 
+
 @carmack_cli.command("split-bam")
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<tagged_bam>")
 @click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-@click.option("-n", "--cpu_count", required=False, type=int, default=get_cpu_count(), show_default=True, help="Number of CPUs to use for sorting and indexing of split BAM files. Default is all available CPUs minus 1.")
+@click.option(
+    "-n",
+    "--cpu_count",
+    required=False,
+    type=int,
+    default=get_cpu_count(),
+    show_default=True,
+    help="Number of CPUs to use for sorting and indexing of split BAM files. Default is all available CPUs minus 1.",
+)
 def split_bam(bam, bai, output_dir, prefix, cpu_count):
     """
     Split barcode-tagged BAM file into separate files based on barcode tag (BC) value.
@@ -216,6 +226,7 @@ def split_bam(bam, bai, output_dir, prefix, cpu_count):
 
     splitter = BamSplitter(bam, bai)
     splitter.split(output_dir, prefix, cpu_count)
+
 
 @carmack_cli.command("call-cells")
 @click.argument("bed", required=True, nargs=1, type=click.Path(exists=True), metavar="<peaks_bed>")
@@ -254,4 +265,3 @@ def call_cells(bed, bam, bai, force_n, min_overlap, visualise, output_dir, prefi
 # Main script is being run - launch the CLI
 if __name__ == "__main__":
     run_carmack()
-
