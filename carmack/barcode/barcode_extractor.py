@@ -5,6 +5,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from math import ceil
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+
+from carmack.barcode.barcode_utils import make_barcode_rank_plot
 from carmack.barcode.extraction_dataclasses import MatchMethod, ReadMatchResult
 from carmack.barcode.extraction_reporting import ExtractionStats
 from carmack.barcode.hybrid_extractor import HybridExtractor
@@ -14,7 +17,6 @@ from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.io.fastq_file import FastqFile
 from carmack.utils import get_prefix, progress_bar
-
 
 log = logging.getLogger(__name__)
 
@@ -158,10 +160,11 @@ class BarcodeExtractor:
         bc_all_path = output_path / f"{prefix}.bc_all.txt"
         bc_valid_path = output_path / f"{prefix}.bc_valid.txt"
         bc_counts_path = output_path / f"{prefix}.bc_counts.csv"
-        bc_stats_path = output_path / f"{prefix}.bc_counts_stats.txt"
+        bc_rank_plot_path = output_path / f"{prefix}.bc_rank.png"
+        bc_stats_path = output_path / f"{prefix}.bc_stats.txt"
 
         log.debug(
-            f"Output paths: {bc_all_path}, {bc_valid_path}, {bc_counts_path}, {bc_stats_path}"
+            f"Output paths: {bc_all_path}, {bc_valid_path}, {bc_counts_path}, {bc_rank_plot_path}, {bc_stats_path}"
         )
 
         results: list[ReadMatchResult] = []
@@ -189,7 +192,7 @@ class BarcodeExtractor:
 
         # Write output files
         with progress_bar(unit="files") as pbar:
-            task = pbar.add_task("Writing output files...", total=4)
+            task = pbar.add_task("Writing output files...", total=5)
 
             self.write_bc_all(bc_all_path, results)
             pbar.update(task, advance=1)
@@ -200,8 +203,15 @@ class BarcodeExtractor:
             self.write_bc_counts(bc_counts_path, results)
             pbar.update(task, advance=1)
 
+            self.write_bc_rank_plot(bc_rank_plot_path, results)
+            pbar.update(task, advance=1)
+
             self.write_bc_stats(bc_stats_path, results)
             pbar.update(task, advance=1)
+
+    def get_barcode_counts(self, results: list[ReadMatchResult]) -> Counter[str]:
+        """Count successful full barcodes across all reads."""
+        return Counter(r.full_barcode for r in results if r.success and r.full_barcode is not None)
 
     def write_bc_all(self, bc_all_path: Path, results: list[ReadMatchResult]) -> None:
         """Write the full barcode extraction results for all reads to a TXT file."""
@@ -218,13 +228,17 @@ class BarcodeExtractor:
 
     def write_bc_counts(self, bc_counts_path: Path, results: list[ReadMatchResult]) -> None:
         """Write the counts of each unique full barcode to a CSV file."""
-        barcode_counts = Counter(
-            r.full_barcode for r in results if r.success and r.full_barcode is not None
-        )
+        barcode_counts = self.get_barcode_counts(results)
 
         with bc_counts_path.open("w") as f:
             for bc, count in barcode_counts.most_common():
                 f.write(f"{bc},{count}\n")
+
+    def write_bc_rank_plot(self, bc_rank_plot_path: Path, results: list[ReadMatchResult]) -> None:
+        """Write a barcode-rank plot of successful full-barcode counts to a PNG file."""
+        fig = make_barcode_rank_plot(self.get_barcode_counts(results))
+        fig.savefig(bc_rank_plot_path)
+        plt.close(fig)
 
     def write_bc_stats(
         self, bc_stats_path: Path, results: list[ReadMatchResult], log_stats: bool = True

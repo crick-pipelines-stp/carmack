@@ -2,22 +2,19 @@
 Tests for barcode extraction pipeline: HybridExtractor, dataclasses, and utility functions.
 """
 
+from unittest import mock
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from assertpy import assert_that
 
 from carmack.barcode.barcode_extractor import BarcodeExtractor
-from carmack.barcode.barcode_utils import edit_distance, hamming_distance
-from carmack.barcode.extraction_dataclasses import (
-    BarcodeMatchAttempt,
-    BarcodeMatchHistory,
-    MatchMethod,
-    ReadMatchResult,
-)
+from carmack.barcode.barcode_utils import edit_distance, hamming_distance, make_barcode_rank_plot
+from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, BarcodeMatchHistory, MatchMethod, ReadMatchResult
 from carmack.barcode.hybrid_extractor import HybridExtractor
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
-
 
 R1_PATH = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
 
@@ -614,6 +611,87 @@ class TestBarcodeExtractor:
         assert_that(output_path.exists()).is_true()
         assert_that(output_path.read_text()).is_empty()
 
+    def test_get_barcode_counts_skips_failed_results(
+        self, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that get_barcode_counts only includes successful full barcodes."""
+        success_result = ReadMatchResult(
+            read_name="success",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_successful_history("BC3", "CAGTGTGGAA"),
+                self._make_successful_history("BC2", "ACGGTGGACT"),
+                self._make_successful_history("BC1", "GAACAGTAGT"),
+            ],
+        )
+        fail_result = ReadMatchResult(
+            read_name="fail",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_failed_history("BC3", "ZZZZZZZZZZ"),
+                self._make_failed_history("BC2", "ZZZZZZZZZZ"),
+                self._make_failed_history("BC1", "ZZZZZZZZZZ"),
+            ],
+        )
+
+        barcode_counts = barcode_extractor.get_barcode_counts([success_result, fail_result])
+
+        assert_that(barcode_counts).is_equal_to({"CAGTGTGGAAACGGTGGACTGAACAGTAGT": 1})
+
+    # ===== write_bc_rank_plot Tests =====
+
+    def test_write_bc_rank_plot_creates_png(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_rank_plot saves a barcode rank plot image."""
+        output_path = tmp_path / "test_bc_rank.png"
+        results = []
+        for _ in range(3):
+            results.append(
+                ReadMatchResult(
+                    read_name="read",
+                    read="A" * 50,
+                    qual="I" * 50,
+                    chemistry=hydrop_chemistry,
+                    bc_results=[
+                        self._make_successful_history("BC3", "CAGTGTGGAA"),
+                        self._make_successful_history("BC2", "ACGGTGGACT"),
+                        self._make_successful_history("BC1", "GAACAGTAGT"),
+                    ],
+                )
+            )
+
+        barcode_extractor.write_bc_rank_plot(output_path, results)
+
+        assert_that(output_path.exists()).is_true()
+        assert_that(output_path.stat().st_size).is_greater_than(0)
+
+    def test_write_bc_rank_plot_handles_no_valid_barcodes(
+        self, tmp_path, barcode_extractor: BarcodeExtractor, hydrop_chemistry: ChemistryHydrop
+    ) -> None:
+        """Test that write_bc_rank_plot still writes a plot when no barcodes matched."""
+        output_path = tmp_path / "test_bc_rank_empty.png"
+        failed_result = ReadMatchResult(
+            read_name="fail",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_failed_history("BC3", "ZZZZZZZZZZ"),
+                self._make_failed_history("BC2", "ZZZZZZZZZZ"),
+                self._make_failed_history("BC1", "ZZZZZZZZZZ"),
+            ],
+        )
+
+        barcode_extractor.write_bc_rank_plot(output_path, [failed_result])
+
+        assert_that(output_path.exists()).is_true()
+        assert_that(output_path.stat().st_size).is_greater_than(0)
+
     # ===== write_bc_stats Tests =====
 
     def test_write_bc_stats_creates_report(
@@ -672,6 +750,87 @@ class TestBarcodeExtractor:
         barcode_extractor.write_bc_stats(output_path, results, log_stats=True)
 
         assert_that(output_path.exists()).is_true()
+
+    def test_extract_barcodes_writes_rank_plot_in_output_stage(
+        self,
+        tmp_path,
+        monkeypatch,
+        barcode_extractor: BarcodeExtractor,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """Test that extract_barcodes includes the rank plot in the file-writing stage."""
+        import carmack.barcode.barcode_extractor as barcode_extractor_module
+
+        result = ReadMatchResult(
+            read_name="read1",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_successful_history("BC3", "CAGTGTGGAA"),
+                self._make_successful_history("BC2", "ACGGTGGACT"),
+                self._make_successful_history("BC1", "GAACAGTAGT"),
+            ],
+        )
+
+        class DummyFuture:
+            def result(self):
+                return [result], 1
+
+        class DummyExecutor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, func, batch, hybrid_extractor=None):
+                return DummyFuture()
+
+        class DummyProgress:
+            def __init__(self):
+                self.add_task_calls = []
+                self.update_calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def add_task(self, description, total):
+                self.add_task_calls.append((description, total))
+                return description
+
+            def update(self, task, advance):
+                self.update_calls.append((task, advance))
+
+        read_progress = DummyProgress()
+        write_progress = DummyProgress()
+        progress_bars = iter([read_progress, write_progress])
+
+        monkeypatch.setattr(barcode_extractor, "generate_batches", lambda: [[("read1", "A", "I")]])
+        monkeypatch.setattr(
+            barcode_extractor_module, "ProcessPoolExecutor", lambda max_workers: DummyExecutor()
+        )
+        monkeypatch.setattr(barcode_extractor_module, "as_completed", lambda futures: futures)
+        monkeypatch.setattr(
+            barcode_extractor_module, "progress_bar", lambda unit: next(progress_bars)
+        )
+
+        barcode_extractor.write_bc_all = mock.Mock()
+        barcode_extractor.write_bc_valid = mock.Mock()
+        barcode_extractor.write_bc_counts = mock.Mock()
+        barcode_extractor.write_bc_rank_plot = mock.Mock()
+        barcode_extractor.write_bc_stats = mock.Mock()
+
+        barcode_extractor.extract_barcodes(output_dir=str(tmp_path), prefix="test")
+
+        barcode_extractor.write_bc_rank_plot.assert_called_once_with(
+            tmp_path / "test.bc_rank.png", [result]
+        )
+        assert_that(write_progress.add_task_calls).contains(("Writing output files...", 5))
+        assert_that(write_progress.update_calls).is_length(5)
 
     # ===== process_read_batch Tests =====
 
@@ -1131,7 +1290,7 @@ class TestBarcodeExtractorDataclasses:
 
 
 class TestBarcodeExtractorUtils:
-    """Tests for barcode utility functions: hamming_distance and edit_distance."""
+    """Tests for barcode utility functions: hamming_distance, edit_distance, and plotting."""
 
     # ===== hamming_distance =====
 
@@ -1254,6 +1413,33 @@ class TestBarcodeExtractorUtils:
     def test_edit_distance_multiple_n_wildcards(self) -> None:
         """Test edit distance with multiple N wildcards in both sequences."""
         assert_that(edit_distance("ANGT", "ACNT")).is_equal_to(0)
+
+    # ===== make_barcode_rank_plot =====
+
+    def test_make_barcode_rank_plot_returns_log_scaled_figure(self) -> None:
+        """Test that barcode rank plots use log scales and expected labels."""
+        fig = make_barcode_rank_plot({"bc1": 10, "bc2": 4, "bc3": 1})
+        ax = fig.axes[0]
+
+        assert_that(fig).is_instance_of(plt.Figure)
+        assert_that(ax.get_xscale()).is_equal_to("log")
+        assert_that(ax.get_yscale()).is_equal_to("log")
+        assert_that(ax.get_xlabel()).is_equal_to("Barcode rank")
+        assert_that(ax.get_ylabel()).is_equal_to("Reads per barcode")
+        assert_that(ax.get_title()).is_equal_to("Barcode Rank Plot")
+        assert_that(ax.lines).is_length(1)
+
+        plt.close(fig)
+
+    def test_make_barcode_rank_plot_handles_empty_counts(self) -> None:
+        """Test that barcode rank plotting handles empty counts without failing."""
+        fig = make_barcode_rank_plot({})
+        ax = fig.axes[0]
+
+        assert_that(ax.lines).is_empty()
+        assert_that([text.get_text() for text in ax.texts]).contains("No valid barcodes")
+
+        plt.close(fig)
 
 
 class TestHybridExtractor:

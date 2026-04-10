@@ -1,4 +1,8 @@
+from collections.abc import Mapping
+
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.figure import Figure
 
 
 def hamming_distance(a: np.ndarray, b: np.ndarray) -> int:
@@ -82,3 +86,34 @@ def edit_distance(seq1, seq2, n_char="N", n_matches_any=True):
             )
 
     return dp[m][n]
+
+
+def make_barcode_rank_plot(barcode_counts: Mapping[str, int]) -> Figure:
+    """Create a barcode-rank plot from full-barcode counts."""
+    counts = sorted((count for count in barcode_counts.values() if count > 0), reverse=True)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    if counts:
+        ranks = list(range(1, len(counts) + 1))
+        ax.plot(ranks, counts, color="tab:blue")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(left=1)
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No valid barcodes",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+        )
+
+    ax.grid(True, which="both", ls="-", alpha=0.2)
+    ax.set_xlabel("Barcode rank")
+    ax.set_ylabel("Reads per barcode")
+    ax.set_title("Barcode Rank Plot")
+    fig.tight_layout()
+
+    return fig
