@@ -4,7 +4,7 @@ from typing import Literal
 
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt
 from carmack.chemistry.chemistry_base import ChemistryBase
-from carmack.chemistry.read_structure import ReadComponent
+from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 
 
 log = logging.getLogger(__name__)
@@ -29,9 +29,9 @@ class MatcherBase(ABC):
         self.chemistry = chemistry
 
         # Check if barcode_component is actually a barcode
-        if not self.barcode_component.is_barcode:
+        if self.barcode_component.type is not ReadComponentType.BARCODE:
             raise ValueError(
-                f"barcode_component must be a barcode component (is_barcode=True), got {self.barcode_component}"
+                f"barcode_component must be a barcode component (type=ReadComponentType.BARCODE), got {self.barcode_component}"
             )
 
     @abstractmethod
@@ -85,7 +85,7 @@ class MatcherBase(ABC):
         ) -> str | None:
             if (
                 spacer_component
-                and spacer_component.is_barcode is False
+                and spacer_component.type in (ReadComponentType.PRIMER, ReadComponentType.OTHER)
                 and spacer_component.sequence
             ):
                 spacer_seq = None

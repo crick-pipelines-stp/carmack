@@ -11,7 +11,7 @@ from importlib.resources import files
 
 from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
 from carmack.chemistry.chemistry_factory import ChemistryFactory
-from carmack.chemistry.read_component import ReadComponent
+from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
 from carmack.io.gzip_file import GzipFile
 
@@ -46,15 +46,21 @@ class ChemistryHydrop(ChemistryBase):
     def read_structure(self) -> ReadStructure:
         """Define the layout of barcodes and spacers within the read."""
         structure = [
-            ReadComponent(name="BC3", is_barcode=True, length=10),
+            ReadComponent(name="BC3", type=ReadComponentType.BARCODE, length=10),
             ReadComponent(
-                name="SPACER_1", is_barcode=False, length=len(SPACER_1), sequence=SPACER_1
+                name="SPACER_1",
+                type=ReadComponentType.OTHER,
+                length=len(SPACER_1),
+                sequence=SPACER_1,
             ),
-            ReadComponent(name="BC2", is_barcode=True, length=10),
+            ReadComponent(name="BC2", type=ReadComponentType.BARCODE, length=10),
             ReadComponent(
-                name="SPACER_2", is_barcode=False, length=len(SPACER_2), sequence=SPACER_2
+                name="SPACER_2",
+                type=ReadComponentType.OTHER,
+                length=len(SPACER_2),
+                sequence=SPACER_2,
             ),
-            ReadComponent(name="BC1", is_barcode=True, length=10),
+            ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
         ]
 
         return ReadStructure(structure)

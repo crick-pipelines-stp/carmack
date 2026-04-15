@@ -4,7 +4,7 @@ ReadStructure class for managing read component sequences with easy navigation.
 
 from typing import Iterator
 
-from carmack.chemistry.read_component import ReadComponent
+from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 
 
 class ReadStructure:
@@ -61,6 +61,25 @@ class ReadStructure:
                 known_sequences[comp.name] = comp.sequence
         return known_sequences
 
+    def get_components_by_type(self, component_type: ReadComponentType) -> list[ReadComponent]:
+        if not isinstance(component_type, ReadComponentType):
+            raise TypeError(
+                f"component_type must be a ReadComponentType enum member, got {type(component_type).__name__}"
+            )
+
+        matches = [comp for comp in self.components if comp.type is component_type]
+        if not matches:
+            seen: list[ReadComponentType] = []
+            for comp in self.components:
+                if comp.type not in seen:
+                    seen.append(comp.type)
+            available = ", ".join(str(t) for t in seen) if seen else "none"
+            raise ValueError(
+                f"ReadStructure does not contain any components of type '{component_type}'. Available types in read order: {available}"
+            )
+
+        return matches
+
     def get_next(self, component: ReadComponent, bc_only: bool = False) -> ReadComponent | None:
         """
         Get the next component after the given component.
@@ -75,7 +94,7 @@ class ReadStructure:
         idx = self._index_map.get(component.name)
         if idx is not None and idx + 1 < len(self.components):
             next_comp = self.components[idx + 1]
-            if bc_only and not next_comp.is_barcode:
+            if bc_only and next_comp.type is not ReadComponentType.BARCODE:
                 # If bc_only is True, skip non-barcode components
                 return self.get_next(next_comp, bc_only=True)
             return next_comp
@@ -97,7 +116,7 @@ class ReadStructure:
         idx = self._index_map.get(component.name)
         if idx is not None and idx - 1 >= 0:
             prev_comp = self.components[idx - 1]
-            if bc_only and not prev_comp.is_barcode:
+            if bc_only and prev_comp.type is not ReadComponentType.BARCODE:
                 # If bc_only is True, skip non-barcode components
                 return self.get_previous(prev_comp, bc_only=True)
             return prev_comp

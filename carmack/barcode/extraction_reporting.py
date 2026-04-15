@@ -17,6 +17,7 @@ from carmack.barcode.extraction_dataclasses import (
     ReadMatchResult,
 )
 from carmack.barcode.matchers.matcher_base import MatcherBase
+from carmack.chemistry.read_component import ReadComponentType
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,10 @@ class ExtractionStats:
         # Per barcode stats
         per_barcode_stats: list[PerBarcodeStats] = []
         bc_names = [
-            bc.name for bc in results[0].chemistry.read_structure.components if bc.is_barcode
+            bc.name
+            for bc in results[0].chemistry.read_structure.get_components_by_type(
+                ReadComponentType.BARCODE
+            )
         ]
         match_methods = matchers.keys()
         for bc_name, match_method in product(bc_names, match_methods):

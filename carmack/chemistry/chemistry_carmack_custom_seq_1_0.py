@@ -12,9 +12,10 @@ from importlib.resources import files
 
 from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
 from carmack.chemistry.chemistry_factory import ChemistryFactory
-from carmack.chemistry.read_component import ReadComponent
+from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
 from carmack.io.gzip_file import GzipFile
+
 
 log = logging.getLogger(__name__)
 
@@ -54,15 +55,21 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
     def read_structure(self) -> ReadStructure:
         """Define the layout of barcodes and primers within the read."""
         structure = [
-            ReadComponent(name="BC3", is_barcode=True, length=BC_CHUNK_LEN),
+            ReadComponent(name="BC3", type=ReadComponentType.BARCODE, length=BC_CHUNK_LEN),
             ReadComponent(
-                name="PRIMER_C", is_barcode=False, length=len(PRIMER_C), sequence=PRIMER_C
+                name="PRIMER_C",
+                type=ReadComponentType.PRIMER,
+                length=len(PRIMER_C),
+                sequence=PRIMER_C,
             ),
-            ReadComponent(name="BC2", is_barcode=True, length=BC_CHUNK_LEN),
+            ReadComponent(name="BC2", type=ReadComponentType.BARCODE, length=BC_CHUNK_LEN),
             ReadComponent(
-                name="PRIMER_A", is_barcode=False, length=len(PRIMER_A), sequence=PRIMER_A
+                name="PRIMER_A",
+                type=ReadComponentType.PRIMER,
+                length=len(PRIMER_A),
+                sequence=PRIMER_A,
             ),
-            ReadComponent(name="BC1", is_barcode=True, length=BC_CHUNK_LEN),
+            ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=BC_CHUNK_LEN),
         ]
 
         return ReadStructure(structure)

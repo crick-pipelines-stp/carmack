@@ -11,10 +11,17 @@ from assertpy import assert_that
 
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.barcode.barcode_utils import edit_distance, hamming_distance, make_barcode_rank_plot
-from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, BarcodeMatchHistory, MatchMethod, ReadMatchResult
+from carmack.barcode.extraction_dataclasses import (
+    BarcodeMatchAttempt,
+    BarcodeMatchHistory,
+    MatchMethod,
+    ReadMatchResult,
+)
 from carmack.barcode.hybrid_extractor import HybridExtractor
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
+from carmack.chemistry.read_component import ReadComponentType
+
 
 R1_PATH = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
 
@@ -44,13 +51,14 @@ class TestBarcodeExtractor:
         """Build a matchers dict with FixedPositionMatcher for each barcode component."""
         whitelists = hydrop_chemistry.barcode_whitelists
         fixed_matchers: dict[str, FixedPositionMatcher] = {}
-        for comp in hydrop_chemistry.read_structure.components:
-            if comp.is_barcode:
-                fixed_matchers[comp.name] = FixedPositionMatcher(
-                    whitelist=whitelists[comp.name],
-                    barcode_component=comp,
-                    chemistry=hydrop_chemistry,
-                )
+        for comp in hydrop_chemistry.read_structure.get_components_by_type(
+            ReadComponentType.BARCODE
+        ):
+            fixed_matchers[comp.name] = FixedPositionMatcher(
+                whitelist=whitelists[comp.name],
+                barcode_component=comp,
+                chemistry=hydrop_chemistry,
+            )
         return {MatchMethod.EXACTMATCH: fixed_matchers}
 
     # ===== Initialization Tests =====
@@ -1457,13 +1465,14 @@ class TestHybridExtractor:
         """Build a matchers dict with FixedPositionMatcher for each barcode component."""
         whitelists = hydrop_chemistry.barcode_whitelists
         fixed_matchers: dict[str, FixedPositionMatcher] = {}
-        for comp in hydrop_chemistry.read_structure.components:
-            if comp.is_barcode:
-                fixed_matchers[comp.name] = FixedPositionMatcher(
-                    whitelist=whitelists[comp.name],
-                    barcode_component=comp,
-                    chemistry=hydrop_chemistry,
-                )
+        for comp in hydrop_chemistry.read_structure.get_components_by_type(
+            ReadComponentType.BARCODE
+        ):
+            fixed_matchers[comp.name] = FixedPositionMatcher(
+                whitelist=whitelists[comp.name],
+                barcode_component=comp,
+                chemistry=hydrop_chemistry,
+            )
         return {MatchMethod.EXACTMATCH: fixed_matchers}
 
     @pytest.fixture
@@ -1603,7 +1612,7 @@ class TestHybridExtractor:
         whitelists = hydrop_chemistry.barcode_whitelists
         incomplete_matchers: dict[str, FixedPositionMatcher] = {}
         for comp in hydrop_chemistry.read_structure.components:
-            if comp.is_barcode and comp.name != "BC3":
+            if comp.type is ReadComponentType.BARCODE and comp.name != "BC3":
                 incomplete_matchers[comp.name] = FixedPositionMatcher(
                     whitelist=whitelists[comp.name],
                     barcode_component=comp,

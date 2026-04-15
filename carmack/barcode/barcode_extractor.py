@@ -15,8 +15,10 @@ from carmack.barcode.matchers.alignment_matcher import AlignmentMatcher
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher, MatcherBase
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.chemistry.chemistry_factory import ChemistryFactory
+from carmack.chemistry.read_component import ReadComponentType
 from carmack.io.fastq_file import FastqFile
 from carmack.utils import get_prefix, progress_bar
+
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +94,7 @@ class BarcodeExtractor:
         alignment_matchers: dict[str, AlignmentMatcher] = {}
 
         for component in self.chemistry.read_structure.components:
-            if not component.is_barcode:
+            if component.type is not ReadComponentType.BARCODE:
                 continue
 
             common_kwargs = {

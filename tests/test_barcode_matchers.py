@@ -20,7 +20,7 @@ from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.barcode.matchers.matcher_base import MatcherBase
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
-from carmack.chemistry.read_component import ReadComponent
+from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from tests.test_chemistry import ChemistryCarmackCustomSeq10
 
 
@@ -30,7 +30,7 @@ class TestBarcodeMatcherBase:
     @pytest.fixture
     def barcode_component(self) -> ReadComponent:
         """Provide a barcode ReadComponent with start position set."""
-        comp = ReadComponent(name="BC_TEST", is_barcode=True, length=10)
+        comp = ReadComponent(name="BC_TEST", type=ReadComponentType.BARCODE, length=10)
         comp.start = 5
         return comp
 
@@ -62,7 +62,10 @@ class TestBarcodeMatcherBase:
     def test_init_rejects_non_barcode_component(self, whitelist: tuple[str, ...]) -> None:
         """Test that initializing with a non-barcode component raises ValueError."""
         non_barcode = ReadComponent(
-            name="SPACER", is_barcode=False, length=10, sequence="AGGGTACTCG"
+            name="SPACER",
+            type=ReadComponentType.OTHER,
+            length=10,
+            sequence="AGGGTACTCG",
         )
         with pytest.raises(ValueError):
             FixedPositionMatcher(
@@ -129,7 +132,7 @@ class TestBarcodeMatcherBase:
         self, read_len: int, start: int, bc_len: int, expected: bool
     ) -> None:
         """Test check_read_len with various read length, start position, and barcode length combos."""
-        comp = ReadComponent(name="BC_TEST", is_barcode=True, length=bc_len)
+        comp = ReadComponent(name="BC_TEST", type=ReadComponentType.BARCODE, length=bc_len)
         comp.start = start
         matcher = FixedPositionMatcher(
             whitelist=("AAAAAAAAAA",), barcode_component=comp, chemistry=ChemistryHydrop()
@@ -445,7 +448,10 @@ class TestKmerMatcher:
     def test_initialization_rejects_non_barcode_component(self) -> None:
         """Test that initializing with a non-barcode component raises ValueError."""
         non_barcode = ReadComponent(
-            name="SPACER", is_barcode=False, length=10, sequence="AGGGTACTCG"
+            name="SPACER",
+            type=ReadComponentType.OTHER,
+            length=10,
+            sequence="AGGGTACTCG",
         )
         with pytest.raises(ValueError):
             KmerMatcher(
@@ -1518,7 +1524,10 @@ class TestAlignmentMatcher:
     def test_initialization_rejects_non_barcode_component(self) -> None:
         """Test that initializing with a non-barcode component raises ValueError."""
         non_barcode = ReadComponent(
-            name="SPACER", is_barcode=False, length=10, sequence="AGGGTACTCG"
+            name="SPACER",
+            type=ReadComponentType.OTHER,
+            length=10,
+            sequence="AGGGTACTCG",
         )
         with pytest.raises(ValueError):
             AlignmentMatcher(

@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
 
+from carmack.chemistry.read_component import ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
 
 
@@ -74,7 +75,7 @@ class ChemistryBase(ABC):
         """
         whitelists = {}
         for component in self.read_structure:
-            if component.is_barcode:
+            if component.type is ReadComponentType.BARCODE:
                 try:
                     whitelists[component.name] = self.load_barcode_whitelist(component.name)
                 except Exception as e:
@@ -86,7 +87,7 @@ class ChemistryBase(ABC):
         missing = [
             comp.name
             for comp in self.read_structure
-            if comp.is_barcode and comp.name not in whitelists
+            if comp.type is ReadComponentType.BARCODE and comp.name not in whitelists
         ]
         if missing:
             raise KeyError(f"Missing whitelists for barcode components: {missing}")
@@ -99,7 +100,7 @@ class ChemistryBase(ABC):
         barcode components in the correct order. Order is determined by the read structure.
         """
         read_layout = self.read_structure
-        barcode_components = [comp for comp in read_layout if comp.is_barcode]
+        barcode_components = read_layout.get_components_by_type(ReadComponentType.BARCODE)
 
         try:
             return "".join(barcodes[comp.name] for comp in barcode_components)
@@ -111,7 +112,7 @@ class ChemistryBase(ABC):
     def __post_init__(self):
         # Validate that all barcode components defined in the read structure have whitelists
         for component in self.read_structure:
-            if component.is_barcode:
+            if component.type is ReadComponentType.BARCODE:
                 try:
                     self.load_barcode_whitelist(component.name)
                 except Exception as e:
@@ -120,7 +121,9 @@ class ChemistryBase(ABC):
                     ) from e
 
         # Validate that all spacers defined in the read structure are present in the spacers dictionary
-        spacer_names = {comp.name for comp in self.read_structure if not comp.is_barcode}
+        spacer_names = {
+            comp.name for comp in self.read_structure if comp.type is not ReadComponentType.BARCODE
+        }
         spacer_seqs = self.read_structure.get_known_sequences()
         missing_spacers = set(spacer_seqs.keys()) - spacer_names
 

@@ -8,7 +8,7 @@ from assertpy import assert_that
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ChemistryCarmackCustomSeq10
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
-from carmack.chemistry.read_component import ReadComponent
+from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
 
 
@@ -17,21 +17,53 @@ class TestReadComponent:
 
     def test_read_component_creation(self):
         """Test that a ReadComponent can be created with the expected attributes."""
-        comp = ReadComponent(name="BC1", is_barcode=True, length=10)
+        comp = ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10)
         assert_that(comp.name).is_equal_to("BC1")
-        assert_that(comp.is_barcode).is_true()
+        assert_that(comp.type).is_equal_to(ReadComponentType.BARCODE)
         assert_that(comp.length).is_equal_to(10)
+
+    def test_read_component_type_must_be_enum(self):
+        """Test that the component type must be a ReadComponentType member."""
+        with pytest.raises(
+            TypeError,
+            match="ReadComponent type must be a ReadComponentType enum member, got str",
+        ):
+            ReadComponent(name="X", type="OTHER", length=5)
+
+    def test_barcode_component_cannot_have_sequence(self):
+        """Test that barcode components reject explicit sequences."""
+        with pytest.raises(
+            ValueError,
+            match="Barcode components should not be instantiated with a sequence.",
+        ):
+            ReadComponent(
+                name="X",
+                type=ReadComponentType.BARCODE,
+                length=5,
+                sequence="ACGT",
+            )
+
+    def test_barcode_component_without_sequence_is_valid(self):
+        """Test that barcode components are valid when sequence is omitted."""
+        comp = ReadComponent(name="X", type=ReadComponentType.BARCODE, length=5)
+        assert_that(comp.type).is_equal_to(ReadComponentType.BARCODE)
+        assert_that(comp.sequence).is_none()
+
+    def test_read_component_defaults_to_other_type(self):
+        """Test that components default to OTHER type."""
+        comp = ReadComponent(name="X", length=5)
+        assert_that(comp.type).is_equal_to(ReadComponentType.OTHER)
 
     def test_read_component_with_invalid_values(self):
         """Test that a ReadComponent with invalid length raises an error."""
         with pytest.raises(ValueError):
-            ReadComponent(name="BC1", is_barcode=True, length=-1)
+            ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=-1)
         with pytest.raises(ValueError):
-            ReadComponent(name="BC1", is_barcode=True, length=0)
+            ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=0)
 
     def test_read_component_start_property(self):
         """Test the start property getter and setter."""
-        comp = ReadComponent(name="BC1", is_barcode=True, length=10)
+        comp = ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10)
         assert_that(comp.start).is_equal_to(0)  # default value
 
         comp.start = 5
@@ -48,11 +80,11 @@ class TestReadStructure:
     def sample_components(self):
         """Provide a sample list of ReadComponents for testing."""
         return [
-            ReadComponent(name="BC3", is_barcode=True, length=10),
-            ReadComponent(name="PRIMER_C", is_barcode=False, length=22),
-            ReadComponent(name="BC2", is_barcode=True, length=10),
-            ReadComponent(name="PRIMER_A", is_barcode=False, length=22),
-            ReadComponent(name="BC1", is_barcode=True, length=10),
+            ReadComponent(name="BC3", type=ReadComponentType.BARCODE, length=10),
+            ReadComponent(name="PRIMER_C", type=ReadComponentType.PRIMER, length=22),
+            ReadComponent(name="BC2", type=ReadComponentType.BARCODE, length=10),
+            ReadComponent(name="PRIMER_A", type=ReadComponentType.PRIMER, length=22),
+            ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
         ]
 
     @pytest.fixture
@@ -65,7 +97,7 @@ class TestReadStructure:
         comp = read_structure.get_component_by_name("PRIMER_C")
         assert_that(comp).is_instance_of(ReadComponent)
         assert_that(comp.name).is_equal_to("PRIMER_C")
-        assert_that(comp.is_barcode).is_false()
+        assert_that(comp.type).is_equal_to(ReadComponentType.PRIMER)
         assert_that(comp.length).is_equal_to(22)
 
     def test_get_component_by_name_invalid(self, read_structure):
@@ -100,15 +132,51 @@ class TestReadStructure:
 
     def test_get_next_unknown_component(self, read_structure):
         """Test getting next for a component not in the structure returns None."""
-        unknown_comp = ReadComponent(name="UNKNOWN", is_barcode=False, length=5)
+        unknown_comp = ReadComponent(name="UNKNOWN", type=ReadComponentType.OTHER, length=5)
         next_comp = read_structure.get_next(unknown_comp)
         assert next_comp is None
 
     def test_get_previous_unknown_component(self, read_structure):
         """Test getting previous for a component not in the structure returns None."""
-        unknown_comp = ReadComponent(name="UNKNOWN", is_barcode=False, length=5)
+        unknown_comp = ReadComponent(name="UNKNOWN", type=ReadComponentType.OTHER, length=5)
         prev_comp = read_structure.get_previous(unknown_comp)
         assert prev_comp is None
+
+    def test_get_components_by_type_returns_barcodes_in_order(
+        self, read_structure: ReadStructure
+    ) -> None:
+        """Test that barcode components are returned in read order."""
+        components = read_structure.get_components_by_type(ReadComponentType.BARCODE)
+        assert_that([comp.name for comp in components]).is_equal_to(["BC3", "BC2", "BC1"])
+
+    def test_get_components_by_type_returns_primers_in_order(
+        self, read_structure: ReadStructure
+    ) -> None:
+        """Test that primer components are returned in read order."""
+        components = read_structure.get_components_by_type(ReadComponentType.PRIMER)
+        assert_that([comp.name for comp in components]).is_equal_to(["PRIMER_C", "PRIMER_A"])
+
+    @pytest.mark.parametrize("component_type", ["BARCODE", None])
+    def test_get_components_by_type_rejects_invalid_type(
+        self, read_structure: ReadStructure, component_type: object
+    ) -> None:
+        """Test that get_components_by_type requires a ReadComponentType."""
+        expected = type(component_type).__name__
+        with pytest.raises(
+            TypeError,
+            match=f"component_type must be a ReadComponentType enum member, got {expected}",
+        ):
+            read_structure.get_components_by_type(component_type)  # type: ignore[arg-type]
+
+    def test_get_components_by_type_errors_when_type_absent(
+        self, read_structure: ReadStructure
+    ) -> None:
+        """Test that get_components_by_type reports missing valid types clearly."""
+        with pytest.raises(ValueError) as exc_info:
+            read_structure.get_components_by_type(ReadComponentType.TGIDX)
+
+        assert_that(str(exc_info.value)).contains("TGIDX")
+        assert_that(str(exc_info.value)).contains("BARCODE, PRIMER")
 
     def test_iteration(self, read_structure, sample_components):
         """Test that ReadStructure supports iteration."""
@@ -144,7 +212,10 @@ class TestChemistryBase:
     def test_barcode_whitelists_has_all_barcode_components(self, chemistry: ChemistryBase):
         """Test that barcode_whitelists includes all barcode components."""
         whitelists = chemistry.barcode_whitelists
-        barcode_names = {comp.name for comp in chemistry.read_structure if comp.is_barcode}
+        barcode_names = {
+            comp.name
+            for comp in chemistry.read_structure.get_components_by_type(ReadComponentType.BARCODE)
+        }
 
         for bc_name in barcode_names:
             assert_that(whitelists).contains_key(bc_name)
@@ -152,7 +223,11 @@ class TestChemistryBase:
     def test_barcode_whitelists_excludes_non_barcode_components(self, chemistry: ChemistryBase):
         """Test that barcode_whitelists only includes barcode components."""
         whitelists = chemistry.barcode_whitelists
-        spacer_names = {comp.name for comp in chemistry.read_structure if not comp.is_barcode}
+        spacer_names = {
+            comp.name
+            for comp in chemistry.read_structure
+            if comp.type is not ReadComponentType.BARCODE
+        }
 
         for spacer_name in spacer_names:
             assert_that(whitelists).does_not_contain_key(spacer_name)
@@ -276,17 +351,20 @@ class TestChemistryBase:
 
     def test_chemistry_all_barcode_components_have_whitelists(self, chemistry: ChemistryBase):
         """Test that all barcode components have valid whitelists."""
-        for component in chemistry.read_structure:
-            if component.is_barcode:
-                whitelist = chemistry.load_barcode_whitelist(component.name)
-                assert_that(whitelist).is_instance_of(tuple)
-                assert_that(len(whitelist)).is_greater_than(0)
+        for component in chemistry.read_structure.get_components_by_type(
+            ReadComponentType.BARCODE
+        ):
+            whitelist = chemistry.load_barcode_whitelist(component.name)
+            assert_that(whitelist).is_instance_of(tuple)
+            assert_that(len(whitelist)).is_greater_than(0)
 
     def test_chemistry_spacers_match_read_structure(self, chemistry: ChemistryBase):
         """Test that all known sequences are present in the read structure."""
         known_seqs = chemistry.read_structure.get_known_sequences()
         structure_spacer_names = {
-            comp.name for comp in chemistry.read_structure if not comp.is_barcode
+            comp.name
+            for comp in chemistry.read_structure
+            if comp.type is not ReadComponentType.BARCODE
         }
 
         assert_that(set(known_seqs.keys())).is_subset_of(structure_spacer_names)
@@ -329,8 +407,12 @@ class TestChemistryBase:
 
     def test_read_structure_contains_expected_components(self, chemistry: ChemistryBase):
         """Test that read structure contains the expected barcode and spacer components."""
-        barcode_components = [comp for comp in chemistry.read_structure if comp.is_barcode]
-        spacer_components = [comp for comp in chemistry.read_structure if not comp.is_barcode]
+        barcode_components = chemistry.read_structure.get_components_by_type(
+            ReadComponentType.BARCODE
+        )
+        spacer_components = [
+            comp for comp in chemistry.read_structure if comp.type is not ReadComponentType.BARCODE
+        ]
 
         assert_that(len(barcode_components)).is_greater_than(0)
         assert_that(len(spacer_components)).is_greater_than(0)
@@ -367,13 +449,16 @@ class TestChemistryBase:
     def test_load_barcode_whitelist_returns_tuple_not_list(self, chemistry: ChemistryBase):
         """Test that load_barcode_whitelist returns tuple, not list."""
         for component in chemistry.read_structure:
-            if component.is_barcode:
+            if component.type is ReadComponentType.BARCODE:
                 whitelist = chemistry.load_barcode_whitelist(component.name)
                 assert_that(type(whitelist)).is_equal_to(tuple)
 
     def test_barcode_components_are_distinguishable(self, chemistry: ChemistryBase):
         """Test that different barcode components have different names."""
-        barcode_names = [comp.name for comp in chemistry.read_structure if comp.is_barcode]
+        barcode_names = [
+            comp.name
+            for comp in chemistry.read_structure.get_components_by_type(ReadComponentType.BARCODE)
+        ]
         unique_names = set(barcode_names)
 
         assert_that(len(unique_names)).is_equal_to(len(barcode_names))
@@ -484,7 +569,9 @@ class TestChemistryHydrop:
     def test_read_structure_barcode_components(self, chemistry: ChemistryHydrop):
         """Test that only BC1, BC2, BC3 are marked as barcodes."""
         read_structure = chemistry.read_structure
-        barcode_components = [comp.name for comp in read_structure if comp.is_barcode]
+        barcode_components = [
+            comp.name for comp in read_structure.get_components_by_type(ReadComponentType.BARCODE)
+        ]
         expected_barcodes = ["BC3", "BC2", "BC1"]
         assert_that(barcode_components).is_equal_to(expected_barcodes)
 
@@ -507,7 +594,10 @@ class TestChemistryHydrop:
 
     def test_barcode_components_in_structure(self, chemistry: ChemistryHydrop):
         """Test that all barcode components in read structure have valid whitelists."""
-        barcode_names = {comp.name for comp in chemistry.read_structure if comp.is_barcode}
+        barcode_names = {
+            comp.name
+            for comp in chemistry.read_structure.get_components_by_type(ReadComponentType.BARCODE)
+        }
         whitelists = chemistry.barcode_whitelists
 
         for bc_name in barcode_names:

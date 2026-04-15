@@ -8,6 +8,7 @@ from carmack.barcode.extraction_dataclasses import (
     ReadMatchResult,
 )
 from carmack.barcode.matchers.matcher_base import MatcherBase
+from carmack.chemistry.read_component import ReadComponentType
 
 
 log = logging.getLogger(__name__)
@@ -37,9 +38,9 @@ class HybridExtractor:
         matching history for each barcode component. The final result includes the matched barcodes
         and their statuses.
         """
-        barcode_components = [
-            comp for comp in self.chemistry.read_structure.components if comp.is_barcode
-        ]
+        barcode_components = self.chemistry.read_structure.get_components_by_type(
+            ReadComponentType.BARCODE
+        )
 
         search_start_idx_tracker: dict[str, int] = {
             barcode_component.name: 0 for barcode_component in barcode_components
