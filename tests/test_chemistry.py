@@ -7,6 +7,10 @@ from assertpy import assert_that
 
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ChemistryCarmackCustomSeq10
+from carmack.chemistry.chemistry_carmack_custom_seq_1_0_primd import (
+    ChemistryCarmackCustomSeq10PrimD,
+)
+from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
@@ -527,6 +531,81 @@ class TestChemistryCarmackCustomSeq10:
 
         with pytest.raises(ValueError):
             chemistry.load_barcode_whitelist("INVALID")
+
+
+class TestChemistryCarmackCustomSeq10PrimD:
+    @pytest.fixture
+    def chemistry(self) -> ChemistryCarmackCustomSeq10PrimD:
+        return ChemistryCarmackCustomSeq10PrimD()
+
+    def test_chemistry_properties(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
+        """Name and known sequences match the PRIMER_D variant."""
+        assert_that(chemistry.name).is_equal_to("carmack_custom_seq_1_0_primd")
+        known_seqs = chemistry.read_structure.get_known_sequences()
+        # PRIMER_D has no known sequence (only a length anchor)
+        assert_that(known_seqs).contains_key("PRIMER_C", "PRIMER_A")
+        assert_that(known_seqs).does_not_contain_key("PRIMER_D")
+
+    def test_inherits_from_base(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
+        """The PRIMER_D variant is a subclass of the base chemistry."""
+        assert_that(chemistry).is_instance_of(ChemistryCarmackCustomSeq10)
+
+    def test_read_structure_prepends_primer_d(
+        self, chemistry: ChemistryCarmackCustomSeq10PrimD
+    ):
+        """Read structure starts with PRIMER_D, then matches the base layout."""
+        read_structure = chemistry.read_structure
+        actual_order = [comp.name for comp in read_structure]
+        assert_that(actual_order).is_equal_to(
+            ["PRIMER_D", "BC3", "PRIMER_C", "BC2", "PRIMER_A", "BC1"]
+        )
+
+        primer_d = read_structure.get_component_by_name("PRIMER_D")
+        assert_that(primer_d.type).is_equal_to(ReadComponentType.PRIMER)
+        assert_that(primer_d.length).is_equal_to(22)
+        assert_that(primer_d.sequence).is_none()
+
+    def test_start_positions(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
+        """Start positions account for the prepended PRIMER_D."""
+        read_structure = chemistry.read_structure
+        known_seqs = read_structure.get_known_sequences()
+        primer_d_len = read_structure.get_component_by_name("PRIMER_D").length
+        expected_starts = {
+            "PRIMER_D": 0,
+            "BC3": primer_d_len,
+            "PRIMER_C": primer_d_len + 10,
+            "BC2": primer_d_len + 10 + len(known_seqs["PRIMER_C"]),
+            "PRIMER_A": primer_d_len + 20 + len(known_seqs["PRIMER_C"]),
+            "BC1": primer_d_len
+            + 20
+            + len(known_seqs["PRIMER_C"])
+            + len(known_seqs["PRIMER_A"]),
+        }
+        for component in read_structure:
+            assert_that(component.start).is_equal_to(expected_starts[component.name])
+
+    def test_load_barcode_whitelist_matches_base(
+        self, chemistry: ChemistryCarmackCustomSeq10PrimD
+    ):
+        """Whitelists are inherited unchanged from the base chemistry."""
+        base = ChemistryCarmackCustomSeq10()
+        for bc_name in ["BC1", "BC2", "BC3"]:
+            assert_that(chemistry.load_barcode_whitelist(bc_name)).is_equal_to(
+                base.load_barcode_whitelist(bc_name)
+            )
+
+        with pytest.raises(ValueError):
+            chemistry.load_barcode_whitelist("PRIMER_D")
+
+    def test_max_errors_inherited(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
+        """max_errors is inherited from the base chemistry."""
+        base = ChemistryCarmackCustomSeq10()
+        assert_that(chemistry.max_errors).is_equal_to(base.max_errors)
+
+    def test_factory_dispatch(self):
+        """Factory returns the PRIMER_D variant for its registered name."""
+        instance = ChemistryFactory.get_chemistry("carmack_custom_seq_1_0_primd")
+        assert_that(instance).is_instance_of(ChemistryCarmackCustomSeq10PrimD)
 
 
 class TestChemistryHydrop:

@@ -2,8 +2,7 @@
 Carmack Custom Sequencing 1.0 chemistry definition.
 
 Read structure (5' to 3'):
-PRIMER_D (22bp) -> BC3 (10bp) -> PRIMER_C (22bp) -> BC2 (10bp) -> PRIMER_A (22bp) -> BC1 (10bp)
--> ...
+BC3 (10bp) -> PRIMER_C (22bp) -> BC2 (10bp) -> PRIMER_A (22bp) -> BC1 (10bp) -> ...
 """
 
 import logging
@@ -54,7 +53,10 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
     @cached_property
     def read_structure(self) -> ReadStructure:
         """Define the layout of barcodes and primers within the read."""
-        structure = [
+        return ReadStructure(self._build_components())
+
+    def _build_components(self) -> list[ReadComponent]:
+        return [
             ReadComponent(name="BC3", type=ReadComponentType.BARCODE, length=BC_CHUNK_LEN),
             ReadComponent(
                 name="PRIMER_C",
@@ -71,8 +73,6 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
             ),
             ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=BC_CHUNK_LEN),
         ]
-
-        return ReadStructure(structure)
 
     @cached_property
     def max_errors(self) -> MatchErrors:
