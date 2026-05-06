@@ -7,8 +7,10 @@ import unittest
 from carmack.io.subprocess_stream import SubprocessStream
 from tests.utils import with_temporary_folder
 
+
 CONTENT = "test_content"
 READ_NAME = "@NB501505:171:H3KMGAFX3:1:21208:17616:17963 1:N:0:AGATCTCGGT"
+
 
 class TestSubprocessStream(unittest.TestCase):
     def test_subprocess_stream_gzip_read(self):
@@ -20,7 +22,6 @@ class TestSubprocessStream(unittest.TestCase):
             if idx == 0:
                 line_str = line.decode("UTF-8").strip()
                 self.assertEqual(line_str, READ_NAME)
-
 
     @with_temporary_folder
     def test_subprocess_stream_gzip_write(self, tmp_path):

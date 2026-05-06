@@ -117,6 +117,7 @@ ENV/
 .idea
 pip-wheel-metadata
 .vscode
+*.code-workspace
 .*.sw?
 
 # Data

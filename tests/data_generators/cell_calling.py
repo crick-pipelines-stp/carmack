@@ -27,4 +27,3 @@
 #      ```bash
 #      bedtools sort -i atac_k562_peaks.bed > atac_k562_peaks.sorted.bed
 #      ```
-

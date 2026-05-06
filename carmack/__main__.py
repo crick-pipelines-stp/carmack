@@ -1,8 +1,10 @@
 #!/usr/bin/env python
-""" carmack: Helper tools for analysis of single-cell mutli-omic data """
+"""carmack: Helper tools for analysis of single-cell mutli-omic data"""
+
+import atexit
 import logging
 import os
-import sys
+import time
 
 import rich
 import rich.console
@@ -11,12 +13,13 @@ import rich.traceback
 import rich_click as click
 
 import carmack
-from carmack.utils import get_bai, get_cpu_count
 from carmack.barcode.barcode_extractor import BarcodeExtractor
-from carmack.fastq_tools.fastq_filter import FastqFilter
-from carmack.tag_dedup.tag_dedup import TagDedup
-from carmack.split_reads.split_reads import BamSplitter
 from carmack.cell_caller.cell_caller import CellCaller
+from carmack.fastq_tools.fastq_filter import FastqFilter
+from carmack.split_reads.split_reads import BamSplitter
+from carmack.tag_dedup.tag_dedup import TagDedup
+from carmack.utils import format_duration, get_bai, get_cpu_count
+
 
 # Set up logging as the root logger
 # Submodules should all traverse back to this
@@ -24,13 +27,13 @@ log = logging.getLogger()
 
 # # Set up nicer formatting of click cli help messages
 click.rich_click.MAX_WIDTH = 120
-click.rich_click.USE_RICH_MARKUP = True
+click.rich_click.TEXT_MARKUP = "rich"
 click.rich_click.COMMAND_GROUPS = {
     "carmack": [
         {
             "name": "Commands for users",
             "commands": [
-                "extract-cell-barcodes",
+                "extract-barcodes",
                 "fastq-filter",
                 "bam-tag-deduplicate",
                 "call-cells",
@@ -38,16 +41,10 @@ click.rich_click.COMMAND_GROUPS = {
         },
         {
             "name": "Additional utility commands",
-            "commands": [
-                "split-bam"
-            ],
-        }
+            "commands": ["split-bam"],
+        },
     ]
 }
-# click.rich_click.OPTION_GROUPS = {
-#     "carmack extract-cell-barcodes": [{"options": ["--chemistry", "--maxdist", "--line_count", "--output_dir", "--prefix"]}],
-#     "carmack fastq-filter": [{"options": ["--output_dir", "--prefix"]}]
-# }
 
 # Set up rich stderr console
 stderr = rich.console.Console(stderr=True)
@@ -61,6 +58,15 @@ def run_carmack():
     """
     Print programme header and then use to click for the command line interface.
     """
+    # Time logging
+    start_time = time.perf_counter()
+
+    def log_runtime() -> None:
+        elapsed = time.perf_counter() - start_time
+        log.info(f"Wall time: {format_duration(elapsed)}")
+
+    # Register the log_runtime function to be called on exit
+    atexit.register(log_runtime)
 
     # Print carmack header (ANSI Shadow)
     stderr.print("\n\n", highlight=False)
@@ -125,26 +131,27 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
         "hide_progress": hide_progress or verbose,  # Always hide progress bar with verbose logging
     }
 
-@carmack_cli.command("extract-cell-barcodes")
-@click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
-@click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")
-@click.argument("barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<barcodes>")
-@click.option("-c","--chemistry", required=True, type=str, help="Chemistry class for barcode extraction")
-@click.option("-d", "--max_dist", required=True, type=int, help="Maximal Hamming distance for barcode extraction")
-@click.option("-s", "--print_stats", is_flag=True, default=False, help="Flag describing whether or not to print summary stats during barcode extraction")
-@click.option("-l", "--log_freq", required=False, type=int, default=10000, help="Number of lines after which stats are logged during barcode extraction")
+
+@carmack_cli.command("extract-barcodes")
+@click.argument("fastq", required=True, nargs=1, type=click.Path(exists=True), metavar="<fastq>", help="Path to FASTQ file")
+@click.option("-c", "--chemistry", required=True, type=str, help="Chemistry name for barcode layout")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_stats, log_freq, output_dir, prefix):
+@click.option("-n", "--cpu_count", required=False, type=int, default=get_cpu_count(), show_default=True, help="Number of CPU workers to use. Default is all available CPUs minus 1.")
+@click.option("--fast", is_flag=True, default=False, help="Skip local alignment fallback for faster extraction, at the cost of reduced sensitivity.")
+def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count, fast):
     """
-    Extracts valid cell barcodes by correcting for indels and sequencing errors, using a specified maximal Hamming distance and barcode chemistry.
+    Extract cell barcodes from FASTQ reads using hybrid matching strategy.
 
-    The total set of cell barcodes and valid cell barcodes are saved to separate files in the output directory.
-    Additional files containing barcode stats and counts are also saved to the output directory.
+    Uses a staged extraction pipeline:
+    1. Fixed position matching (exact match at expected positions)
+    2. Kmer seed-and-extend (handles indels within tolerance)
+    3. Local alignment (handles complex errors unless --fast is set)
     """
 
-    barcode_ext = BarcodeExtractor(read1, read2, barcodes, chemistry)
-    barcode_ext.extract_cell_barcodes(max_dist, print_stats, log_freq, output_dir, prefix)
+    log.info("Extracting barcodes from FASTQ file...")
+    extractor = BarcodeExtractor(fastq, chemistry, n_workers=cpu_count, fast=fast)
+    extractor.extract_barcodes(output_dir, prefix)
 
 
 @carmack_cli.command("fastq-filter")
@@ -153,7 +160,9 @@ def extract_cell_barcodes(read1, read2, barcodes, chemistry, max_dist, print_sta
 @click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
+@click.option("--trim-r1", required=False, type=int, default=0, show_default=True, help="Trim this many bases from start of read1 if matched.")
+@click.option("--trim-r2", required=False, type=int, default=0, show_default=True, help="Trim this many bases from start of read2 if matched.")
+def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix, trim_r1, trim_r2):
     """
     Filter fastq files for reads containing valid barcodes.
 
@@ -161,8 +170,10 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix):
     Additional files containing barcode stats and counts are also saved to the output directory.
     """
 
+    log.info("Filtering fastq files for valid barcodes...")
     fastq_filter = FastqFilter(read1, read2)
-    fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix)
+    fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix, trim_r1=trim_r1, trim_r2=trim_r2)
+
 
 @carmack_cli.command("bam-tag-deduplicate")
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
@@ -182,15 +193,25 @@ def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
     if bai is None:
         bai = get_bai(bam)
 
+    log.info("Tagging reads with barcodes and deduplicating if requested...")
     tag_dedup = TagDedup(bam, bai, valid_barcodes)
     tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
+
 
 @carmack_cli.command("split-bam")
 @click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<tagged_bam>")
 @click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-@click.option("-n", "--cpu_count", required=False, type=int, default=get_cpu_count(), show_default=True, help="Number of CPUs to use for sorting and indexing of split BAM files. Default is all available CPUs minus 1.")
+@click.option(
+    "-n",
+    "--cpu_count",
+    required=False,
+    type=int,
+    default=get_cpu_count(),
+    show_default=True,
+    help="Number of CPUs to use for sorting and indexing of split BAM files. Default is all available CPUs minus 1.",
+)
 def split_bam(bam, bai, output_dir, prefix, cpu_count):
     """
     Split barcode-tagged BAM file into separate files based on barcode tag (BC) value.
@@ -205,6 +226,7 @@ def split_bam(bam, bai, output_dir, prefix, cpu_count):
 
     splitter = BamSplitter(bam, bai)
     splitter.split(output_dir, prefix, cpu_count)
+
 
 @carmack_cli.command("call-cells")
 @click.argument("bed", required=True, nargs=1, type=click.Path(exists=True), metavar="<peaks_bed>")
@@ -225,6 +247,7 @@ def call_cells(bed, bam, bai, force_n, min_overlap, visualise, output_dir, prefi
     set). The output files (barcodes, peaks and peak-barcode matrix) are saved to the output
     directory. If visualise is set, a plot of the barcode rank is saved to the output directory.
     """
+    log.info("Calling cells based on peak overlaps...")
     if bai is None:
         bai = get_bai(bam)
 

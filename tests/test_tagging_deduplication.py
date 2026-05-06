@@ -1,10 +1,12 @@
-import os
-import pytest
-import pysam
 import csv
+import os
 
-from carmack.utils import get_prefix
+import pysam
+import pytest
+
 from carmack.tag_dedup.tag_dedup import TagDedup
+from carmack.utils import get_prefix
+
 
 BAM_PATHS = [
     "tests/data/hydrop_scatac_1_S1_R1.sorted.bam",
