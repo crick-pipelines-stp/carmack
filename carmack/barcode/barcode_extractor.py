@@ -1,5 +1,4 @@
 import logging
-from collections import Counter
 from collections.abc import Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from itertools import islice
@@ -10,7 +9,7 @@ import matplotlib.pyplot as plt
 
 from carmack.barcode.barcode_utils import make_barcode_rank_plot
 from carmack.barcode.extraction_dataclasses import MatchMethod, ReadMatchResult
-from carmack.barcode.extraction_reporting import ExtractionStats
+from carmack.barcode.extraction_reporting import ExtractionStatsAccumulator
 from carmack.barcode.hybrid_extractor import HybridExtractor
 from carmack.barcode.matchers.alignment_matcher import AlignmentMatcher
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher, MatcherBase
@@ -174,13 +173,19 @@ class BarcodeExtractor:
             f"Output paths: {bc_all_path}, {bc_valid_path}, {bc_counts_path}, {bc_rank_plot_path}, {bc_stats_path}"
         )
 
-        results: list[ReadMatchResult] = []
+        stats_acc = ExtractionStatsAccumulator(self.matchers)
 
-        with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
+        with (
+            ProcessPoolExecutor(max_workers=self.n_workers) as executor,
+            bc_all_path.open("w") as bc_all_f,
+            bc_valid_path.open("w") as bc_valid_f,
+        ):
             hybrid_extractor = HybridExtractor(chemistry=self.chemistry, matchers=self.matchers)
 
             # Bounded in-flight window keeps memory usage proportional to
-            # max_in_flight * batch_size rather than the full FASTQ.
+            # max_in_flight * batch_size rather than the full FASTQ. Results
+            # are folded into the accumulator and written to disk as they
+            # arrive, so no list of ReadMatchResults is retained.
             batch_iter = self.iter_batches()
             max_in_flight = max(self.n_workers * 2, 2)
             log.debug(
@@ -199,7 +204,12 @@ class BarcodeExtractor:
                     done, futures = wait(futures, return_when=FIRST_COMPLETED)
                     for future in done:
                         batch_results, batch_len = future.result()
-                        results.extend(batch_results)
+                        for r in batch_results:
+                            annotated = r.get_annotated_readname()
+                            bc_all_f.write(f"{annotated}\n")
+                            if r.success and r.full_barcode is not None:
+                                bc_valid_f.write(f"{annotated}\n")
+                            stats_acc.update(r)
                         pbar.update(task, advance=batch_len)
 
                     for batch in islice(batch_iter, len(done)):
@@ -209,77 +219,35 @@ class BarcodeExtractor:
                             )
                         )
 
-        # Write output files
+        ex_stats = stats_acc.finalize()
+
         with progress_bar(unit="files") as pbar:
-            task = pbar.add_task("Writing output files...", total=5)
+            task = pbar.add_task("Writing summary files...", total=3)
 
-            self.write_bc_all(bc_all_path, results)
+            with bc_counts_path.open("w") as f:
+                for bc, count in stats_acc.full_barcode_counts.most_common():
+                    f.write(f"{bc},{count}\n")
             pbar.update(task, advance=1)
 
-            self.write_bc_valid(bc_valid_path, results)
+            fig = make_barcode_rank_plot(stats_acc.full_barcode_counts)
+            fig.savefig(bc_rank_plot_path)
+            plt.close(fig)
             pbar.update(task, advance=1)
 
-            self.write_bc_counts(bc_counts_path, results)
+            with bc_stats_path.open("w") as f:
+                f.write(ex_stats.get_report())
             pbar.update(task, advance=1)
 
-            self.write_bc_rank_plot(bc_rank_plot_path, results)
-            pbar.update(task, advance=1)
-
-            self.write_bc_stats(bc_stats_path, results)
-            pbar.update(task, advance=1)
-
-    def get_barcode_counts(self, results: list[ReadMatchResult]) -> Counter[str]:
-        """Count successful full barcodes across all reads."""
-        return Counter(r.full_barcode for r in results if r.success and r.full_barcode is not None)
-
-    def write_bc_all(self, bc_all_path: Path, results: list[ReadMatchResult]) -> None:
-        """Write the full barcode extraction results for all reads to a TXT file."""
-        with bc_all_path.open("w") as f:
-            for r in results:
-                f.write(f"{r.get_annotated_readname()}\n")
-
-    def write_bc_valid(self, bc_valid_path: Path, results: list[ReadMatchResult]) -> None:
-        """Write the valid barcodes (those that matched the whitelist) to a TXT file."""
-        with bc_valid_path.open("w") as f:
-            for r in results:
-                if r.success and r.full_barcode is not None:
-                    f.write(f"{r.get_annotated_readname()}\n")
-
-    def write_bc_counts(self, bc_counts_path: Path, results: list[ReadMatchResult]) -> None:
-        """Write the counts of each unique full barcode to a CSV file."""
-        barcode_counts = self.get_barcode_counts(results)
-
-        with bc_counts_path.open("w") as f:
-            for bc, count in barcode_counts.most_common():
-                f.write(f"{bc},{count}\n")
-
-    def write_bc_rank_plot(self, bc_rank_plot_path: Path, results: list[ReadMatchResult]) -> None:
-        """Write a barcode-rank plot of successful full-barcode counts to a PNG file."""
-        fig = make_barcode_rank_plot(self.get_barcode_counts(results))
-        fig.savefig(bc_rank_plot_path)
-        plt.close(fig)
-
-    def write_bc_stats(
-        self, bc_stats_path: Path, results: list[ReadMatchResult], log_stats: bool = True
-    ) -> None:
-        """Write summary statistics of the barcode extraction results to a TXT file."""
-        ex_stats: ExtractionStats = ExtractionStats.from_results(results, self.matchers)
-        stats_out: str = ex_stats.get_report()
-
-        with bc_stats_path.open("w") as f:
-            f.write(stats_out)
-
-        if log_stats:
-            log.info(f"Completed barcode extraction for {ex_stats.overall.total_reads} reads")
-            log.info(
-                f"Overall success rate: {(ex_stats.overall.perfect + ex_stats.overall.corrok) / ex_stats.overall.total_reads:.2%}"
-            )
-            log.info(
-                f"Perfect matches: {ex_stats.overall.perfect} ({ex_stats.overall.perfect / ex_stats.overall.total_reads:.2%})"
-            )
-            log.info(
-                f"Corrected matches: {ex_stats.overall.corrok} ({ex_stats.overall.corrok / ex_stats.overall.total_reads:.2%})"
-            )
+        log.info(f"Completed barcode extraction for {ex_stats.overall.total_reads} reads")
+        log.info(
+            f"Overall success rate: {(ex_stats.overall.perfect + ex_stats.overall.corrok) / ex_stats.overall.total_reads:.2%}"
+        )
+        log.info(
+            f"Perfect matches: {ex_stats.overall.perfect} ({ex_stats.overall.perfect / ex_stats.overall.total_reads:.2%})"
+        )
+        log.info(
+            f"Corrected matches: {ex_stats.overall.corrok} ({ex_stats.overall.corrok / ex_stats.overall.total_reads:.2%})"
+        )
 
 
 # Module-level function for processing a batch of reads, used for multiprocessing

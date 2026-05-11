@@ -13,10 +13,19 @@ from carmack.barcode.extraction_dataclasses import (
 )
 from carmack.barcode.extraction_reporting import (
     ExtractionStats,
+    ExtractionStatsAccumulator,
     OverallStats,
     PerBarcodeStats,
 )
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
+
+
+def build_stats(results, matchers) -> ExtractionStats:
+    """Replay results through ExtractionStatsAccumulator and finalize."""
+    acc = ExtractionStatsAccumulator(matchers)
+    for r in results:
+        acc.update(r)
+    return acc.finalize()
 
 
 class TestOverallStats:
@@ -116,7 +125,7 @@ class TestPerBarcodeStats:
 
 
 class TestExtractionStats:
-    """Tests for ExtractionStats class including class method from_results and report generation."""
+    """Tests for ExtractionStats, ExtractionStatsAccumulator aggregation, and report generation."""
 
     @pytest.fixture
     def hydrop_chemistry(self) -> ChemistryHydrop:
@@ -218,10 +227,10 @@ class TestExtractionStats:
             bc_names=["BC3", "BC2", "BC1"],
         )
 
-    # ===== from_results method tests =====
+    # ===== ExtractionStats construction and accumulator-driven aggregation =====
 
-    def test_from_results_creation(self) -> None:
-        """Test that ExtractionStats can be created from results."""
+    def test_accumulator_creation(self) -> None:
+        """Test that ExtractionStats can be constructed directly."""
         from collections import Counter
 
         overall = OverallStats(
@@ -286,33 +295,15 @@ class TestExtractionStats:
         with pytest.raises(AttributeError):
             stats.bc_names = ["BC1"]
 
-    def test_from_results_raises_on_empty_list(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test that from_results raises ValueError for empty results list."""
-        matchers: dict = {}
+    def test_accumulator_finalize_raises_without_results(self) -> None:
+        """ExtractionStatsAccumulator.finalize raises if no results were accumulated."""
+        acc = ExtractionStatsAccumulator({})
 
-        with pytest.raises(ValueError, match="Results list is empty"):
-            ExtractionStats.from_results([], matchers)
+        with pytest.raises(ValueError, match="No results were accumulated"):
+            acc.finalize()
 
-    def test_from_results_validates_results_is_list(
-        self, hydrop_chemistry: ChemistryHydrop
-    ) -> None:
-        """Test that from_results validates results parameter is a list."""
-        matchers: dict = {}
-
-        with pytest.raises(TypeError, match="Expected list of ReadMatchResult"):
-            ExtractionStats.from_results("not a list", matchers)
-
-    def test_from_results_validates_item_types(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test that from_results validates all items are ReadMatchResult instances."""
-        matchers: dict = {}
-
-        with pytest.raises(
-            TypeError, match="All items in results must be of type ReadMatchResult"
-        ):
-            ExtractionStats.from_results(["not a result"], matchers)
-
-    def test_from_results_single_perfect_match(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test from_results with a single perfect match read."""
+    def test_accumulator_single_perfect_match(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test the accumulator with a single perfect match read."""
         whitelists = hydrop_chemistry.barcode_whitelists
         bc_results = [
             self._make_successful_history("BC3", whitelists["BC3"][0]),
@@ -328,15 +319,15 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}}
-        stats = ExtractionStats.from_results([result], matchers)
+        stats = build_stats([result], matchers)
 
         assert_that(stats.overall.total_reads).is_equal_to(1)
         assert_that(stats.overall.perfect).is_equal_to(1)
         assert_that(stats.overall.corrok).is_equal_to(0)
         assert_that(stats.overall.fail).is_equal_to(0)
 
-    def test_from_results_single_failed_match(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test from_results with a single failed match read."""
+    def test_accumulator_single_failed_match(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test the accumulator with a single failed match read."""
         bc_results = [
             self._make_failed_history("BC3", "ZZZZZZZZZZ"),
             self._make_failed_history("BC2", "ZZZZZZZZZZ"),
@@ -351,15 +342,15 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}}
-        stats = ExtractionStats.from_results([result], matchers)
+        stats = build_stats([result], matchers)
 
         assert_that(stats.overall.total_reads).is_equal_to(1)
         assert_that(stats.overall.perfect).is_equal_to(0)
         assert_that(stats.overall.corrok).is_equal_to(0)
         assert_that(stats.overall.fail).is_equal_to(1)
 
-    def test_from_results_corrected_match(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test from_results with a corrected (non-perfect) match read."""
+    def test_accumulator_corrected_match(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test the accumulator with a corrected (non-perfect) match read."""
         whitelists = hydrop_chemistry.barcode_whitelists
         bc_results = [
             self._make_kmer_history("BC3", whitelists["BC3"][0], edit_dist=1),
@@ -375,15 +366,15 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}, MatchMethod.KMERMATCH: {}}
-        stats = ExtractionStats.from_results([result], matchers)
+        stats = build_stats([result], matchers)
 
         assert_that(stats.overall.total_reads).is_equal_to(1)
         assert_that(stats.overall.perfect).is_equal_to(0)
         assert_that(stats.overall.corrok).is_equal_to(1)
         assert_that(stats.overall.fail).is_equal_to(0)
 
-    def test_from_results_multiple_reads(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test from_results with multiple reads having different outcomes."""
+    def test_accumulator_multiple_reads(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test the accumulator with multiple reads having different outcomes."""
         whitelists = hydrop_chemistry.barcode_whitelists
 
         result1 = ReadMatchResult(
@@ -423,15 +414,15 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}, MatchMethod.KMERMATCH: {}}
-        stats = ExtractionStats.from_results([result1, result2, result3], matchers)
+        stats = build_stats([result1, result2, result3], matchers)
 
         assert_that(stats.overall.total_reads).is_equal_to(3)
         assert_that(stats.overall.perfect).is_equal_to(1)
         assert_that(stats.overall.corrok).is_equal_to(1)
         assert_that(stats.overall.fail).is_equal_to(1)
 
-    def test_from_results_top_10_barcodes(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test that from_results correctly identifies top 10 most frequent barcodes."""
+    def test_accumulator_top_10_barcodes(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test that the accumulator correctly identifies top 10 most frequent barcodes."""
         whitelists = hydrop_chemistry.barcode_whitelists
 
         results = []
@@ -464,14 +455,14 @@ class TestExtractionStats:
             results.append(result)
 
         matchers = {MatchMethod.EXACTMATCH: {}}
-        stats = ExtractionStats.from_results(results, matchers)
+        stats = build_stats(results, matchers)
 
         assert_that(stats.overall.top_10_barcodes).is_length(2)
         assert_that(stats.overall.top_10_barcodes[0][1]).is_equal_to(5)
         assert_that(stats.overall.top_10_barcodes[1][1]).is_equal_to(3)
 
-    def test_from_results_per_barcode_statistics(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test that from_results generates correct per-barcode component statistics."""
+    def test_accumulator_per_barcode_statistics(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test that the accumulator generates correct per-barcode component statistics."""
         whitelists = hydrop_chemistry.barcode_whitelists
 
         result = ReadMatchResult(
@@ -487,7 +478,7 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}}
-        stats = ExtractionStats.from_results([result], matchers)
+        stats = build_stats([result], matchers)
 
         assert_that(stats.per_barcode).is_length(3)
 
@@ -497,10 +488,10 @@ class TestExtractionStats:
         assert_that(bc3_stats.success).is_equal_to(1)
         assert_that(bc3_stats.fail).is_equal_to(0)
 
-    def test_from_results_edit_distance_distribution(
+    def test_accumulator_edit_distance_distribution(
         self, hydrop_chemistry: ChemistryHydrop
     ) -> None:
-        """Test that from_results correctly aggregates edit distance distributions."""
+        """Test that the accumulator correctly aggregates edit distance distributions."""
         whitelists = hydrop_chemistry.barcode_whitelists
 
         result = ReadMatchResult(
@@ -516,7 +507,7 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}, MatchMethod.KMERMATCH: {}}
-        stats = ExtractionStats.from_results([result], matchers)
+        stats = build_stats([result], matchers)
 
         bc3_kmer_stats = [
             s
@@ -526,10 +517,10 @@ class TestExtractionStats:
         assert_that(bc3_kmer_stats.edit_distance_dist).is_not_none()
         assert_that(bc3_kmer_stats.edit_distance_dist[1]).is_equal_to(1)
 
-    def test_from_results_ambiguous_matches_counting(
+    def test_accumulator_ambiguous_matches_counting(
         self, hydrop_chemistry: ChemistryHydrop
     ) -> None:
-        """Test that from_results correctly counts ambiguous matches per method."""
+        """Test that the accumulator correctly counts ambiguous matches per method."""
         whitelists = hydrop_chemistry.barcode_whitelists
 
         history = BarcodeMatchHistory(bc_name="BC3")
@@ -561,7 +552,7 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}, MatchMethod.KMERMATCH: {}}
-        stats = ExtractionStats.from_results([result], matchers)
+        stats = build_stats([result], matchers)
 
         bc3_kmer_stats = [
             s
@@ -570,8 +561,8 @@ class TestExtractionStats:
         ][0]
         assert_that(bc3_kmer_stats.reads_w_ambiguous_match).is_equal_to(1)
 
-    def test_from_results_spacer_tracking(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test that from_results correctly tracks spacer presence in matches."""
+    def test_accumulator_spacer_tracking(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test that the accumulator correctly tracks spacer presence in matches."""
         whitelists = hydrop_chemistry.barcode_whitelists
 
         history = BarcodeMatchHistory(bc_name="BC3")
@@ -597,13 +588,13 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}}
-        stats = ExtractionStats.from_results([result], matchers)
+        stats = build_stats([result], matchers)
 
         bc3_stats = [s for s in stats.per_barcode if s.bc_name == "BC3"][0]
         assert_that(bc3_stats.spacer_present).is_equal_to(1)
 
-    def test_from_results_skips_unused_methods(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test that from_results skips barcode/method combinations with no attempts."""
+    def test_accumulator_skips_unused_methods(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test that the accumulator skips barcode/method combinations with no attempts."""
         whitelists = hydrop_chemistry.barcode_whitelists
 
         result = ReadMatchResult(
@@ -619,14 +610,14 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}, MatchMethod.ALIGNMATCH: {}}
-        stats = ExtractionStats.from_results([result], matchers)
+        stats = build_stats([result], matchers)
 
         methods = [s.method for s in stats.per_barcode]
         assert_that(methods).contains(MatchMethod.EXACTMATCH)
         assert_that(methods).does_not_contain(MatchMethod.ALIGNMATCH)
 
-    def test_from_results_all_failed_reads(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test from_results when all reads fail to match."""
+    def test_accumulator_all_failed_reads(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test the accumulator when all reads fail to match."""
         results = [
             ReadMatchResult(
                 read_name=f"read{i}",
@@ -643,7 +634,7 @@ class TestExtractionStats:
         ]
 
         matchers = {MatchMethod.EXACTMATCH: {}}
-        stats = ExtractionStats.from_results(results, matchers)
+        stats = build_stats(results, matchers)
 
         assert_that(stats.overall.total_reads).is_equal_to(5)
         assert_that(stats.overall.perfect).is_equal_to(0)
@@ -651,8 +642,8 @@ class TestExtractionStats:
         assert_that(stats.overall.fail).is_equal_to(5)
         assert_that(stats.overall.top_10_barcodes).is_empty()
 
-    def test_from_results_no_spacers_present(self, hydrop_chemistry: ChemistryHydrop) -> None:
-        """Test from_results when no spacers are present in matches."""
+    def test_accumulator_no_spacers_present(self, hydrop_chemistry: ChemistryHydrop) -> None:
+        """Test the accumulator when no spacers are present in matches."""
         whitelists = hydrop_chemistry.barcode_whitelists
 
         history = BarcodeMatchHistory(bc_name="BC3")
@@ -678,7 +669,7 @@ class TestExtractionStats:
         )
 
         matchers = {MatchMethod.EXACTMATCH: {}}
-        stats = ExtractionStats.from_results([result], matchers)
+        stats = build_stats([result], matchers)
 
         bc3_stats = [s for s in stats.per_barcode if s.bc_name == "BC3"][0]
         assert_that(bc3_stats.spacer_present).is_equal_to(0)
