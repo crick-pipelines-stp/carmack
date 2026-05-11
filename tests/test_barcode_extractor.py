@@ -817,11 +817,15 @@ class TestBarcodeExtractor:
         write_progress = DummyProgress()
         progress_bars = iter([read_progress, write_progress])
 
-        monkeypatch.setattr(barcode_extractor, "generate_batches", lambda: [[("read1", "A", "I")]])
+        monkeypatch.setattr(
+            barcode_extractor, "iter_batches", lambda: iter([[("read1", "A", "I")]])
+        )
         monkeypatch.setattr(
             barcode_extractor_module, "ProcessPoolExecutor", lambda max_workers: DummyExecutor()
         )
-        monkeypatch.setattr(barcode_extractor_module, "as_completed", lambda futures: futures)
+        monkeypatch.setattr(
+            barcode_extractor_module, "wait", lambda fs, return_when: (set(fs), set())
+        )
         monkeypatch.setattr(
             barcode_extractor_module, "progress_bar", lambda unit: next(progress_bars)
         )

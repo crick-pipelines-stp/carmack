@@ -1,7 +1,8 @@
 import logging
 from collections import Counter
-from collections.abc import Mapping
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections.abc import Iterator, Mapping
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from itertools import islice
 from math import ceil
 from pathlib import Path
 
@@ -123,22 +124,26 @@ class BarcodeExtractor:
 
         return matchers
 
-    def generate_batches(self) -> list[list[tuple[str, str, str]]]:
-        """Generate read batches from the FASTQ file. Used for multiprocessing."""
-        batches = []
+    def iter_batches(self) -> Iterator[list[tuple[str, str, str]]]:
+        """Lazily yield read batches from the FASTQ file.
+
+        Streams reads so the full FASTQ is never held in memory at once.
+        """
         current_batch: list[tuple[str, str, str]] = []
 
         for name, seq, qual, *_ in self.fastq.open_read_iterator(as_string=True):
             current_batch.append((name, seq, qual))
 
             if len(current_batch) >= self.batch_size:
-                batches.append(current_batch)
+                yield current_batch
                 current_batch = []
 
         if current_batch:
-            batches.append(current_batch)
+            yield current_batch
 
-        return batches
+    def generate_batches(self) -> list[list[tuple[str, str, str]]]:
+        """Materialise all read batches into a list. Prefer iter_batches() for streaming."""
+        return list(self.iter_batches())
 
     def extract_barcodes(
         self,
@@ -172,25 +177,37 @@ class BarcodeExtractor:
         results: list[ReadMatchResult] = []
 
         with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
-            read_batches = self.generate_batches()
-            log.debug(
-                f"Generated {len(read_batches)} read batches with batch size {self.batch_size} for processing"
-            )
-
             hybrid_extractor = HybridExtractor(chemistry=self.chemistry, matchers=self.matchers)
 
-            futures = [
+            # Bounded in-flight window keeps memory usage proportional to
+            # max_in_flight * batch_size rather than the full FASTQ.
+            batch_iter = self.iter_batches()
+            max_in_flight = max(self.n_workers * 2, 2)
+            log.debug(
+                f"Streaming batches with batch size {self.batch_size}, max in-flight {max_in_flight}"
+            )
+
+            futures = {
                 executor.submit(process_read_batch, batch, hybrid_extractor=hybrid_extractor)
-                for batch in read_batches
-            ]
+                for batch in islice(batch_iter, max_in_flight)
+            }
 
             with progress_bar(unit="reads") as pbar:
                 task = pbar.add_task("Extracting barcodes...", total=self.fastq.reads_count)
 
-                for future in as_completed(futures):
-                    batch_results, batch_len = future.result()
-                    results.extend(batch_results)
-                    pbar.update(task, advance=batch_len)
+                while futures:
+                    done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        batch_results, batch_len = future.result()
+                        results.extend(batch_results)
+                        pbar.update(task, advance=batch_len)
+
+                    for batch in islice(batch_iter, len(done)):
+                        futures.add(
+                            executor.submit(
+                                process_read_batch, batch, hybrid_extractor=hybrid_extractor
+                            )
+                        )
 
         # Write output files
         with progress_bar(unit="files") as pbar:
