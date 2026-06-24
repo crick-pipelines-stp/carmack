@@ -2,6 +2,7 @@ import logging
 import os
 
 from ..io.fastq_file import FastqFile
+from ..io.gzip_file import GzipFile
 
 
 log = logging.getLogger(__name__)
@@ -32,11 +33,12 @@ class FastqFilter:
         # Init
         valid_barcodes = set()
 
-        # Load valid barcodes
-        with open(bc_valid, "r") as bc_valid_file:
-            for line in bc_valid_file:
-                barcode = line.split(",")[0].split(" ")[0]
-                valid_barcodes.add(barcode)
+        # Load valid barcodes. GzipFile selects its codec from the filename
+        # suffix, so this reads both gzipped (.txt.gz) and legacy plain-text
+        # (.txt/.csv) barcode files.
+        for line in GzipFile(bc_valid).open_read_iterator(as_string=True):
+            barcode = line.split(",")[0].split(" ")[0]
+            valid_barcodes.add(barcode)
 
         r1_fq = FastqFile(self.read1)
         r2_fq = FastqFile(self.read2)

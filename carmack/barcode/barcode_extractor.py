@@ -17,6 +17,7 @@ from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.read_component import ReadComponentType
 from carmack.io.fastq_file import FastqFile
+from carmack.io.gzip_file import GzipFile
 from carmack.utils import get_prefix, progress_bar
 
 
@@ -163,8 +164,8 @@ class BarcodeExtractor:
 
         # Prepare output file paths
         output_path = Path(output_dir)
-        bc_all_path = output_path / f"{prefix}.bc_all.txt"
-        bc_valid_path = output_path / f"{prefix}.bc_valid.txt"
+        bc_all_path = output_path / f"{prefix}.bc_all.txt.gz"
+        bc_valid_path = output_path / f"{prefix}.bc_valid.txt.gz"
         bc_counts_path = output_path / f"{prefix}.bc_counts.csv"
         bc_rank_plot_path = output_path / f"{prefix}.bc_rank.png"
         bc_stats_path = output_path / f"{prefix}.bc_stats.txt"
@@ -177,8 +178,8 @@ class BarcodeExtractor:
 
         with (
             ProcessPoolExecutor(max_workers=self.n_workers) as executor,
-            bc_all_path.open("w") as bc_all_f,
-            bc_valid_path.open("w") as bc_valid_f,
+            GzipFile(str(bc_all_path)).open_write_stream() as bc_all_f,
+            GzipFile(str(bc_valid_path)).open_write_stream() as bc_valid_f,
         ):
             hybrid_extractor = HybridExtractor(chemistry=self.chemistry, matchers=self.matchers)
 
@@ -206,9 +207,9 @@ class BarcodeExtractor:
                         batch_results, batch_len = future.result()
                         for r in batch_results:
                             annotated = r.get_annotated_readname()
-                            bc_all_f.write(f"{annotated}\n")
+                            GzipFile.write_string(bc_all_f, f"{annotated}\n")
                             if r.success and r.full_barcode is not None:
-                                bc_valid_f.write(f"{annotated}\n")
+                                GzipFile.write_string(bc_valid_f, f"{annotated}\n")
                             stats_acc.update(r)
                         pbar.update(task, advance=batch_len)
 
