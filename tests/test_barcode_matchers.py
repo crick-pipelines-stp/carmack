@@ -7,6 +7,7 @@ from typing import Literal
 import pytest
 from assertpy import assert_that
 
+from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
 from carmack.barcode.matchers.alignment_matcher import (
     GAP_EXTEND_SCORE,
@@ -1439,6 +1440,12 @@ class TestAlignmentMatcher:
     SPACER_1 = "AGGGTACTCG"
     SPACER_2 = "GCAGTAGCTG"
 
+    # --- Two very distinct ACGT-only barcodes for score tie-break regression tests ---
+    # They differ well beyond max_errors (edit_distance == 7 > 2), are not close to either
+    # spacer, and are not poly-base runs, so a wrong-barcode assignment fails the max_errors gate.
+    BC_X = "ATGCCTGATG"
+    BC_Y = "TCATTGACCA"
+
     # --- Fixtures ---
 
     @pytest.fixture
@@ -2198,6 +2205,176 @@ class TestAlignmentMatcher:
 
         assert_that(result).is_length(1)
         assert_that(result[0].match).is_equal_to(bc2)
+
+    @pytest.mark.parametrize("bc_true, bc_other", [(BC_X, BC_Y), (BC_Y, BC_X)])
+    def test_match_tiebreak_assigns_spacer_validated_survivors_own_barcode(
+        self,
+        bc_true: str,
+        bc_other: str,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """Test that a lone spacer-validated survivor is assigned its OWN barcode, not the tied first one.
+
+        Two very distinct barcodes tie at the perfect alignment score, but only ``bc_true`` sits in a
+        spacer-flanked slot, so a single survivor emerges (Branch A). The buggy implementation assigns
+        ``best_alignments[0].bc`` — the frozenset-first tied barcode — whose identity is hash-arbitrary.
+        Parametrising both role assignments of the same pair makes exactly one case assign the wrong
+        barcode (failing the recomputed ``max_errors`` gate) on the buggy code under any hash seed,
+        while both cases pass once each survivor keeps its own originating barcode.
+        """
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        matcher = AlignmentMatcher(
+            whitelist=(bc_true, bc_other),
+            barcode_component=comp,
+            chemistry=hydrop_chemistry,
+        )
+        # bc_true is flanked by both expected spacers; bc_other sits in non-spacer filler.
+        read = bc_other + "TTTTT" + self.SPACER_1 + bc_true + self.SPACER_2 + "TTTTT"
+        result = matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to(bc_true)
+        assert_that(result[0].candidate).is_equal_to(bc_true)
+        assert_that(result[0].edit_distance).is_equal_to(0)
+        assert_that(edit_distance(result[0].candidate, result[0].match)).is_equal_to(
+            result[0].edit_distance
+        )
+
+    @pytest.mark.parametrize("bc_true, bc_other", [(BC_X, BC_Y), (BC_Y, BC_X)])
+    def test_match_tiebreak_two_spacer_survivor_assigns_own_barcode(
+        self,
+        bc_true: str,
+        bc_other: str,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """Test that the unique two-spacer survivor is assigned its OWN barcode (Branch B).
+
+        Both tied barcodes are spacer-validated (each has at least one expected spacer), but only
+        ``bc_true`` is flanked by both spacers, so it wins via the two-spacer narrowing path. As in
+        Branch A, the buggy code assigns the frozenset-first tied barcode; the role-swap parametrisation
+        forces exactly one case to assign the wrong barcode on the buggy code under any hash seed.
+        """
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        matcher = AlignmentMatcher(
+            whitelist=(bc_true, bc_other),
+            barcode_component=comp,
+            chemistry=hydrop_chemistry,
+        )
+        # bc_other has only an upstream spacer (downstream is filler); bc_true has both spacers.
+        read = (
+            "TTTTT"
+            + self.SPACER_1
+            + bc_other
+            + "TTTTT"
+            + self.SPACER_1
+            + bc_true
+            + self.SPACER_2
+            + "TTTTT"
+        )
+        result = matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to(bc_true)
+        assert_that(result[0].candidate).is_equal_to(bc_true)
+        assert_that(result[0].edit_distance).is_equal_to(0)
+        assert_that(edit_distance(result[0].candidate, result[0].match)).is_equal_to(
+            result[0].edit_distance
+        )
+
+    def test_match_tiebreak_multiple_validated_survivors_are_ambiguous(
+        self,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """Test that multiple equally spacer-validated survivors fall through to the ambiguous path.
+
+        Both barcodes tie at the perfect alignment score and both are flanked by both spacers, so no
+        unique survivor emerges. The matcher must return every validated result with ``match=None``
+        rather than committing to a single, hash-order-dependent barcode.
+        """
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        matcher = AlignmentMatcher(
+            whitelist=(self.BC_X, self.BC_Y),
+            barcode_component=comp,
+            chemistry=hydrop_chemistry,
+        )
+        # Both barcodes are flanked by both spacers -> identical spacer profile -> ambiguous.
+        read = (
+            self.SPACER_1
+            + self.BC_X
+            + self.SPACER_2
+            + "TTTTT"
+            + self.SPACER_1
+            + self.BC_Y
+            + self.SPACER_2
+        )
+        result = matcher.match(read)
+
+        assert_that(len(result)).is_greater_than_or_equal_to(2)
+        for r in result:
+            assert_that(r.match).is_none()
+            assert_that(r.method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+    def test_match_single_candidate_exceeding_max_errors_returns_no_match(
+        self,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """Test that a lone best alignment whose candidate exceeds max_errors returns no match.
+
+        With a single-barcode whitelist the match funnels through the single-candidate branch
+        (no spacer validation). A 3-base insertion inside the barcode keeps the local alignment
+        score above ``score_threshold`` (7.5 >= 7.0) but makes the aligned candidate span 13 bp,
+        so ``edit_distance(candidate, barcode) == 3`` exceeds ``max_errors`` (2) and the branch
+        must discard it as a no-match.
+        """
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        matcher = AlignmentMatcher(
+            whitelist=(self.BC_X,), barcode_component=comp, chemistry=hydrop_chemistry
+        )
+        # 3-base insertion inside BC_X -> 13 bp aligned candidate, edit_distance == 3 (> max_errors).
+        mutated = self.BC_X[:5] + "AAA" + self.BC_X[5:]
+        read = "TTTTT" + mutated + "TTTTT"
+        result = matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_none()
+        assert_that(result[0].candidate).is_none()
+        assert_that(result[0].method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+    def test_match_tiebreak_two_spacer_survivor_exceeding_max_errors_returns_no_match(
+        self,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """Test that the two-spacer survivor (Branch B) is discarded when its candidate exceeds max_errors.
+
+        Two barcodes tie at the same degraded alignment score (7.5, each carrying a 3-base
+        insertion), both are spacer-validated, but only the survivor is flanked by both spacers,
+        so Branch B narrows to it. Its aligned candidate spans 13 bp with
+        ``edit_distance(candidate, own_barcode) == 3`` (> max_errors 2), so the branch must return
+        a no-match rather than assigning the barcode.
+        """
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        matcher = AlignmentMatcher(
+            whitelist=(self.BC_X, self.BC_Y), barcode_component=comp, chemistry=hydrop_chemistry
+        )
+        # Both barcodes carry a 3-base insertion (tie at score 7.5). The survivor (BC_X) is flanked
+        # by both spacers; the other (BC_Y) has only an upstream spacer -> Branch B narrows to BC_X.
+        survivor_ins = self.BC_X[:5] + "AAA" + self.BC_X[5:]
+        other_ins = self.BC_Y[:5] + "AAA" + self.BC_Y[5:]
+        read = (
+            self.SPACER_1
+            + survivor_ins
+            + self.SPACER_2
+            + "TTTTT"
+            + self.SPACER_1
+            + other_ins
+            + "TTTTT"
+        )
+        result = matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_none()
+        assert_that(result[0].candidate).is_none()
+        assert_that(result[0].method).is_equal_to(MatchMethod.ALIGNMATCH)
 
     # ==========================================
     # match() - Full HyDrop Read Sequences (Parametrized)
