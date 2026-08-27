@@ -32,9 +32,7 @@ class ChemistryCarmackCustomSeq10PrimD(ChemistryCarmackCustomSeq10):
 
     def _build_components(self) -> list[ReadComponent]:
         return [
-            ReadComponent(
-                name="PRIMER_D", type=ReadComponentType.PRIMER, length=len(PRIMER_C)
-            ),
+            ReadComponent(name="PRIMER_D", type=ReadComponentType.PRIMER, length=len(PRIMER_C)),
             *super()._build_components(),
         ]
 

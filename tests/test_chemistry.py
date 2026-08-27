@@ -550,9 +550,7 @@ class TestChemistryCarmackCustomSeq10PrimD:
         """The PRIMER_D variant is a subclass of the base chemistry."""
         assert_that(chemistry).is_instance_of(ChemistryCarmackCustomSeq10)
 
-    def test_read_structure_prepends_primer_d(
-        self, chemistry: ChemistryCarmackCustomSeq10PrimD
-    ):
+    def test_read_structure_prepends_primer_d(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
         """Read structure starts with PRIMER_D, then matches the base layout."""
         read_structure = chemistry.read_structure
         actual_order = [comp.name for comp in read_structure]
@@ -576,10 +574,7 @@ class TestChemistryCarmackCustomSeq10PrimD:
             "PRIMER_C": primer_d_len + 10,
             "BC2": primer_d_len + 10 + len(known_seqs["PRIMER_C"]),
             "PRIMER_A": primer_d_len + 20 + len(known_seqs["PRIMER_C"]),
-            "BC1": primer_d_len
-            + 20
-            + len(known_seqs["PRIMER_C"])
-            + len(known_seqs["PRIMER_A"]),
+            "BC1": primer_d_len + 20 + len(known_seqs["PRIMER_C"]) + len(known_seqs["PRIMER_A"]),
         }
         for component in read_structure:
             assert_that(component.start).is_equal_to(expected_starts[component.name])
