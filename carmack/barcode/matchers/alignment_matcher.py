@@ -212,7 +212,7 @@ class AlignmentMatcher(MatcherBase):
         # Prepare match attempts for best alignments
         # Use only the first coordinate pair from each alignment to avoid duplicates
         # when local alignment finds multiple equivalent paths
-        results: list[BarcodeMatchAttempt] = []
+        results: list[tuple[BarcodeMatchAttempt, str]] = []
         for aln in best_alignments:
             # Only use the first coordinate - all coords in an alignment refer to the same region
             seq1_coord = aln.seq1_coords[0]
@@ -227,28 +227,29 @@ class AlignmentMatcher(MatcherBase):
                 read_idx=read_idx,
                 edit_distance=None,
             )
-            results.append(result)
+            results.append((result, aln.bc))
 
         # Single match, assign the matched barcode to the result
         if len(results) == 1:
+            result, bc = results[0]
             log.debug(
-                f"Unique best alignment match found: {best_alignments[0].bc} with score {best_alignments[0].score}"
+                f"Unique best alignment match found: {bc} with score {best_alignments[0].score}"
             )
-            ed = edit_distance(results[0].candidate, best_alignments[0].bc)
+            ed = edit_distance(result.candidate, bc)
             if ed > self.max_errors:
                 log.debug(
-                    f"Best alignment candidate '{results[0].candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
+                    f"Best alignment candidate '{result.candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
                 )
                 return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
-            results[0].match = best_alignments[0].bc
-            results[0].edit_distance = ed
-            return results
+            result.match = bc
+            result.edit_distance = ed
+            return [result]
 
         # Multiple best alignments - validate with adjacent spacer sequences
         validated_results: list[
-            tuple[BarcodeMatchAttempt, dict[Literal["upstream", "downstream"], str | None]]
+            tuple[BarcodeMatchAttempt, str, dict[Literal["upstream", "downstream"], str | None]]
         ] = []
-        for result in results:
+        for result, bc in results:
             if result.read_idx is not None:
                 spacers_check = self.check_spacers(read, result.read_idx)
                 result.spacer_upstream = spacers_check["upstream"]
@@ -256,52 +257,49 @@ class AlignmentMatcher(MatcherBase):
 
                 # Validate if at least one adjacent spacer is present
                 if any(spacers_check.values()):
-                    validated_results.append((result, spacers_check))
+                    validated_results.append((result, bc, spacers_check))
 
         # If only one validated result, assign the matched barcode and return
         if len(validated_results) == 1:
+            final_result, bc, _ = validated_results[0]
             log.debug(
-                f"Unique best alignment match validated by spacers: {best_alignments[0].bc} with score {best_alignments[0].score}"
+                f"Unique best alignment match validated by spacers: {bc} with score {best_alignments[0].score}"
             )
-            ed = edit_distance(validated_results[0][0].candidate, best_alignments[0].bc)
+            ed = edit_distance(final_result.candidate, bc)
             if ed > self.max_errors:
                 log.debug(
-                    f"Best alignment candidate '{validated_results[0][0].candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
+                    f"Best alignment candidate '{final_result.candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
                 )
                 return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
-            final_result = validated_results[0][0]
-            final_result.match = best_alignments[0].bc  # Assign the matched barcode
+            final_result.match = bc  # Assign the matched barcode
             final_result.edit_distance = ed
             return [final_result]
 
         # If multiple results validate, check if only one has spacers on both sides
         best_candidates_with_two_spacers = [
-            c for c in validated_results if sum(v is not None for v in c[1].values()) == 2
+            c for c in validated_results if sum(v is not None for v in c[2].values()) == 2
         ]
         if len(validated_results) > 1 and len(best_candidates_with_two_spacers) == 1:
+            final_result, bc, _ = best_candidates_with_two_spacers[0]
             log.debug(
-                f"Unique best alignment match validated by having both spacers: {best_alignments[0].bc} with score {best_alignments[0].score}"
+                f"Unique best alignment match validated by having both spacers: {bc} with score {best_alignments[0].score}"
             )
-            ed = edit_distance(
-                best_candidates_with_two_spacers[0][0].candidate, best_alignments[0].bc
-            )
+            ed = edit_distance(final_result.candidate, bc)
             if ed > self.max_errors:
                 log.debug(
-                    f"Best alignment candidate '{best_candidates_with_two_spacers[0][0].candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
+                    f"Best alignment candidate '{final_result.candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
                 )
                 return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
-            final_result = best_candidates_with_two_spacers[0][0]
-            final_result.match = best_alignments[0].bc  # Assign the matched barcode
-            ed = edit_distance(final_result.candidate, final_result.match)
+            final_result.match = bc  # Assign the matched barcode
             final_result.edit_distance = ed
             return [final_result]
 
         # If multiple results still remain, we have ambiguity
         # We return all validated results but mark match as None to indicate ambiguity
-        for r, _ in validated_results:
+        for r, _, _ in validated_results:
             log.debug(
                 f"Ambiguous alignment match: candidate '{r.candidate}' with score {best_alignments[0].score} has multiple best matches. Will be marked as ambiguous."
             )
-            return [r for r, _ in validated_results]
+            return [r for r, _, _ in validated_results]
 
-        return results
+        return [r for r, _ in results]
