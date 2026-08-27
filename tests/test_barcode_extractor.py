@@ -451,15 +451,25 @@ class TestBarcodeExtractor:
         barcode_extractor.extract_barcodes(output_dir=str(tmp_path), prefix="test")
 
         for name in (
-            "test.bc_all.txt",
-            "test.bc_valid.txt",
+            "test.bc_all.txt.gz",
+            "test.bc_valid.txt.gz",
             "test.bc_counts.csv",
             "test.bc_rank.png",
             "test.bc_stats.txt",
         ):
             assert_that((tmp_path / name).exists()).is_true()
-        assert_that(write_progress.add_task_calls).contains(("Writing output files...", 3))
+        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 3))
         assert_that(write_progress.update_calls).is_length(3)
+
+        # bc_all / bc_valid are written as gzip; decompressed contents must match
+        # the plain-text annotated read name exactly (one line for the single read).
+        import gzip
+
+        expected_line = result.get_annotated_readname()
+        with gzip.open(tmp_path / "test.bc_all.txt.gz", "rt") as f:
+            assert_that(f.read()).is_equal_to(f"{expected_line}\n")
+        with gzip.open(tmp_path / "test.bc_valid.txt.gz", "rt") as f:
+            assert_that(f.read()).is_equal_to(f"{expected_line}\n")
 
     # ===== process_read_batch Tests =====
 

@@ -1,5 +1,6 @@
 # pylint: disable=missing-function-docstring, missing-class-docstring
 
+import gzip
 import os
 import unittest
 
@@ -45,6 +46,33 @@ class TestFastqFilter(unittest.TestCase):
             line_count_r2 += 1
         # print(line_count_r2)
 
+        assert line_count_r1 == line_count_r2 == exp_line_count
+
+    @with_temporary_folder
+    def test_fastq_filter_reads_gzipped_bc_valid(self, temp_path):
+        # Init
+        prefix = "gz"
+        exp_line_count = 9343
+        test_file_valid_r1 = os.path.join(temp_path, prefix + ".r1_valid.fastq.gz")
+        test_file_valid_r2 = os.path.join(temp_path, prefix + ".r2_valid.fastq.gz")
+
+        # Build a gzipped bc_valid fixture from the plain-text fixture so the
+        # suffix-aware reader takes the gzip decompression path.
+        gz_bc_valid = os.path.join(temp_path, "bc_valid.txt.gz")
+        with open(BC_VALID_PATH, "rb") as src, gzip.open(gz_bc_valid, "wb") as dst:
+            dst.write(src.read())
+
+        # Run filter_valid_reads against the gzipped barcodes
+        fastq_filter = FastqFilter(R1_PATH, R2_PATH)
+        fastq_filter.filter_valid_reads(gz_bc_valid, temp_path, prefix)
+
+        # Same reads should pass as with the uncompressed fixture
+        line_count_r1 = sum(
+            1 for _ in FastqFile(test_file_valid_r1).open_read_iterator(as_string=True)
+        )
+        line_count_r2 = sum(
+            1 for _ in FastqFile(test_file_valid_r2).open_read_iterator(as_string=True)
+        )
         assert line_count_r1 == line_count_r2 == exp_line_count
 
     @with_temporary_folder
