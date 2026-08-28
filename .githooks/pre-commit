@@ -1,35 +1,29 @@
 #!/bin/sh
 # Auto-format with isort then black before every commit.
 #
-# Runs the project's formatting commands, in this order:
+# Runs the project's formatters, in this order:
 #     isort .   then   black .
-# Ruff is deliberately NOT run here — lint findings are reviewed by hand.
+# Both read their configuration from pyproject.toml ([tool.isort] uses the
+# black profile, so the two never fight). Ruff is deliberately NOT run here —
+# lint findings are reviewed by hand.
 #
 # Only files that were ALREADY staged get re-staged after formatting, so a
 # whole-repo format never drags unrelated files into the commit. A file that is
 # partially staged (staged changes plus further unstaged edits) is left alone
 # and reported, because re-adding it would silently commit the unstaged work.
 #
-# Requires isort and black (the project's 'carmack' conda env provides them).
-# Bypass with:  git commit --no-verify
+# Requires the project's dev tools:  pip install -e ".[dev]"
+# Bypass for one commit with:         git commit --no-verify
 
 # Nothing Python staged? Nothing to do — also keeps docs-only and merge commits
-# working when the tooling env isn't active.
+# working when the formatters aren't installed.
 staged=$(git diff --cached --name-only --diff-filter=ACMR -z | tr '\0' '\n' | grep -E '\.pyi?$')
 [ -n "$staged" ] || exit 0
 
-# Git hooks can run with a minimal PATH (IDEs, GUI clients), so fall back to
-# the conda env that owns this project's tooling.
-if ! command -v isort >/dev/null 2>&1 || ! command -v black >/dev/null 2>&1; then
-    for bin in "$CONDA_PREFIX/bin" "$HOME/miniforge3/envs/carmack/bin"; do
-        [ -x "$bin/isort" ] && [ -x "$bin/black" ] && PATH="$bin:$PATH" && break
-    done
-fi
-
 for tool in isort black; do
     command -v "$tool" >/dev/null 2>&1 && continue
-    echo "pre-commit: '$tool' not found — activate the 'carmack' conda env," >&2
-    echo "            or commit with --no-verify to skip formatting." >&2
+    echo "pre-commit: '$tool' not found on PATH. Install the dev tools with" >&2
+    echo "            'pip install -e \".[dev]\"', or skip with 'git commit --no-verify'." >&2
     exit 1
 done
 
