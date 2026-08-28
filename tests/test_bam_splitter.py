@@ -9,7 +9,6 @@ import pytest
 from carmack.split_reads.split_reads import BamSplitter
 from carmack.utils import get_prefix
 
-
 BAM_PATH = "tests/data/hydrop_scatac_1_S1_R1_dup.dedup.tagged.bam"
 
 BAI_PATH = BAM_PATH + ".bai"

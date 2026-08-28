@@ -3,7 +3,6 @@ import logging
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
 from carmack.barcode.matchers.matcher_base import MatcherBase
 
-
 log = logging.getLogger(__name__)
 
 

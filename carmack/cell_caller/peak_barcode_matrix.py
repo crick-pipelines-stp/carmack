@@ -3,7 +3,6 @@ from typing import Iterable, List, Tuple
 
 from scipy.sparse import csr_matrix, lil_matrix
 
-
 log = logging.getLogger(__name__)
 
 

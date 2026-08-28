@@ -7,7 +7,6 @@ import unittest
 from carmack.io.subprocess_stream import SubprocessStream
 from tests.utils import with_temporary_folder
 
-
 CONTENT = "test_content"
 READ_NAME = "@NB501505:171:H3KMGAFX3:1:21208:17616:17963 1:N:0:AGATCTCGGT"
 

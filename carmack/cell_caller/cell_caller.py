@@ -13,7 +13,6 @@ from carmack.cell_caller.peak_barcode_matrix import PeakBarcodeMatrix
 from carmack.io.bed_file import BedFile
 from carmack.utils import get_prefix
 
-
 log = logging.getLogger(__name__)
 
 

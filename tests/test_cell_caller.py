@@ -6,7 +6,6 @@ from scipy.sparse import isspmatrix_csr, isspmatrix_lil
 from carmack.cell_caller.cell_caller import CellCaller
 from carmack.cell_caller.peak_barcode_matrix import PeakBarcodeMatrix
 
-
 BED_PATH = "tests/data/atac_k562_peaks.sorted.bed"
 BAM_PATH = "tests/data/hydrop_scatac_1_S1_R1.dedup.tagged.bam"
 

@@ -2,7 +2,6 @@ import pytest
 
 from carmack.io.bed_file import BedFile
 
-
 BED_PATH = "tests/data/atac_k562_peaks.sorted.bed"
 
 

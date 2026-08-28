@@ -4,7 +4,6 @@ import os
 from ..io.fastq_file import FastqFile
 from ..io.gzip_file import GzipFile
 
-
 log = logging.getLogger(__name__)
 
 

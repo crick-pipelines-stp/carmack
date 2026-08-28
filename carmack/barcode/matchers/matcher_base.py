@@ -6,7 +6,6 @@ from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 
-
 log = logging.getLogger(__name__)
 
 

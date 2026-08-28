@@ -20,7 +20,6 @@ from carmack.io.fastq_file import FastqFile
 from carmack.io.gzip_file import GzipFile
 from carmack.utils import get_prefix, progress_bar
 
-
 log = logging.getLogger(__name__)
 
 MIN_READS_PER_BATCH = 10

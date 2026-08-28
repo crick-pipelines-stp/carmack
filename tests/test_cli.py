@@ -8,7 +8,6 @@ from click.testing import CliRunner
 
 import carmack.__main__
 
-
 R1_PATH = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
 R2_PATH = "tests/data/hydrop_scatac_1_S1_R3_001.fastq.gz"
 CB_PATH = "tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz"

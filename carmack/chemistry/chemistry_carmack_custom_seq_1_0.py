@@ -15,7 +15,6 @@ from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
 from carmack.io.gzip_file import GzipFile
 
-
 log = logging.getLogger(__name__)
 
 

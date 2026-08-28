@@ -17,7 +17,6 @@ from rich.progress import (
     TextColumn,
 )
 
-
 log = logging.getLogger(__name__)
 
 

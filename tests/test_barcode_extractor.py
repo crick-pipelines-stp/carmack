@@ -20,7 +20,6 @@ from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.read_component import ReadComponentType
 
-
 R1_PATH = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
 
 

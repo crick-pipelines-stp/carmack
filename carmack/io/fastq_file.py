@@ -3,7 +3,6 @@ from functools import cached_property
 from .gzip_file import GzipFile
 from .subprocess_stream import SubprocessStream
 
-
 GZIP_SUFFIX = ".gz"
 LZ4_SUFFIX = ".lz4"
 LINES_PER_READ = 4

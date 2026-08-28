@@ -8,7 +8,6 @@ import pysam
 
 from carmack.utils import get_prefix, progress_bar
 
-
 log = logging.getLogger(__name__)
 
 

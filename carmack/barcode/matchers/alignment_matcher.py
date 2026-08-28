@@ -11,7 +11,6 @@ from carmack.barcode.matchers.matcher_base import MatcherBase
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.read_structure import ReadComponent
 
-
 log = logging.getLogger(__name__)
 
 ALPHABETS = "ACGTN"

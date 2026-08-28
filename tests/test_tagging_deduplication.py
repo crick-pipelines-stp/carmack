@@ -7,7 +7,6 @@ import pytest
 from carmack.tag_dedup.tag_dedup import TagDedup
 from carmack.utils import get_prefix
 
-
 BAM_PATHS = [
     "tests/data/hydrop_scatac_1_S1_R1.sorted.bam",
     "tests/data/hydrop_scatac_1_S1_R1_dup.sorted.bam",
