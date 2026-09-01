@@ -1,14 +1,15 @@
-"""Raw UMI extraction from annotated R1 FASTQ reads (SI-3 of the UMI epic).
+"""UMI extraction and correction from annotated R1 FASTQ reads (SI-3/SI-4).
 
-Step 1 of UMI handling. For each annotated read the extractor locates the raw
-UMI lying between its left anchor (the BC1 barcode, read from the header
-``BC1_POS`` tag) and the downstream poly-G run, annotates the read with ``UMI``
-and ``UMI_POS`` tags, and records the observed UMI length distribution.
+For each annotated read the extractor locates the raw UMI lying between its left
+anchor (the BC1 barcode, read from the header ``BC1_POS`` tag) and the
+downstream poly-G run, annotates the read with ``UMI`` and ``UMI_POS`` tags, and
+records the observed UMI length distribution.
 
-Extraction is a single streaming pass with no correction: the raw UMI is neither
-normalised nor padded and no ``UB`` tag is emitted. The ``raw`` flag threaded
-through :meth:`UmiExtractor.extract_umis` documents that this is the terminal
-step so that a later correction stage can gate on ``not raw``.
+Extraction is a single streaming pass. Unless ``raw`` is set, a correction pass
+then groups the accepted reads by full cell barcode and collapses directional
+UMI variants (see :mod:`carmack.umi.umi_corrector`), writing the corrected map
+to ``{prefix}.umi_map.tsv``. With ``raw`` this is the terminal step: no map is
+written and the faithful raw ``UMI`` tag stands alone.
 """
 
 import logging
@@ -20,9 +21,11 @@ from pathlib import Path
 from carmack import __version__ as carmack_version
 from carmack.chemistry.annotation import format_span, parse_span, position_key
 from carmack.chemistry.chemistry_factory import ChemistryFactory
+from carmack.chemistry.read_component import ReadComponentType
 from carmack.io.fastq_file import FastqFile
 from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
+from carmack.umi.umi_corrector import CorrectedUmi, CorrectionStats, UmiCorrector, UmiRecord
 from carmack.utils import get_prefix
 
 log = logging.getLogger(__name__)
@@ -41,6 +44,8 @@ class UmiExtractionStats:
             allowed length window.
         length_counts: Mapping of extracted UMI length to the number of accepted
             reads with that length.
+        correction: The correction summary when a correction pass ran, or
+            ``None`` under ``raw`` extraction.
 
     By construction ``accepted + missing_left_anchor + no_polyg_anchor`` always
     equals ``total_reads``.
@@ -51,6 +56,7 @@ class UmiExtractionStats:
     missing_left_anchor: int
     no_polyg_anchor: int
     length_counts: dict[int, int]
+    correction: CorrectionStats | None = None
 
     @staticmethod
     def fraction(numerator: int, denominator: int) -> float:
@@ -84,7 +90,34 @@ class UmiExtractionStats:
         for length in sorted(self.length_counts):
             count = self.length_counts[length]
             report += f"\t{length}\t{count} ({self.fraction(count, self.accepted):.2%})\n"
+        if self.correction is not None:
+            report += self.correction_report()
         return report
+
+    def correction_report(self) -> str:
+        """Render the UMI correction section of the report.
+
+        Returns:
+            A plain-text section reconciling the accepted reads into corrected /
+            dropped counts and summarising the directional collapse.
+        """
+        correction = self.correction
+        section = "\n# UMI Correction Stats\n"
+        section += (
+            f"Corrected reads: {correction.corrected_reads} "
+            f"({self.fraction(correction.corrected_reads, self.accepted):.2%})\n"
+        )
+        section += (
+            f"Dropped (raw_N): {correction.dropped_raw_n} "
+            f"({self.fraction(correction.dropped_raw_n, self.accepted):.2%})\n"
+        )
+        section += (
+            f"Dropped (off_length): {correction.dropped_off_length} "
+            f"({self.fraction(correction.dropped_off_length, self.accepted):.2%})\n"
+        )
+        section += f"Distinct corrected UMIs: {correction.distinct_corrected_umis}\n"
+        section += f"UMI collapses: {correction.umi_collapses}\n"
+        return section
 
 
 class UmiExtractor:
@@ -131,6 +164,12 @@ class UmiExtractor:
         self.polyg_base = right.homopolymer_base
         self.polyg_min_run = right.min_run
         self.left_key = position_key(left.name)
+        self.barcode_names = [
+            component.name
+            for component in self.chemistry.read_structure.get_components_by_type(
+                ReadComponentType.BARCODE
+            )
+        ]
 
     def find_polyg_start(self, seq: str, umi_start: int) -> int | None:
         """Return the greedy earliest poly-G run start bounding the UMI.
@@ -185,12 +224,14 @@ class UmiExtractor:
         output_path = Path(output_dir)
         umi_fastq_path = output_path / f"{prefix}.r1_umi.fastq.gz"
         umi_stats_path = output_path / f"{prefix}.umi_stats.txt"
+        umi_map_path = output_path / f"{prefix}.umi_map.tsv"
 
         total = 0
         accepted = 0
         missing_left_anchor = 0
         no_polyg_anchor = 0
         length_counts: Counter[int] = Counter()
+        records: list[UmiRecord] = []
 
         with GzipFile(str(umi_fastq_path)).open_write_stream() as umi_stream:
             for name, seq, qual, *_ in self.fastq.open_read_iterator(as_string=True):
@@ -215,6 +256,23 @@ class UmiExtractor:
 
                 accepted += 1
                 length_counts[len(raw_umi)] += 1
+                if not raw:
+                    records.append(
+                        UmiRecord(
+                            read_id=ann.read_id,
+                            barcode=self.chemistry.construct_full_barcode(
+                                {name: ann.get(name) for name in self.barcode_names}
+                            ),
+                            raw_umi=raw_umi,
+                        )
+                    )
+
+        correction_stats: CorrectionStats | None = None
+        if not raw:
+            mapping, correction_stats = UmiCorrector(
+                self.umi_length, self.umi_length_tolerance
+            ).correct(records)
+            self.write_umi_map(umi_map_path, records, mapping)
 
         stats = UmiExtractionStats(
             total_reads=total,
@@ -222,6 +280,7 @@ class UmiExtractor:
             missing_left_anchor=missing_left_anchor,
             no_polyg_anchor=no_polyg_anchor,
             length_counts=dict(length_counts),
+            correction=correction_stats,
         )
 
         with umi_stats_path.open("w") as report_file:
@@ -229,3 +288,27 @@ class UmiExtractor:
 
         log.info(f"Extracted UMIs for {accepted}/{total} reads")
         return stats
+
+    @staticmethod
+    def write_umi_map(
+        path: Path, records: list[UmiRecord], mapping: dict[str, CorrectedUmi]
+    ) -> None:
+        """Write the corrected-UMI map in read order.
+
+        The file is tab-separated with no header and one row per corrected read,
+        columns ordered ``read_id``, ``barcode``, ``UR``, ``UB``. Reads dropped
+        during correction (raw sentinel or off-length) are omitted.
+
+        Args:
+            path: Destination path for the ``umi_map.tsv`` file.
+            records: The accepted reads in extraction order.
+            mapping: The correction result keyed by read id.
+        """
+        with path.open("w") as handle:
+            for record in records:
+                corrected = mapping.get(record.read_id)
+                if corrected is None:
+                    continue
+                handle.write(
+                    f"{record.read_id}\t{corrected.barcode}\t{corrected.ur}\t{corrected.ub}\n"
+                )

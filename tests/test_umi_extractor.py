@@ -30,11 +30,31 @@ BC1_START = 10
 UMI_START = 20
 TAIL = "TTTTTT"
 
+# Default barcode-component sequences carried by synthetic annotated reads. They
+# mirror the BC1/BC2/BC3 tags written by barcode extraction so the correction
+# stage can rebuild the full cell barcode.
+BC1_SEQ = "AAAAAAAAAA"
+BC2_SEQ = "CCCCCCCCCC"
+BC3_SEQ = "GGGGGGGGGG"
 
-def make_read_header(read_id: str, umi_start: int = UMI_START) -> str:
-    """Render a header carrying only the BC1_POS tag ending at ``umi_start``."""
+
+def make_read_header(
+    read_id: str,
+    umi_start: int = UMI_START,
+    bc1: str = BC1_SEQ,
+    bc2: str = BC2_SEQ,
+    bc3: str = BC3_SEQ,
+) -> str:
+    """Render a header carrying the BC1_POS anchor and the BC1/BC2/BC3 barcodes.
+
+    The extractor consumes only the BC1_POS end to locate the UMI; the barcode
+    tags let the correction stage reconstruct the full cell barcode.
+    """
     ann = ReadAnnotation(read_id=read_id)
     ann.set(position_key("BC1"), format_span(BC1_START, umi_start))
+    ann.set("BC1", bc1)
+    ann.set("BC2", bc2)
+    ann.set("BC3", bc3)
     return ann.render()
 
 
@@ -43,6 +63,9 @@ def make_read(
     umi_seq: str,
     run_len: int,
     umi_start: int = UMI_START,
+    bc1: str = BC1_SEQ,
+    bc2: str = BC2_SEQ,
+    bc3: str = BC3_SEQ,
 ) -> tuple[str, str, str]:
     """Build a synthetic ``(header, seq, qual)`` annotated read.
 
@@ -50,7 +73,19 @@ def make_read(
     the poly-G run begins exactly at ``umi_start + len(umi_seq)``.
     """
     seq = "A" * umi_start + umi_seq + "G" * run_len + TAIL
-    return make_read_header(read_id, umi_start), seq, "I" * len(seq)
+    return make_read_header(read_id, umi_start, bc1, bc2, bc3), seq, "I" * len(seq)
+
+
+@pytest.fixture
+def build_extractor(tmp_path):
+    """Return a factory that writes records to a FASTQ and builds an extractor."""
+
+    def build(records: list[tuple[str, str, str]], name: str = "SK462.r1_annotated.fastq.gz"):
+        fastq_path = tmp_path / name
+        write_fastq(fastq_path, records)
+        return UmiExtractor(str(fastq_path), CHEMISTRY)
+
+    return build
 
 
 def write_fastq(path, records: list[tuple[str, str, str]]) -> None:
@@ -369,3 +404,88 @@ class TestExtractUmisCli:
         result = runner.invoke(carmack.__main__.carmack_cli, ["--help"])
         assert_that(result.exit_code).is_equal_to(0)
         assert_that(result.output).contains("extract-umis")
+
+
+class TestExtractUmisCorrection:
+    """The correction stage: the umi_map.tsv contract and correction stats."""
+
+    def read_map(self, path) -> list[list[str]]:
+        """Read the tab-separated, header-less umi_map.tsv into split rows."""
+        return [line.split("\t") for line in path.read_text().splitlines()]
+
+    def test_writes_umi_map_with_corrected_reads(self, build_extractor, tmp_path) -> None:
+        records = [
+            make_read("p1", "ACTACTAC", 4),
+            make_read("p2", "ACTACTAC", 4),
+            make_read("p3", "ACTACTAC", 4),
+            make_read("v1", "ACTACTTC", 4),
+        ]
+        extractor = build_extractor(records)
+        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=False)
+
+        rows = self.read_map(tmp_path / "out.umi_map.tsv")
+        assert_that(rows).is_length(4)
+        for row in rows:
+            assert_that(row).is_length(4)  # read_id, barcode, UR, UB
+
+        full_barcode = extractor.chemistry.construct_full_barcode(
+            {"BC1": BC1_SEQ, "BC2": BC2_SEQ, "BC3": BC3_SEQ}
+        )
+        by_id = {row[0]: row for row in rows}
+        assert_that(by_id["v1"][1]).is_equal_to(full_barcode)
+        assert_that(by_id["v1"][2]).is_equal_to("ACTACTTC")  # UR = faithful raw
+        assert_that(by_id["v1"][3]).is_equal_to("ACTACTAC")  # UB = highest-count rep
+        assert_that({row[3] for row in rows}).is_equal_to({"ACTACTAC"})
+        assert_that(stats.correction.corrected_reads).is_equal_to(4)
+
+    def test_raw_true_writes_no_map_and_no_ub(self, build_extractor, tmp_path) -> None:
+        records = [make_read("a", "ACTACTAC", 4)]
+        extractor = build_extractor(records)
+        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=True)
+
+        assert_that((tmp_path / "out.umi_map.tsv").exists()).is_false()
+        assert_that(stats.correction).is_none()
+        fastq = gzip.decompress((tmp_path / "out.r1_umi.fastq.gz").read_bytes()).decode()
+        assert_that(fastq).does_not_contain("UB")
+
+    def test_grouping_isolates_barcodes_end_to_end(self, build_extractor, tmp_path) -> None:
+        records = [
+            make_read("g1", "ACTACTAC", 4, bc1="AAAAAAAAAA"),
+            make_read("g2", "ACTACTAC", 4, bc1="TTTTTTTTTT"),
+        ]
+        extractor = build_extractor(records)
+        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=False)
+
+        rows = {row[0]: row for row in self.read_map(tmp_path / "out.umi_map.tsv")}
+        assert_that(rows["g1"][1]).is_not_equal_to(rows["g2"][1])
+        assert_that(stats.correction.distinct_corrected_umis).is_equal_to(2)
+
+    def test_raw_n_read_excluded_from_map(self, build_extractor, tmp_path) -> None:
+        records = [
+            make_read("clean", "ACTACTAC", 4),
+            make_read("ncontam", "ACTNCTAC", 4),
+        ]
+        extractor = build_extractor(records)
+        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=False)
+
+        ids = [row[0] for row in self.read_map(tmp_path / "out.umi_map.tsv")]
+        assert_that(ids).contains("clean")
+        assert_that(ids).does_not_contain("ncontam")
+        assert_that(stats.correction.dropped_raw_n).is_equal_to(1)
+
+    def test_correction_stats_in_report(self, build_extractor, tmp_path) -> None:
+        records = [make_read("a", "ACTACTAC", 4), make_read("b", "ACTACTAC", 4)]
+        extractor = build_extractor(records)
+        extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=False)
+
+        report = (tmp_path / "out.umi_stats.txt").read_text()
+        assert_that(report).contains("# UMI Correction Stats")
+        assert_that(report).contains("Corrected reads: 2")
+
+    def test_raw_report_omits_correction_section(self, build_extractor, tmp_path) -> None:
+        records = [make_read("a", "ACTACTAC", 4)]
+        extractor = build_extractor(records)
+        extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=True)
+
+        report = (tmp_path / "out.umi_stats.txt").read_text()
+        assert_that(report).does_not_contain("# UMI Correction Stats")
