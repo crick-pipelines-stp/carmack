@@ -17,12 +17,17 @@ from carmack.chemistry.read_structure import ReadStructure
 
 @dataclass(frozen=True)
 class MatchErrors:
-    """
-    Define maximum edit distances for barcodes and spacers.
+    """Maximum edit distances allowed per component type when matching.
+
+    Attributes:
+        barcode: Max edits when matching a barcode component to its whitelist.
+        spacer: Max edits when matching a spacer / primer sequence.
+        tgidx: Max edits when matching a TGIDX component to its whitelist.
     """
 
     barcode: int
     spacer: int
+    tgidx: int = 0
 
 
 @dataclass
@@ -49,7 +54,7 @@ class ChemistryBase(ABC):
     @cached_property
     @abstractmethod
     def max_errors(self) -> MatchErrors:
-        """Maximum allowed errors (substitutions/indels) for barcode matching."""
+        """Maximum allowed errors (substitutions/indels) when matching read components."""
         pass
 
     @abstractmethod
@@ -93,6 +98,15 @@ class ChemistryBase(ABC):
             raise KeyError(f"Missing whitelists for barcode components: {missing}")
 
         return whitelists
+
+    def tgidx_whitelist(self) -> tuple[str, ...]:
+        """Return the whitelist of valid TGIDX sequences for this chemistry.
+
+        Returns:
+            A tuple of valid TGIDX sequences, or an empty tuple when the
+            chemistry has no TGIDX component.
+        """
+        return ()
 
     def umi_component(self) -> ReadComponent | None:
         """Return the UMI component of the read structure, if one is defined.

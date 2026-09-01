@@ -35,6 +35,7 @@ UMI_LENGTH_TOLERANCE = 1
 POLYG_BASE = "G"
 POLYG_MIN_RUN = 3
 TGIDX_LENGTH = 8
+TGIDX_WHITELIST = ("TATAGCCT",)
 
 # Barcode file paths
 BC1_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
@@ -100,8 +101,12 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
 
     @cached_property
     def max_errors(self) -> MatchErrors:
-        """Return the maximum allowed errors for barcode matching."""
-        return MatchErrors(barcode=1, spacer=2)
+        """Return the maximum allowed errors for component matching."""
+        return MatchErrors(barcode=1, spacer=2, tgidx=1)
+
+    def tgidx_whitelist(self) -> tuple[str, ...]:
+        """Return the whitelist of valid TGIDX sequences for this chemistry."""
+        return TGIDX_WHITELIST
 
     def load_barcode_whitelist(self, barcode_name: str) -> tuple[str, ...]:
         """

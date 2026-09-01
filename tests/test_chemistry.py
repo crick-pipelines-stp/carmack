@@ -5,11 +5,12 @@ Tests for the chemistry module.
 import pytest
 from assertpy import assert_that
 
-from carmack.chemistry.chemistry_base import ChemistryBase
+from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
     POLYG_BASE,
     POLYG_MIN_RUN,
     TGIDX_LENGTH,
+    TGIDX_WHITELIST,
     UMI_LENGTH,
     UMI_LENGTH_TOLERANCE,
     ChemistryCarmackCustomSeq10,
@@ -835,6 +836,19 @@ class TestChemistryCarmackCustomSeq10:
         with pytest.raises(ValueError):
             chemistry.load_barcode_whitelist("INVALID")
 
+    def test_max_errors_includes_tgidx(self, chemistry: ChemistryCarmackCustomSeq10):
+        """max_errors carries a TGIDX tolerance of 1 alongside barcode/spacer."""
+        assert_that(chemistry.max_errors).is_equal_to(MatchErrors(barcode=1, spacer=2, tgidx=1))
+        assert_that(chemistry.max_errors.tgidx).is_equal_to(1)
+
+    def test_tgidx_whitelist(self, chemistry: ChemistryCarmackCustomSeq10):
+        """The TGIDX whitelist holds the single confirmed entry, sized to TGIDX_LENGTH."""
+        whitelist = chemistry.tgidx_whitelist()
+        assert_that(whitelist).is_equal_to(("TATAGCCT",))
+        assert_that(whitelist).is_equal_to(TGIDX_WHITELIST)
+        for entry in whitelist:
+            assert_that(len(entry)).is_equal_to(TGIDX_LENGTH)
+
 
 class TestChemistryCarmackCustomSeq10PrimD:
     @pytest.fixture
@@ -921,6 +935,11 @@ class TestChemistryCarmackCustomSeq10PrimD:
         base = ChemistryCarmackCustomSeq10()
         assert_that(chemistry.max_errors).is_equal_to(base.max_errors)
 
+    def test_tgidx_whitelist_inherited(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
+        """The _primd subclass inherits the TGIDX whitelist and error tolerance."""
+        assert_that(chemistry.tgidx_whitelist()).is_equal_to(("TATAGCCT",))
+        assert_that(chemistry.max_errors.tgidx).is_equal_to(1)
+
     def test_factory_dispatch(self):
         """Factory returns the PRIMER_D variant for its registered name."""
         instance = ChemistryFactory.get_chemistry("carmack_custom_seq_1_0_primd")
@@ -943,6 +962,11 @@ class TestChemistryHydrop:
         known_seqs = chemistry.read_structure.get_known_sequences()
         assert_that(known_seqs["SPACER_1"]).is_equal_to("AGGGTACTCG")
         assert_that(known_seqs["SPACER_2"]).is_equal_to("GCAGTAGCTG")
+
+    def test_tgidx_whitelist_empty_and_no_tgidx_errors(self, chemistry: ChemistryHydrop):
+        """A chemistry with no TGIDX component yields an empty whitelist and zero TGIDX errors."""
+        assert_that(chemistry.tgidx_whitelist()).is_equal_to(())
+        assert_that(chemistry.max_errors.tgidx).is_equal_to(0)
 
     def test_start_positions(self, chemistry: ChemistryHydrop):
         """Test that the start positions of read components are computed correctly."""
