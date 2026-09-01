@@ -65,16 +65,186 @@ class TestReadComponent:
         with pytest.raises(ValueError):
             ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=0)
 
-    def test_read_component_start_property(self):
-        """Test the start property getter and setter."""
+    def test_read_component_start_field(self):
+        """The start field defaults to None and accepts int or None assignment directly."""
         comp = ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10)
-        assert_that(comp.start).is_equal_to(0)  # default value
+        assert_that(comp.start).is_none()  # default value
 
         comp.start = 5
         assert_that(comp.start).is_equal_to(5)
 
-        with pytest.raises(ValueError):
-            comp.start = -1
+        comp.start = None
+        assert_that(comp.start).is_none()
+
+    # ===== Enum rename: GGG -> HOMOPOLYMER =====
+
+    def test_homopolymer_enum_member_replaces_ggg(self) -> None:
+        """The former GGG member is renamed to HOMOPOLYMER with a matching value."""
+        assert_that(ReadComponentType.HOMOPOLYMER.value).is_equal_to("HOMOPOLYMER")
+        assert_that(hasattr(ReadComponentType, "GGG")).is_false()
+
+    # ===== Per-type validation: valid construction =====
+
+    def test_primer_component_valid(self) -> None:
+        """A primer component requires only a positive length."""
+        comp = ReadComponent(name="PRIMER_C", type=ReadComponentType.PRIMER, length=22)
+        assert_that(comp.length).is_equal_to(22)
+
+    def test_umi_component_valid(self) -> None:
+        """A UMI component accepts a positive length and non-negative tolerance."""
+        comp = ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=1)
+        assert_that(comp.length).is_equal_to(8)
+        assert_that(comp.length_tolerance).is_equal_to(1)
+
+    def test_umi_component_default_tolerance_is_zero(self) -> None:
+        """A UMI component without an explicit tolerance defaults to zero."""
+        comp = ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8)
+        assert_that(comp.length_tolerance).is_equal_to(0)
+
+    def test_homopolymer_component_valid(self) -> None:
+        """A homopolymer requires a single base and positive min_run; length may be None."""
+        comp = ReadComponent(
+            name="polyG",
+            type=ReadComponentType.HOMOPOLYMER,
+            homopolymer_base="G",
+            min_run=3,
+        )
+        assert_that(comp.homopolymer_base).is_equal_to("G")
+        assert_that(comp.min_run).is_equal_to(3)
+        assert_that(comp.length).is_none()
+
+    def test_tgidx_component_valid(self) -> None:
+        """A TGIDX component requires a positive length."""
+        comp = ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8)
+        assert_that(comp.length).is_equal_to(8)
+
+    # ===== Per-type validation: invalid construction =====
+
+    @pytest.mark.parametrize(
+        "component_type",
+        [
+            ReadComponentType.BARCODE,
+            ReadComponentType.PRIMER,
+            ReadComponentType.UMI,
+            ReadComponentType.TGIDX,
+            ReadComponentType.OTHER,
+        ],
+    )
+    def test_non_homopolymer_component_requires_length(
+        self, component_type: ReadComponentType
+    ) -> None:
+        """Every non-homopolymer component type requires a length."""
+        with pytest.raises(ValueError, match="length must be positive"):
+            ReadComponent(name="X", type=component_type, length=None)
+
+    def test_umi_component_rejects_negative_tolerance(self) -> None:
+        """A UMI component rejects a negative length tolerance."""
+        with pytest.raises(ValueError, match="non-negative length_tolerance"):
+            ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=-1)
+
+    @pytest.mark.parametrize("base", [None, "N", "GG", "g"])
+    def test_homopolymer_component_rejects_invalid_base(self, base: str | None) -> None:
+        """A homopolymer component rejects a missing or non-single-ACGT base."""
+        with pytest.raises(ValueError, match="homopolymer_base"):
+            ReadComponent(
+                name="polyG",
+                type=ReadComponentType.HOMOPOLYMER,
+                homopolymer_base=base,
+                min_run=3,
+            )
+
+    @pytest.mark.parametrize("min_run", [None, 0, -1])
+    def test_homopolymer_component_rejects_invalid_min_run(self, min_run: int | None) -> None:
+        """A homopolymer component rejects a missing or non-positive min_run."""
+        with pytest.raises(ValueError, match="min_run"):
+            ReadComponent(
+                name="polyG",
+                type=ReadComponentType.HOMOPOLYMER,
+                homopolymer_base="G",
+                min_run=min_run,
+            )
+
+    # ===== Derived properties =====
+
+    @pytest.mark.parametrize(
+        "component,expected",
+        [
+            (ReadComponent(name="BC", type=ReadComponentType.BARCODE, length=10), True),
+            (ReadComponent(name="PR", type=ReadComponentType.PRIMER, length=22), True),
+            (
+                ReadComponent(
+                    name="HP",
+                    type=ReadComponentType.HOMOPOLYMER,
+                    homopolymer_base="G",
+                    min_run=3,
+                ),
+                True,
+            ),
+            (ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8), False),
+            (ReadComponent(name="OT", type=ReadComponentType.OTHER, length=10), False),
+            (ReadComponent(name="TG", type=ReadComponentType.TGIDX, length=8), False),
+        ],
+    )
+    def test_is_anchor(self, component: ReadComponent, expected: bool) -> None:
+        """is_anchor is True for BARCODE/PRIMER/HOMOPOLYMER and False otherwise."""
+        assert_that(component.is_anchor).is_equal_to(expected)
+
+    @pytest.mark.parametrize(
+        "component,expected",
+        [
+            (ReadComponent(name="BC", type=ReadComponentType.BARCODE, length=10), False),
+            (ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8), False),
+            (
+                ReadComponent(
+                    name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=1
+                ),
+                True,
+            ),
+            (
+                ReadComponent(
+                    name="HP",
+                    type=ReadComponentType.HOMOPOLYMER,
+                    homopolymer_base="G",
+                    min_run=3,
+                ),
+                True,
+            ),
+        ],
+    )
+    def test_is_variable_length(self, component: ReadComponent, expected: bool) -> None:
+        """is_variable_length reflects tolerance, homopolymer type, or unknown length."""
+        assert_that(component.is_variable_length).is_equal_to(expected)
+
+    @pytest.mark.parametrize(
+        "component,expected",
+        [
+            (ReadComponent(name="BC", type=ReadComponentType.BARCODE, length=10), 10),
+            (
+                ReadComponent(
+                    name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=1
+                ),
+                7,
+            ),
+            (
+                ReadComponent(
+                    name="HP",
+                    type=ReadComponentType.HOMOPOLYMER,
+                    homopolymer_base="G",
+                    min_run=3,
+                ),
+                3,
+            ),
+        ],
+    )
+    def test_min_length(self, component: ReadComponent, expected: int) -> None:
+        """min_length returns the minimum bases occupied per component type."""
+        assert_that(component.min_length).is_equal_to(expected)
+
+    def test_min_length_none_when_length_unknown_and_not_homopolymer(self) -> None:
+        """min_length is None when a non-homopolymer component has no known length."""
+        comp = ReadComponent(name="X", type=ReadComponentType.OTHER, length=5)
+        comp.length = None
+        assert_that(comp.min_length).is_none()
 
 
 class TestReadStructure:
@@ -196,6 +366,56 @@ class TestReadStructure:
     def test_len(self, read_structure, sample_components):
         """Test that ReadStructure supports len()."""
         assert len(read_structure) == len(sample_components)
+
+
+class TestComputeStartPositionsVariable:
+    """Tests for variable-aware start-position computation."""
+
+    def test_all_fixed_structure_keeps_exact_starts(self) -> None:
+        """A fully fixed structure computes contiguous integer starts."""
+        components = [
+            ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+            ReadComponent(name="PRIMER_A", type=ReadComponentType.PRIMER, length=22),
+            ReadComponent(name="BC2", type=ReadComponentType.BARCODE, length=10),
+        ]
+        ReadStructure(components)
+        assert_that([comp.start for comp in components]).is_equal_to([0, 10, 32])
+
+    def test_trailing_variable_component_gets_start_then_none(self) -> None:
+        """The fixed prefix and first variable component keep starts; later ones are None."""
+        components = [
+            ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+            ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=1),
+            ReadComponent(
+                name="polyG",
+                type=ReadComponentType.HOMOPOLYMER,
+                homopolymer_base="G",
+                min_run=3,
+            ),
+        ]
+        ReadStructure(components)
+        starts = {comp.name: comp.start for comp in components}
+        assert_that(starts["BC1"]).is_equal_to(0)
+        assert_that(starts["UMI"]).is_equal_to(10)
+        assert_that(starts["polyG"]).is_none()
+
+    def test_homopolymer_first_variable_gets_start_then_none(self) -> None:
+        """A homopolymer as the first variable component still gets a concrete start."""
+        components = [
+            ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+            ReadComponent(
+                name="polyG",
+                type=ReadComponentType.HOMOPOLYMER,
+                homopolymer_base="G",
+                min_run=3,
+            ),
+            ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),
+        ]
+        ReadStructure(components)
+        starts = {comp.name: comp.start for comp in components}
+        assert_that(starts["BC1"]).is_equal_to(0)
+        assert_that(starts["polyG"]).is_equal_to(10)
+        assert_that(starts["TGIDX"]).is_none()
 
 
 class TestChemistryBase:

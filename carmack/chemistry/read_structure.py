@@ -27,12 +27,22 @@ class ReadStructure:
     def compute_start_positions(self) -> None:
         """
         Compute and set the start positions for each component based on their lengths.
-        The first component starts at position 0, and subsequent components start immediately after the previous one.
+
+        The walk keeps a running position starting at 0. Fixed-length components
+        retain exact starts, and the first variable-length (or unknown-length)
+        component still receives its concrete start. Every component after that
+        first variable component is left with ``start = None`` because its
+        position can only be resolved per-read.
         """
-        current_position = 0
+        current_position: int | None = 0
         for comp in self.components:
             comp.start = current_position
-            current_position += comp.length
+            if current_position is None:
+                continue
+            if comp.is_variable_length or comp.length is None:
+                current_position = None
+            else:
+                current_position += comp.length
 
     def get_component_by_name(self, name: str) -> ReadComponent:
         """
