@@ -14,10 +14,12 @@ from carmack.barcode.hybrid_extractor import HybridExtractor
 from carmack.barcode.matchers.alignment_matcher import AlignmentMatcher
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher, MatcherBase
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
+from carmack.chemistry.annotation import format_span, position_key
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.read_component import ReadComponentType
 from carmack.io.fastq_file import FastqFile
 from carmack.io.gzip_file import GzipFile
+from carmack.io.read_annotation import ReadAnnotation
 from carmack.utils import get_prefix, progress_bar
 
 log = logging.getLogger(__name__)
@@ -165,12 +167,13 @@ class BarcodeExtractor:
         output_path = Path(output_dir)
         bc_all_path = output_path / f"{prefix}.bc_all.txt.gz"
         bc_valid_path = output_path / f"{prefix}.bc_valid.txt.gz"
+        bc_annotated_path = output_path / f"{prefix}.r1_annotated.fastq.gz"
         bc_counts_path = output_path / f"{prefix}.bc_counts.csv"
         bc_rank_plot_path = output_path / f"{prefix}.bc_rank.png"
         bc_stats_path = output_path / f"{prefix}.bc_stats.txt"
 
         log.debug(
-            f"Output paths: {bc_all_path}, {bc_valid_path}, {bc_counts_path}, {bc_rank_plot_path}, {bc_stats_path}"
+            f"Output paths: {bc_all_path}, {bc_valid_path}, {bc_annotated_path}, {bc_counts_path}, {bc_rank_plot_path}, {bc_stats_path}"
         )
 
         stats_acc = ExtractionStatsAccumulator(self.matchers)
@@ -183,6 +186,7 @@ class BarcodeExtractor:
         with (
             GzipFile(str(bc_all_path)).open_write_stream() as bc_all_f,
             GzipFile(str(bc_valid_path)).open_write_stream() as bc_valid_f,
+            GzipFile(str(bc_annotated_path)).open_write_stream() as bc_annotated_f,
             ProcessPoolExecutor(max_workers=self.n_workers) as executor,
         ):
             hybrid_extractor = HybridExtractor(chemistry=self.chemistry, matchers=self.matchers)
@@ -214,6 +218,13 @@ class BarcodeExtractor:
                             GzipFile.write_string(bc_all_f, f"{annotated}\n")
                             if r.success and r.full_barcode is not None:
                                 GzipFile.write_string(bc_valid_f, f"{annotated}\n")
+                                ann = ReadAnnotation.parse(r.read_name)
+                                for bc in r.bc_results:
+                                    attempt = bc.attempts[-1]
+                                    ann.set(bc.bc_name, attempt.match)
+                                    start, end = attempt.read_idx
+                                    ann.set(position_key(bc.bc_name), format_span(start, end))
+                                FastqFile.write_read(bc_annotated_f, ann.render(), r.read, r.qual)
                             stats_acc.update(r)
                         pbar.update(task, advance=batch_len)
 

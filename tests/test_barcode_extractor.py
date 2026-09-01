@@ -474,6 +474,169 @@ class TestBarcodeExtractor:
         with gzip.open(tmp_path / "test.bc_valid.txt.gz", "rt") as f:
             assert_that(f.read()).is_equal_to(f"{expected_line}\n")
 
+        # The new annotated R1 FASTQ additionally carries the single valid read
+        # with BCx / BCx_POS header tags; the five legacy outputs are unchanged.
+        assert_that((tmp_path / "test.r1_annotated.fastq.gz").exists()).is_true()
+        with gzip.open(tmp_path / "test.r1_annotated.fastq.gz", "rt") as f:
+            annotated_lines = f.read().splitlines()
+        assert_that(annotated_lines).is_length(4)
+        assert_that(annotated_lines[0]).starts_with("@read1")
+        assert_that(annotated_lines[0]).contains("BC3=CAGTGTGGAA").contains("BC3_POS=0:10")
+        assert_that(annotated_lines[0]).contains("BC2=ACGGTGGACT").contains("BC1=GAACAGTAGT")
+        assert_that(annotated_lines[1]).is_equal_to(result.read)
+        assert_that(annotated_lines[2]).is_equal_to("+")
+        assert_that(annotated_lines[3]).is_equal_to(result.qual)
+
+    def test_extract_barcodes_writes_annotated_r1_fastq(
+        self,
+        tmp_path,
+        monkeypatch,
+        barcode_extractor: BarcodeExtractor,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """extract_barcodes writes a self-describing annotated R1 FASTQ holding only
+        the valid reads, in bc_valid order, with BCx / BCx_POS tags whose spans
+        reproduce the matched candidate in the original read."""
+        import gzip
+
+        import carmack.barcode.barcode_extractor as barcode_extractor_module
+        from carmack.chemistry.annotation import parse_span
+        from carmack.io.read_annotation import ReadAnnotation
+
+        # read1: valid; barcodes sit at distinct spans so read[start:end] == candidate.
+        read1_seq = "CAGTGTGGAA" + "NNNNN" + "ACGGTGGACT" + "NNNNN" + "GAACAGTAGT"
+        read1 = ReadMatchResult(
+            read_name="read1 1:N:0:AAAA",
+            read=read1_seq,
+            qual="I" * len(read1_seq),
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_positioned_history("BC3", "CAGTGTGGAA", 0, 10),
+                self._make_positioned_history("BC2", "ACGGTGGACT", 15, 25),
+                self._make_positioned_history("BC1", "GAACAGTAGT", 30, 40),
+            ],
+        )
+
+        # read2: one component fails -> excluded from bc_valid and the annotated FASTQ.
+        read2 = ReadMatchResult(
+            read_name="read2 1:N:0:CCCC",
+            read="A" * 40,
+            qual="I" * 40,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_successful_history("BC3", "CAGTGTGGAA"),
+                self._make_successful_history("BC2", "ACGGTGGACT"),
+                self._make_failed_history("BC1", "ZZZZZZZZZZ"),
+            ],
+        )
+
+        # read3: valid; different spans, present to prove ordering matches bc_valid.
+        read3_seq = "GG" + "CAGTGTGGAA" + "NNNNNNNN" + "ACGGTGGACT" + "NNNNN" + "GAACAGTAGT"
+        read3 = ReadMatchResult(
+            read_name="read3 1:N:0:GGGG",
+            read=read3_seq,
+            qual="I" * len(read3_seq),
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self._make_positioned_history("BC3", "CAGTGTGGAA", 2, 12),
+                self._make_positioned_history("BC2", "ACGGTGGACT", 20, 30),
+                self._make_positioned_history("BC1", "GAACAGTAGT", 35, 45),
+            ],
+        )
+
+        class DummyFuture:
+            def result(self):
+                return [read1, read2, read3], 3
+
+        class DummyExecutor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, func, batch, hybrid_extractor=None):
+                return DummyFuture()
+
+        class DummyProgress:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def add_task(self, description, total):
+                return description
+
+            def update(self, task, advance):
+                pass
+
+        progress_bars = iter([DummyProgress(), DummyProgress()])
+
+        monkeypatch.setattr(
+            barcode_extractor, "iter_batches", lambda: iter([[("read1", "A", "I")]])
+        )
+        monkeypatch.setattr(
+            barcode_extractor_module, "ProcessPoolExecutor", lambda max_workers: DummyExecutor()
+        )
+        monkeypatch.setattr(
+            barcode_extractor_module, "wait", lambda fs, return_when: (set(fs), set())
+        )
+        monkeypatch.setattr(
+            barcode_extractor_module, "progress_bar", lambda unit: next(progress_bars)
+        )
+
+        barcode_extractor.extract_barcodes(output_dir=str(tmp_path), prefix="test")
+
+        annotated_path = tmp_path / "test.r1_annotated.fastq.gz"
+        assert_that(annotated_path.exists()).is_true()
+
+        with gzip.open(annotated_path, "rt") as f:
+            lines = f.read().splitlines()
+
+        # Two valid reads -> two 4-line FASTQ records; the failed read is absent.
+        assert_that(lines).is_length(8)
+        headers = [lines[0], lines[4]]
+        assert_that([h.split()[0] for h in headers]).is_equal_to(["@read1", "@read3"])
+        assert_that("\n".join(lines)).does_not_contain("read2")
+
+        # Order matches bc_valid exactly (same relative order of the valid reads).
+        with gzip.open(tmp_path / "test.bc_valid.txt.gz", "rt") as f:
+            valid_lines = f.read().splitlines()
+        valid_read_ids = [line.split("|")[0] for line in valid_lines]
+        assert_that(valid_read_ids).is_equal_to(["read1 1:N:0:AAAA", "read3 1:N:0:GGGG"])
+        annotated_read_ids = [h.split()[0][1:] for h in headers]  # strip leading '@'
+        assert_that(annotated_read_ids).is_equal_to([vid.split()[0] for vid in valid_read_ids])
+
+        # record 1 = read1: seq/qual intact, passthrough preserved, spans round-trip.
+        assert_that(lines[1]).is_equal_to(read1.read)
+        assert_that(lines[2]).is_equal_to("+")
+        assert_that(lines[3]).is_equal_to(read1.qual)
+        ann1 = ReadAnnotation.parse(lines[0][1:])  # drop leading '@'
+        assert_that(ann1.passthrough).is_equal_to(["1:N:0:AAAA"])
+        for bc_name, candidate in (
+            ("BC3", "CAGTGTGGAA"),
+            ("BC2", "ACGGTGGACT"),
+            ("BC1", "GAACAGTAGT"),
+        ):
+            assert_that(ann1.get(bc_name)).is_equal_to(candidate)
+            start, end = parse_span(ann1.get(f"{bc_name}_POS"))
+            assert_that(read1.read[start:end]).is_equal_to(candidate)
+
+        # record 2 = read3: seq/qual intact, spans round-trip against its own read.
+        assert_that(lines[5]).is_equal_to(read3.read)
+        assert_that(lines[6]).is_equal_to("+")
+        assert_that(lines[7]).is_equal_to(read3.qual)
+        ann3 = ReadAnnotation.parse(lines[4][1:])
+        for bc_name, candidate, span in (
+            ("BC3", "CAGTGTGGAA", "2:12"),
+            ("BC2", "ACGGTGGACT", "20:30"),
+            ("BC1", "GAACAGTAGT", "35:45"),
+        ):
+            assert_that(ann3.get(f"{bc_name}_POS")).is_equal_to(span)
+            start, end = parse_span(ann3.get(f"{bc_name}_POS"))
+            assert_that(read3.read[start:end]).is_equal_to(candidate)
+
     # ===== process_read_batch Tests =====
 
     def test_process_read_batch_empty_batch(
@@ -549,6 +712,20 @@ class TestBarcodeExtractor:
             method=MatchMethod.EXACTMATCH,
         )
         history.record_attempt(attempt, success=False)
+        return history
+
+    def _make_positioned_history(
+        self, bc_name: str, barcode: str, start: int, end: int
+    ) -> BarcodeMatchHistory:
+        """Helper to create a successful BarcodeMatchHistory matched at a given span."""
+        history = BarcodeMatchHistory(bc_name=bc_name)
+        attempt = BarcodeMatchAttempt(
+            candidate=barcode,
+            method=MatchMethod.EXACTMATCH,
+            match=barcode,
+            read_idx=(start, end),
+        )
+        history.record_attempt(attempt, success=True)
         return history
 
 
