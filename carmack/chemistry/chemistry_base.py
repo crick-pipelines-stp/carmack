@@ -178,15 +178,17 @@ class ChemistryBase(ABC):
         Construct the full barcode sequence by concatenating individual
         barcode components in the correct order. Order is determined by the read structure.
         """
-        read_layout = self.read_structure
-        barcode_components = read_layout.get_components_by_type(ReadComponentType.BARCODE)
+        barcode_components = self.read_structure.get_components_by_type(ReadComponentType.BARCODE)
 
-        try:
-            return "".join(barcodes[comp.name] for comp in barcode_components)
-        except KeyError as e:
-            raise ValueError(
-                f"Missing barcode component '{e.args[0]}' for full barcode construction."
-            ) from e
+        parts = []
+        for comp in barcode_components:
+            value = barcodes.get(comp.name)
+            if value is None:
+                raise ValueError(
+                    f"Missing barcode component '{comp.name}' for full barcode construction."
+                )
+            parts.append(value)
+        return "".join(parts)
 
     def __post_init__(self):
         # Validate that all barcode components defined in the read structure have whitelists

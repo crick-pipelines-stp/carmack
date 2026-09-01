@@ -530,6 +530,16 @@ class TestChemistryBase:
         assert_that(str(exc_info.value)).contains("Missing barcode component")
         assert_that(str(exc_info.value)).contains("BC3")
 
+    def test_construct_full_barcode_none_value_raises_error(self, chemistry: ChemistryBase):
+        """A present-but-None barcode value raises the same clear ValueError."""
+        barcodes = {"BC1": "ACGTACGTAC", "BC2": "TGACAGTGAC", "BC3": None}
+
+        with pytest.raises(ValueError) as exc_info:
+            chemistry.construct_full_barcode(barcodes)
+
+        assert_that(str(exc_info.value)).contains("Missing barcode component")
+        assert_that(str(exc_info.value)).contains("BC3")
+
     def test_construct_full_barcode_extra_components_ignored(self, chemistry: ChemistryBase):
         """Test that extra barcode components not in read structure are ignored."""
         barcodes = {

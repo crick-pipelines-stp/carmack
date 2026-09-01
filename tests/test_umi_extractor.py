@@ -537,3 +537,39 @@ class TestExtractUmisCorrection:
 
         report = (tmp_path / "out.umi_stats.txt").read_text()
         assert_that(report).does_not_contain("# UMI Correction Stats")
+
+
+class TestExtractUmisHeaderValidation:
+    """The first read's header is validated against the supplied chemistry."""
+
+    def make_missing_bc3(self, read_id: str) -> tuple[str, str, str]:
+        """An annotated read carrying BC1/BC2 (+BC1_POS) but no BC3 tag."""
+        ann = ReadAnnotation(read_id=read_id)
+        ann.set(position_key("BC1"), format_span(BC1_START, UMI_START))
+        ann.set("BC1", BC1_SEQ)
+        ann.set("BC2", BC2_SEQ)
+        seq = "A" * UMI_START + "ACTACTAC" + "GGGG" + TAIL
+        return ann.render(), seq, "I" * len(seq)
+
+    @pytest.mark.parametrize("raw", [False, True])
+    def test_missing_barcode_tag_raises_clear_error(
+        self, build_extractor, tmp_path, raw: bool
+    ) -> None:
+        records = [self.make_missing_bc3("r1"), self.make_missing_bc3("r2")]
+        extractor = build_extractor(records)
+
+        with pytest.raises(ValueError, match="BC3"):
+            extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=raw)
+        # Validation runs before any output is written.
+        assert_that((tmp_path / "out.r1_umi.fastq.gz").exists()).is_false()
+
+    def test_missing_left_anchor_on_first_read_raises(self, build_extractor, tmp_path) -> None:
+        ann = ReadAnnotation(read_id="nobc1")
+        ann.set("BC1", BC1_SEQ)
+        ann.set("BC2", BC2_SEQ)
+        ann.set("BC3", BC3_SEQ)
+        bad = (ann.render(), "A" * 40, "I" * 40)
+        extractor = build_extractor([bad])
+
+        with pytest.raises(ValueError, match="BC1_POS"):
+            extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=True)
