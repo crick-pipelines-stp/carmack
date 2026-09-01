@@ -1,4 +1,4 @@
-"""Unit tests for the read-annotation value object (ST1 of issue #14)."""
+"""Unit tests for the read-annotation value object."""
 
 import ast
 import unittest

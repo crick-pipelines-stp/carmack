@@ -1,4 +1,4 @@
-"""Read-annotation value object for FASTQ headers (ST1 of issue #14)."""
+"""Read-annotation value object for FASTQ headers."""
 
 from dataclasses import dataclass, field
 

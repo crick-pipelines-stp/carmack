@@ -1,4 +1,4 @@
-"""Unit tests for the chemistry annotation helpers (ST2 of issue #14)."""
+"""Unit tests for the chemistry annotation helpers."""
 
 import ast
 import unittest

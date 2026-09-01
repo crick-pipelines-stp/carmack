@@ -1,4 +1,4 @@
-"""Tests for UMI normalisation (SI-4 of the UMI epic).
+"""Tests for UMI normalisation.
 
 The normaliser forces every raw UMI onto a single canonical length ``x`` so that
 umi_tools' equal-length clustering can run: raw UMIs inside the length window are

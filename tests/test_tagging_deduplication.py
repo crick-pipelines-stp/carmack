@@ -162,7 +162,7 @@ class TestTagDedup:
             assert all([count == 10 for count in unique_counter.values()])
 
     # ------------------------------------------------------------------ #
-    # UMI-aware tag/dedup (SI-5)
+    # UMI-aware tag/dedup
     # ------------------------------------------------------------------ #
     def _write_umi_map(self, path, rows):
         """
