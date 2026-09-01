@@ -1,4 +1,4 @@
-"""Tests for UMI correction (SI-4 of the UMI epic).
+"""Tests for UMI correction.
 
 The corrector groups extracted UMIs by their full cell barcode, normalises each
 raw UMI to a fixed length and collapses directional variants of one molecule
@@ -37,6 +37,11 @@ class TestUmiCorrectorClustering:
         assert_that(mapping["v1"].ur).is_equal_to("AAAAAAAT")
         assert_that(stats.distinct_corrected_umis).is_equal_to(1)
         assert_that(stats.umi_collapses).is_equal_to(1)
+        # Only v1 was reassigned to a different representative.
+        assert_that(stats.corrections_applied).is_equal_to(1)
+        assert_that(stats.assigned_reads).is_equal_to(4)
+        assert_that(stats.num_cell_barcodes).is_equal_to(1)
+        assert_that(stats.mean_reads_per_umi).is_equal_to(4.0)
 
     def test_distance_two_stays_separate(self) -> None:
         specs = [
@@ -49,6 +54,8 @@ class TestUmiCorrectorClustering:
         assert_that({c.ub for c in mapping.values()}).is_equal_to({"AAAAAAAA", "AAAAAATT"})
         assert_that(stats.distinct_corrected_umis).is_equal_to(2)
         assert_that(stats.umi_collapses).is_equal_to(0)
+        # Every read is its own representative; nothing was reassigned.
+        assert_that(stats.corrections_applied).is_equal_to(0)
 
 
 class TestUmiCorrectorFilters:
@@ -81,7 +88,9 @@ class TestUmiCorrectorFilters:
 
         assert_that(mapping).is_empty()
         assert_that(stats.dropped_raw_n).is_equal_to(1)
-        assert_that(stats.corrected_reads).is_equal_to(0)
+        assert_that(stats.assigned_reads).is_equal_to(0)
+        # A group whose reads were all dropped is not counted.
+        assert_that(stats.num_cell_barcodes).is_equal_to(0)
 
     def test_swapping_the_sentinel_changes_the_drop_rule(
         self, monkeypatch: pytest.MonkeyPatch
@@ -113,16 +122,20 @@ class TestUmiCorrectorBarcodeIsolation:
         assert_that(mapping["y1"].barcode).is_equal_to("B2")
         assert_that(stats.distinct_corrected_umis).is_equal_to(2)
         assert_that(stats.umi_collapses).is_equal_to(0)
+        assert_that(stats.num_cell_barcodes).is_equal_to(2)
 
 
 class TestUmiCorrectorPaddingAndUr:
     """Padded representatives retain trailing sentinels; ``UR`` stays faithful."""
 
     def test_padded_representative_retains_trailing_sentinel(self) -> None:
-        mapping, _ = UmiCorrector(8, 1).correct(records_from([("s1", "BC", "AAAAAAA")]))
+        mapping, stats = UmiCorrector(8, 1).correct(records_from([("s1", "BC", "AAAAAAA")]))
 
         assert_that(mapping["s1"].ub).is_equal_to("AAAAAAAN")
         assert_that(mapping["s1"].ur).is_equal_to("AAAAAAA")
+        # Length-normalisation alone is not a correction: the padded read is its
+        # own representative, so nothing was reassigned.
+        assert_that(stats.corrections_applied).is_equal_to(0)
 
     def test_ur_is_faithful_raw_and_ub_is_length_x(self) -> None:
         mapping, _ = UmiCorrector(8, 1).correct(records_from([("t", "BC", "AAAAAAA")]))
@@ -138,7 +151,8 @@ class TestUmiCorrectorStats:
         mapping, stats = UmiCorrector(8, 1).correct([])
 
         assert_that(mapping).is_empty()
-        assert_that(stats.corrected_reads).is_equal_to(0)
+        assert_that(stats.assigned_reads).is_equal_to(0)
+        assert_that(stats.mean_reads_per_umi).is_equal_to(0.0)
 
     def test_stats_reconcile(self) -> None:
         specs = [
@@ -150,9 +164,10 @@ class TestUmiCorrectorStats:
         mapping, stats = UmiCorrector(8, 1).correct(records_from(specs))
 
         assert_that(
-            stats.corrected_reads + stats.dropped_raw_n + stats.dropped_off_length
+            stats.assigned_reads + stats.dropped_raw_n + stats.dropped_off_length
         ).is_equal_to(4)
-        assert_that(stats.corrected_reads).is_equal_to(len(mapping))
+        assert_that(stats.assigned_reads).is_equal_to(len(mapping))
+        assert_that(stats.corrections_applied).is_less_than_or_equal_to(stats.assigned_reads)
 
     def test_corrected_umi_is_immutable(self) -> None:
         corrected = CorrectedUmi(barcode="BC", ur="AAAAAAAA", ub="AAAAAAAA")

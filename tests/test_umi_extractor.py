@@ -1,4 +1,4 @@
-"""Tests for the extract-umis module (SI-3 of the UMI epic).
+"""Tests for the extract-umis module.
 
 The extractor reads an annotated R1 FASTQ, extracts the raw UMI lying between
 its left anchor (BC1, read from the header ``BC1_POS`` tag) and the downstream
@@ -19,7 +19,8 @@ import carmack.__main__
 from carmack.chemistry.annotation import format_span, parse_span, position_key
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.io.read_annotation import ReadAnnotation
-from carmack.umi.umi_extractor import UmiExtractionStats, UmiExtractor
+from carmack.umi.umi_extractor import UmiExtractor
+from carmack.umi.umi_reporting import CorrectionStats, UmiExtractionStats
 
 CHEMISTRY = "carmack_custom_seq_1_0"
 DUMMY_FASTQ = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
@@ -373,6 +374,45 @@ class TestUmiExtractionStatsReport:
         assert_that(report).contains("Total reads: 0")
         assert_that(report).contains("0.00%")
 
+    def test_report_includes_anchor_run_distribution(self) -> None:
+        stats = UmiExtractionStats(
+            total_reads=3,
+            accepted=3,
+            missing_left_anchor=0,
+            no_polyg_anchor=0,
+            length_counts={8: 3},
+            homopolymer_base="G",
+            homopolymer_run_counts={3: 1, 4: 2},
+        )
+        report = stats.get_report()
+        assert_that(report).contains("# Anchor G-run Length Distribution")
+        assert_that(report).contains("\t3\t1")
+        assert_that(report).contains("\t4\t2")
+
+    def test_correction_report_includes_new_metrics(self) -> None:
+        stats = UmiExtractionStats(
+            total_reads=4,
+            accepted=4,
+            missing_left_anchor=0,
+            no_polyg_anchor=0,
+            length_counts={8: 4},
+            correction=CorrectionStats(
+                assigned_reads=4,
+                corrections_applied=1,
+                num_cell_barcodes=1,
+                dropped_raw_n=0,
+                dropped_off_length=0,
+                distinct_corrected_umis=1,
+                umi_collapses=3,
+            ),
+        )
+        report = stats.get_report()
+        assert_that(report).contains("# UMI Correction Stats")
+        assert_that(report).contains("Cell barcodes (groups): 1")
+        assert_that(report).contains("Reads assigned UB: 4")
+        assert_that(report).contains("Corrections applied (UB != raw): 1")
+        assert_that(report).contains("Mean reads per UMI: 4.00")
+
 
 class TestExtractUmisCli:
     """CLI wiring for the extract-umis command."""
@@ -436,7 +476,12 @@ class TestExtractUmisCorrection:
         assert_that(by_id["v1"][2]).is_equal_to("ACTACTTC")  # UR = faithful raw
         assert_that(by_id["v1"][3]).is_equal_to("ACTACTAC")  # UB = highest-count rep
         assert_that({row[3] for row in rows}).is_equal_to({"ACTACTAC"})
-        assert_that(stats.correction.corrected_reads).is_equal_to(4)
+        assert_that(stats.correction.assigned_reads).is_equal_to(4)
+        # Only v1 (ACTACTTC) was reassigned to the ACTACTAC representative.
+        assert_that(stats.correction.corrections_applied).is_equal_to(1)
+        # The anchor run-length distribution is recorded (all reads use a 4-G run).
+        assert_that(stats.homopolymer_base).is_equal_to("G")
+        assert_that(stats.homopolymer_run_counts).is_equal_to({4: 4})
 
     def test_raw_true_writes_no_map_and_no_ub(self, build_extractor, tmp_path) -> None:
         records = [make_read("a", "ACTACTAC", 4)]
@@ -480,7 +525,10 @@ class TestExtractUmisCorrection:
 
         report = (tmp_path / "out.umi_stats.txt").read_text()
         assert_that(report).contains("# UMI Correction Stats")
-        assert_that(report).contains("Corrected reads: 2")
+        assert_that(report).contains("Cell barcodes (groups): 1")
+        assert_that(report).contains("Reads assigned UB: 2")
+        # Two identical UMIs: both are the representative, so nothing is reassigned.
+        assert_that(report).contains("Corrections applied (UB != raw): 0")
 
     def test_raw_report_omits_correction_section(self, build_extractor, tmp_path) -> None:
         records = [make_read("a", "ACTACTAC", 4)]

@@ -1,4 +1,4 @@
-"""UMI correction: normalise + directional clustering (SI-4 of the UMI epic).
+"""UMI correction: normalise + directional clustering.
 
 Step 2 of UMI handling, running after raw extraction and skipped by ``--raw``.
 Reads are grouped by their full cell barcode; within each group the raw UMIs are
@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from umi_tools import UMIClusterer
 
 from carmack.umi.umi_normalizer import UMI_PAD_CHAR, normalize_umi
+from carmack.umi.umi_reporting import CorrectionStats
 
 
 @dataclass(frozen=True)
@@ -50,32 +51,6 @@ class CorrectedUmi:
     barcode: str
     ur: str
     ub: str
-
-
-@dataclass(frozen=True)
-class CorrectionStats:
-    """Reconciling tallies for a correction run.
-
-    ``corrected_reads + dropped_raw_n + dropped_off_length`` always equals the
-    number of input records.
-
-    Attributes:
-        corrected_reads: Reads that survived filtering and received a ``UB``.
-        dropped_raw_n: Reads dropped because their raw UMI already contained the
-            padding sentinel.
-        dropped_off_length: Reads dropped because their raw UMI length fell
-            outside the ``[x - tol, x + tol]`` window.
-        distinct_corrected_umis: Number of distinct ``(barcode, UB)`` molecules
-            surviving correction.
-        umi_collapses: Number of distinct normalised UMIs merged into another
-            representative by clustering.
-    """
-
-    corrected_reads: int
-    dropped_raw_n: int
-    dropped_off_length: int
-    distinct_corrected_umis: int
-    umi_collapses: int
 
 
 class UmiCorrector:
@@ -113,6 +88,8 @@ class UmiCorrector:
             groups[record.barcode].append(record)
 
         mapping: dict[str, CorrectedUmi] = {}
+        corrections_applied = 0
+        num_cell_barcodes = 0
         dropped_raw_n = 0
         dropped_off_length = 0
         distinct_corrected_umis = 0
@@ -136,17 +113,21 @@ class UmiCorrector:
             if not counts:
                 continue
 
+            num_cell_barcodes += 1
             representative = self.build_representatives(counts)
             distinct_corrected_umis += len(set(representative.values()))
             umi_collapses += len(counts) - len(set(representative.values()))
 
             for record, key in survivors:
-                mapping[record.read_id] = CorrectedUmi(
-                    barcode=barcode, ur=record.raw_umi, ub=representative[key]
-                )
+                ub = representative[key]
+                if ub != key.decode():
+                    corrections_applied += 1
+                mapping[record.read_id] = CorrectedUmi(barcode=barcode, ur=record.raw_umi, ub=ub)
 
         stats = CorrectionStats(
-            corrected_reads=len(mapping),
+            assigned_reads=len(mapping),
+            corrections_applied=corrections_applied,
+            num_cell_barcodes=num_cell_barcodes,
             dropped_raw_n=dropped_raw_n,
             dropped_off_length=dropped_off_length,
             distinct_corrected_umis=distinct_corrected_umis,

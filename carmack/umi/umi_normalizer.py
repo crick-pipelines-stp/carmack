@@ -1,4 +1,4 @@
-"""UMI length normalisation (SI-4 of the UMI epic).
+"""UMI length normalisation.
 
 umi_tools' clustering requires every UMI in one call to be the same length, but
 extraction yields raw UMIs across the tolerance window ``[x - tol, x + tol]``.
