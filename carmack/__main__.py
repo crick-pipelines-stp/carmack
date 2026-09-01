@@ -18,6 +18,7 @@ from carmack.cell_caller.cell_caller import CellCaller
 from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.split_reads.split_reads import BamSplitter
 from carmack.tag_dedup.tag_dedup import TagDedup
+from carmack.umi.umi_extractor import UmiExtractor
 from carmack.utils import format_duration, get_bai, get_cpu_count
 
 # Set up logging as the root logger
@@ -33,6 +34,7 @@ click.rich_click.COMMAND_GROUPS = {
             "name": "Commands for users",
             "commands": [
                 "extract-barcodes",
+                "extract-umis",
                 "fastq-filter",
                 "bam-tag-deduplicate",
                 "call-cells",
@@ -151,6 +153,27 @@ def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count, fast):
     log.info("Extracting barcodes from FASTQ file...")
     extractor = BarcodeExtractor(fastq, chemistry, n_workers=cpu_count, fast=fast)
     extractor.extract_barcodes(output_dir, prefix)
+
+
+@carmack_cli.command("extract-umis")
+@click.argument("r1_annotated_fastq", required=True, nargs=1, type=click.Path(exists=True), metavar="<r1_annotated_fastq>")
+@click.option("-c", "--chemistry", required=True, type=str, help="Chemistry name for UMI layout")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+@click.option("--raw", is_flag=True, default=False, help="Stop after raw extraction; do not correct UMIs.")
+def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix, raw):
+    """
+    Extract raw UMIs from an annotated R1 FASTQ.
+
+    For each annotated read the raw UMI is extracted between its left anchor (BC1, read from the
+    header) and the downstream poly-G run, then annotated onto the read with UMI / UMI_POS tags. The
+    UMI length distribution is written to a stats report. With --raw this is the terminal step; UMI
+    correction is not performed.
+    """
+
+    log.info("Extracting UMIs from annotated FASTQ file...")
+    extractor = UmiExtractor(r1_annotated_fastq, chemistry)
+    extractor.extract_umis(output_dir, prefix, raw=raw)
 
 
 @carmack_cli.command("fastq-filter")
