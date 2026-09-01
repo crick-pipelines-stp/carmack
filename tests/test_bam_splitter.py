@@ -32,7 +32,7 @@ class TestBamSplitter:
         barcodes_counter = {}
         with pysam.AlignmentFile(BAM_PATH, "rb", index_filename=BAI_PATH) as bam:
             for read in bam:
-                barcode = read.get_tag("BC")
+                barcode = read.get_tag("CB")
                 if barcode not in barcodes_counter:
                     barcodes_counter[barcode] = 0
                 barcodes_counter[barcode] += 1
@@ -69,7 +69,7 @@ class TestBamSplitter:
                 with pysam.AlignmentFile(file, "rb") as bam:
                     read_counter = 0
                     for read in bam:
-                        assert read.get_tag("BC") == barcode  # Check if barcodes match
+                        assert read.get_tag("CB") == barcode  # Check if barcodes match
                         read_counter += 1
                     # Check if number of reads match
                     assert read_counter == barcodes[barcode]  # bam.count() requires index file

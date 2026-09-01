@@ -60,12 +60,12 @@ class TagDedup:
             for read in untagged_bam.fetch():
                 read_name = read.query_name
 
-                # Check if BC tag already exists
-                if read.has_tag("BC"):
+                # Check if CB tag already exists
+                if read.has_tag("CB"):
                     log.error(
-                        f"Input BAM file read with BC tag detected (read name: {read_name}). Exiting."
+                        f"Input BAM file read with CB tag detected (read name: {read_name}). Exiting."
                     )
-                    raise ValueError("Input BAM file reads already has 'BC' tags.")
+                    raise ValueError("Input BAM file reads already has 'CB' tags.")
 
                 # Log unpaired reads
                 if not read.is_paired:
@@ -81,7 +81,13 @@ class TagDedup:
 
                 # Get barcode and tag read
                 barcode = bc_dict[read_name]
-                read.set_tag("BC", barcode)
+                read.set_tag("CB", barcode)
+                # CR (raw cell barcode) currently mirrors CB: tag_dedup only
+                # receives the corrected/matched barcode from bc_dict, so no
+                # distinct raw cell barcode is available yet. Set CR to the same
+                # value until a raw barcode is carried through the read->barcode
+                # map (a future enhancement).
+                read.set_tag("CR", barcode)
                 log.debug(
                     f"Tagged read {read_name} (paired: {read.is_paired})"
                     f" with barcode {barcode}"

@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 class BamSplitter:
     """
-    Class that splits a BAM file into two separate files based on barcode (BC) tag value.
+    Class that splits a BAM file into two separate files based on barcode (CB) tag value.
     """
 
     def __init__(self, bam: str, bai: Optional[str]) -> None:
@@ -27,13 +27,13 @@ class BamSplitter:
         """
         Get the barcode tag value from a read.
         """
-        if not read.has_tag("BC"):
-            raise ValueError("Read does not have a barcode tag (BC).")
+        if not read.has_tag("CB"):
+            raise ValueError("Read does not have a barcode tag (CB).")
 
-        barcode = read.get_tag("BC")
+        barcode = read.get_tag("CB")
 
         if len(barcode) == 0:
-            raise ValueError("Barcode tag (BC) is empty.")
+            raise ValueError("Barcode tag (CB) is empty.")
 
         return barcode
 
@@ -102,11 +102,11 @@ class BamSplitter:
 
     def split(self, output_dir: str, prefix: Optional[str] = None, cpu_count: int = 1) -> None:
         """
-        Split barcode-tagged BAM file into separate files based on barcode tag (BC) value.
+        Split barcode-tagged BAM file into separate files based on barcode tag (CB) value.
 
         The output files are saved to the output directory with corresponding sorted BAM and index
         BAI files.
-        Each file is named according to the barcode tag (BC) value.
+        Each file is named according to the barcode tag (CB) value.
         """
         # Set prefix, if non specified
         if prefix is None:

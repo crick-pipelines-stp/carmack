@@ -87,8 +87,15 @@ class TestTagDedup:
         ## Check the BAM file
         with pysam.AlignmentFile(files["bam_tagged_file"], "rb") as bam:
             for read in bam:
-                assert read.has_tag("BC")
+                assert read.has_tag("CB")
                 assert read.has_tag("DU")
+
+                # CR mirrors CB until a distinct raw cell barcode is plumbed through.
+                assert read.has_tag("CR")
+                assert read.get_tag("CR") == read.get_tag("CB")
+
+                # The legacy BC SAM tag must no longer be written.
+                assert not read.has_tag("BC")
 
     @pytest.mark.parametrize("bam_path, bai_path, csv_path", zip(BAM_PATHS, BAI_PATHS, CSV_PATHS))
     def test_tag_dedup(self, tmpdir, bam_path, bai_path, csv_path):
@@ -116,12 +123,12 @@ class TestTagDedup:
         with pysam.AlignmentFile(files["bam_tagged_file"], "rb") as bam_tagged:
             for read in bam_tagged:
                 ### Check for presence of tags
-                assert read.has_tag("BC")
+                assert read.has_tag("CB")
                 assert read.has_tag("DU")
 
                 ### Check if the barcodes are correctly assigned
                 read_name = read.query_name
-                barcode = read.get_tag("BC")
+                barcode = read.get_tag("CB")
                 assert bc_dict[read_name] == barcode
 
                 if read.get_tag("DU") == 0:
@@ -131,7 +138,7 @@ class TestTagDedup:
         with pysam.AlignmentFile(files["bam_dedup_file"], "rb") as bam_dedup:
             for read in bam_dedup:
                 ### Check for presence of tags
-                assert read.has_tag("BC")
+                assert read.has_tag("CB")
                 assert read.has_tag("DU")
 
                 ### Check if all DU==0
@@ -168,7 +175,7 @@ class TestTagDedup:
 
     def _dedup_summary(self, bam_path):
         """
-        Summarise a dedup BAM into comparable (name, start, tlen, BC, DU) tuples.
+        Summarise a dedup BAM into comparable (name, start, tlen, CB, DU) tuples.
         """
         summary = []
         with pysam.AlignmentFile(bam_path, "rb") as bam:
@@ -178,7 +185,7 @@ class TestTagDedup:
                         read.query_name,
                         read.reference_start,
                         read.template_length,
-                        read.get_tag("BC"),
+                        read.get_tag("CB"),
                         int(read.get_tag("DU")),
                     )
                 )
@@ -326,7 +333,7 @@ class TestTagDedup:
             for read in bam:
                 if read.query_name == READ05:
                     seen_read05 = True
-                    assert_that(read.has_tag("BC")).is_true()
+                    assert_that(read.has_tag("CB")).is_true()
                     assert_that(read.has_tag("DU")).is_true()
                     assert_that(read.has_tag("UR")).is_false()
                     assert_that(read.has_tag("UB")).is_false()
