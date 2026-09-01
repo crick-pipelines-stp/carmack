@@ -2,7 +2,12 @@
 Carmack Custom Sequencing 1.0 chemistry definition.
 
 Read structure (5' to 3'):
-BC3 (10bp) -> PRIMER_C (22bp) -> BC2 (10bp) -> PRIMER_A (22bp) -> BC1 (10bp) -> ...
+BC3 (10bp) -> PRIMER_C (22bp) -> BC2 (10bp) -> PRIMER_A (22bp) -> BC1 (10bp)
+-> UMI (8bp, +/-1) -> POLYG (homopolymer, min run 3) -> TGIDX (8bp)
+
+The UMI, poly-G and TGIDX components carry no known sequence, so barcode
+matching and spacer checks ignore them; they model the post-barcode layout for
+downstream UMI extraction only.
 """
 
 import logging
@@ -23,6 +28,13 @@ PRIMER_C = "TGTGTATAAGGACCTCGTTGCC"
 PRIMER_A = "ATGGAAGCCGACGAATTAGACC"
 
 BC_CHUNK_LEN = 10
+
+# UMI / poly-G anchor / TGIDX layout following BC1 (5' to 3').
+UMI_LENGTH = 8
+UMI_LENGTH_TOLERANCE = 1
+POLYG_BASE = "G"
+POLYG_MIN_RUN = 3
+TGIDX_LENGTH = 8
 
 # Barcode file paths
 BC1_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
@@ -71,6 +83,19 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
                 sequence=PRIMER_A,
             ),
             ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=BC_CHUNK_LEN),
+            ReadComponent(
+                name="UMI",
+                type=ReadComponentType.UMI,
+                length=UMI_LENGTH,
+                length_tolerance=UMI_LENGTH_TOLERANCE,
+            ),
+            ReadComponent(
+                name="POLYG",
+                type=ReadComponentType.HOMOPOLYMER,
+                homopolymer_base=POLYG_BASE,
+                min_run=POLYG_MIN_RUN,
+            ),
+            ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=TGIDX_LENGTH),
         ]
 
     @cached_property

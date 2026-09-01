@@ -6,7 +6,14 @@ import pytest
 from assertpy import assert_that
 
 from carmack.chemistry.chemistry_base import ChemistryBase
-from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ChemistryCarmackCustomSeq10
+from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
+    POLYG_BASE,
+    POLYG_MIN_RUN,
+    TGIDX_LENGTH,
+    UMI_LENGTH,
+    UMI_LENGTH_TOLERANCE,
+    ChemistryCarmackCustomSeq10,
+)
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0_primd import (
     ChemistryCarmackCustomSeq10PrimD,
 )
@@ -654,10 +661,10 @@ class TestChemistryBase:
 
     def test_total_read_structure_length(self, chemistry: ChemistryBase):
         """Test that total read structure length is calculated correctly."""
-        total_length = sum(comp.length for comp in chemistry.read_structure)
+        total_length = sum(
+            comp.length for comp in chemistry.read_structure if comp.length is not None
+        )
 
-        # Calculate expected length from components
-        expected_length = len(chemistry.read_structure) * 10  # approximate
         assert_that(total_length).is_greater_than(0)
 
     # ===== Tests for edge cases =====
@@ -727,19 +734,95 @@ class TestChemistryCarmackCustomSeq10:
         known_seqs = chemistry.read_structure.get_known_sequences()
         assert_that(known_seqs).contains_key("PRIMER_C", "PRIMER_A")
 
+    def test_read_structure_appends_umi_polyg_tgidx(self, chemistry: ChemistryCarmackCustomSeq10):
+        """Read structure ends with the UMI, poly-G and TGIDX components after BC1."""
+        actual_order = [comp.name for comp in chemistry.read_structure]
+        assert_that(actual_order).is_equal_to(
+            ["BC3", "PRIMER_C", "BC2", "PRIMER_A", "BC1", "UMI", "POLYG", "TGIDX"]
+        )
+
+    def test_umi_polyg_tgidx_component_parameters(self, chemistry: ChemistryCarmackCustomSeq10):
+        """The appended components carry the confirmed UMI/poly-G/TGIDX parameters."""
+        read_structure = chemistry.read_structure
+
+        umi = read_structure.get_component_by_name("UMI")
+        assert_that(umi.type).is_equal_to(ReadComponentType.UMI)
+        assert_that(umi.length).is_equal_to(8)
+        assert_that(umi.length_tolerance).is_equal_to(1)
+
+        polyg = read_structure.get_component_by_name("POLYG")
+        assert_that(polyg.type).is_equal_to(ReadComponentType.HOMOPOLYMER)
+        assert_that(polyg.homopolymer_base).is_equal_to("G")
+        assert_that(polyg.min_run).is_equal_to(3)
+        assert_that(polyg.length).is_none()
+
+        tgidx = read_structure.get_component_by_name("TGIDX")
+        assert_that(tgidx.type).is_equal_to(ReadComponentType.TGIDX)
+        assert_that(tgidx.length).is_equal_to(8)
+
+    def test_module_constants(self):
+        """The magic numbers are exposed as discoverable module constants."""
+        assert_that(UMI_LENGTH).is_equal_to(8)
+        assert_that(UMI_LENGTH_TOLERANCE).is_equal_to(1)
+        assert_that(POLYG_BASE).is_equal_to("G")
+        assert_that(POLYG_MIN_RUN).is_equal_to(3)
+        assert_that(TGIDX_LENGTH).is_equal_to(8)
+
+    def test_umi_component_accessor(self, chemistry: ChemistryCarmackCustomSeq10):
+        """umi_component() returns the UMI component."""
+        umi = chemistry.umi_component()
+        assert_that(umi).is_not_none()
+        assert_that(umi.name).is_equal_to("UMI")
+        assert_that(umi.type).is_equal_to(ReadComponentType.UMI)
+
+    def test_umi_left_anchor_is_bc1(self, chemistry: ChemistryCarmackCustomSeq10):
+        """The UMI left anchor is BC1 and it is an anchor component."""
+        left_anchor = chemistry.umi_left_anchor()
+        assert_that(left_anchor).is_not_none()
+        assert_that(left_anchor.name).is_equal_to("BC1")
+        assert_that(left_anchor.type).is_equal_to(ReadComponentType.BARCODE)
+        assert_that(left_anchor.is_anchor).is_true()
+
+    def test_umi_right_anchor_is_polyg(self, chemistry: ChemistryCarmackCustomSeq10):
+        """The UMI right anchor is the poly-G homopolymer and it is an anchor."""
+        right_anchor = chemistry.umi_right_anchor()
+        assert_that(right_anchor).is_not_none()
+        assert_that(right_anchor.name).is_equal_to("POLYG")
+        assert_that(right_anchor.type).is_equal_to(ReadComponentType.HOMOPOLYMER)
+        assert_that(right_anchor.is_anchor).is_true()
+
+    def test_chemistry_exposes_umi_and_polyg_parameters(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ):
+        """UMI length/tolerance and poly-G base/min-run are exposed via the accessors."""
+        assert_that(chemistry.umi_component().length).is_equal_to(8)
+        assert_that(chemistry.umi_component().length_tolerance).is_equal_to(1)
+        assert_that(chemistry.umi_right_anchor().homopolymer_base).is_equal_to("G")
+        assert_that(chemistry.umi_right_anchor().min_run).is_equal_to(3)
+
+    def test_supports_umi_extraction_true(self, chemistry: ChemistryCarmackCustomSeq10):
+        """custom_seq_1_0 supports UMI extraction (UMI anchored on its left by BC1)."""
+        assert_that(chemistry.supports_umi_extraction()).is_true()
+
     def test_start_positions(self, chemistry: ChemistryCarmackCustomSeq10):
         """Test that the start positions of read components are computed correctly."""
         read_structure = chemistry.read_structure
-        known_seqs = read_structure.get_known_sequences()
         expected_starts = {
             "BC3": 0,
             "PRIMER_C": 10,
-            "BC2": 10 + len(known_seqs["PRIMER_C"]),
-            "PRIMER_A": 20 + len(known_seqs["PRIMER_C"]),
-            "BC1": 20 + len(known_seqs["PRIMER_C"]) + len(known_seqs["PRIMER_A"]),
+            "BC2": 32,
+            "PRIMER_A": 42,
+            "BC1": 64,
+            "UMI": 74,
+            "POLYG": None,
+            "TGIDX": None,
         }
         for component in read_structure:
             assert_that(component.start).is_equal_to(expected_starts[component.name])
+
+    def test_barcode_whitelists_keys_unchanged(self, chemistry: ChemistryCarmackCustomSeq10):
+        """Appending UMI/poly-G/TGIDX leaves the barcode whitelists at BC1/BC2/BC3 only."""
+        assert_that(set(chemistry.barcode_whitelists.keys())).is_equal_to({"BC1", "BC2", "BC3"})
 
     def test_load_barcode_whitelist(self, chemistry: ChemistryCarmackCustomSeq10):
         """Test loading barcode whitelists."""
@@ -775,7 +858,7 @@ class TestChemistryCarmackCustomSeq10PrimD:
         read_structure = chemistry.read_structure
         actual_order = [comp.name for comp in read_structure]
         assert_that(actual_order).is_equal_to(
-            ["PRIMER_D", "BC3", "PRIMER_C", "BC2", "PRIMER_A", "BC1"]
+            ["PRIMER_D", "BC3", "PRIMER_C", "BC2", "PRIMER_A", "BC1", "UMI", "POLYG", "TGIDX"]
         )
 
         primer_d = read_structure.get_component_by_name("PRIMER_D")
@@ -783,18 +866,39 @@ class TestChemistryCarmackCustomSeq10PrimD:
         assert_that(primer_d.length).is_equal_to(22)
         assert_that(primer_d.sequence).is_none()
 
+    def test_inherits_umi_polyg_tgidx(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
+        """The PRIMER_D variant inherits the UMI/poly-G/TGIDX tail unchanged."""
+        base = ChemistryCarmackCustomSeq10()
+
+        for name in ("UMI", "POLYG", "TGIDX"):
+            variant_comp = chemistry.read_structure.get_component_by_name(name)
+            base_comp = base.read_structure.get_component_by_name(name)
+            assert_that(variant_comp.type).is_equal_to(base_comp.type)
+            assert_that(variant_comp.length).is_equal_to(base_comp.length)
+            assert_that(variant_comp.length_tolerance).is_equal_to(base_comp.length_tolerance)
+            assert_that(variant_comp.homopolymer_base).is_equal_to(base_comp.homopolymer_base)
+            assert_that(variant_comp.min_run).is_equal_to(base_comp.min_run)
+
+        assert_that(chemistry.umi_left_anchor().name).is_equal_to("BC1")
+        assert_that(chemistry.umi_right_anchor().name).is_equal_to("POLYG")
+
+    def test_supports_umi_extraction_true(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
+        """The PRIMER_D variant also supports UMI extraction."""
+        assert_that(chemistry.supports_umi_extraction()).is_true()
+
     def test_start_positions(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
         """Start positions account for the prepended PRIMER_D."""
         read_structure = chemistry.read_structure
-        known_seqs = read_structure.get_known_sequences()
-        primer_d_len = read_structure.get_component_by_name("PRIMER_D").length
         expected_starts = {
             "PRIMER_D": 0,
-            "BC3": primer_d_len,
-            "PRIMER_C": primer_d_len + 10,
-            "BC2": primer_d_len + 10 + len(known_seqs["PRIMER_C"]),
-            "PRIMER_A": primer_d_len + 20 + len(known_seqs["PRIMER_C"]),
-            "BC1": primer_d_len + 20 + len(known_seqs["PRIMER_C"]) + len(known_seqs["PRIMER_A"]),
+            "BC3": 22,
+            "PRIMER_C": 32,
+            "BC2": 54,
+            "PRIMER_A": 64,
+            "BC1": 86,
+            "UMI": 96,
+            "POLYG": None,
+            "TGIDX": None,
         }
         for component in read_structure:
             assert_that(component.start).is_equal_to(expected_starts[component.name])
@@ -897,6 +1001,16 @@ class TestChemistryHydrop:
         for bc_name in barcode_names:
             assert_that(whitelists).contains_key(bc_name)
             assert_that(len(whitelists[bc_name])).is_equal_to(96)
+
+    def test_umi_component_is_none(self, chemistry: ChemistryHydrop):
+        """A barcode-only chemistry has no UMI component."""
+        assert_that(chemistry.umi_component()).is_none()
+        assert_that(chemistry.umi_left_anchor()).is_none()
+        assert_that(chemistry.umi_right_anchor()).is_none()
+
+    def test_supports_umi_extraction_false(self, chemistry: ChemistryHydrop):
+        """The barcode-only hydrop chemistry does not support UMI extraction (no raise)."""
+        assert_that(chemistry.supports_umi_extraction()).is_false()
 
     def test_construct_full_barcode_hydrop(self, chemistry: ChemistryHydrop):
         """Test full barcode construction for hydrop chemistry."""
