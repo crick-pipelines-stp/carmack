@@ -2,7 +2,7 @@ import csv
 import logging
 import os
 from contextlib import ExitStack
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import pysam
 
@@ -17,22 +17,32 @@ class TagDedup:
     duplicates.
     """
 
-    def __init__(self, bam: str, bai: str, bc_valid_csv: str) -> None:
+    def __init__(self, bam: str, bai: str, bc_valid_csv: str, umi_map: str | None = None) -> None:
         self.bam = bam
         self.bai = bai
         self.bc_valid_csv = bc_valid_csv
+        self.umi_map = umi_map
 
         log.debug(
             f"TagDedup object created with BAM: {bam}, BAI: {bai},"
-            f" and valid barcodes CSV: {bc_valid_csv}"
+            f" valid barcodes CSV: {bc_valid_csv}, and UMI map: {umi_map}"
         )
 
     def _tag(
-        self, untagged_bam: pysam.AlignmentFile, tagged_bam: pysam.AlignmentFile, bc_dict: dict
+        self,
+        untagged_bam: pysam.AlignmentFile,
+        tagged_bam: pysam.AlignmentFile,
+        bc_dict: dict,
+        umi_dict: dict[str, tuple[str, str]] | None = None,
     ) -> None:
         """
         Tag reads in untagged BAM file with barcode, duplicates and write to
         tagged BAM file.
+
+        When ``umi_dict`` is provided, reads present in the map are additionally
+        tagged with their raw (``UR``) and corrected (``UB``) UMI and the
+        corrected UMI is used as an extra deduplication dimension. When
+        ``umi_dict`` is ``None`` the behaviour is unchanged.
         """
         log.info(
             f"Starting to tag reads in BAM file. Total reads to process: "
@@ -40,8 +50,8 @@ class TagDedup:
         )
         tag_count: int = 0
 
-        # [(chromosome, start, template_len, barcode), ...]
-        dup_index: List[Tuple[str, int, int, str]] = []
+        # [(chromosome, start, template_len, barcode[, corrected_umi]), ...]
+        dup_index: list[tuple] = []
 
         total_reads = untagged_bam.count()
 
@@ -77,18 +87,34 @@ class TagDedup:
                     f" with barcode {barcode}"
                 )
 
+                # Tag corrected UMI (UR/UB) when a UMI map is provided. Reads
+                # absent from the map fall back to a None corrected UMI, so they
+                # deduplicate exactly as in non-UMI mode.
+                ub: str | None = None
+                if umi_dict is not None and read_name in umi_dict:
+                    ur, ub = umi_dict[read_name]
+                    read.set_tag("UR", ur)
+                    read.set_tag("UB", ub)
+
                 # Tag duplicates
                 chr = read.reference_name
                 start = read.reference_start
                 seq_len = read.template_length  # Don't want absolute value
 
-                if (chr, start, seq_len, barcode) in dup_index:
-                    # Only a duplicate if chr, start, seq_len and barcode match
+                # Without a UMI map the dedup key is unchanged; with one the
+                # corrected UMI (UB) becomes an extra dedup dimension.
+                if umi_dict is None:
+                    dedup_key: tuple = (chr, start, seq_len, barcode)
+                else:
+                    dedup_key = (chr, start, seq_len, barcode, ub)
+
+                if dedup_key in dup_index:
+                    # Only a duplicate if the full dedup key matches
                     log.debug(f"Duplicate read detected: {read_name}")
                     read.set_tag("DU", True)
                 else:
                     read.set_tag("DU", False)
-                    dup_index.append((chr, start, seq_len, barcode))
+                    dup_index.append(dedup_key)
 
                 # Write tagged read to tagged BAM file
                 tagged_bam.write(read)
@@ -170,6 +196,15 @@ class TagDedup:
             bc_dict = {line[0].split(" ", 1)[0]: line[1] for line in csv_reader}
         log.debug(f"Loaded {len(bc_dict)} valid barcodes.")
 
+        # Read the corrected UMI map, if provided. Fixed upstream contract:
+        # TAB-separated, no header, columns read_id, barcode, UR, UB.
+        umi_dict: dict[str, tuple[str, str]] | None = None
+        if self.umi_map is not None:
+            with open(self.umi_map, "r") as umi_map_file:
+                umi_reader = csv.reader(umi_map_file, delimiter="\t")
+                umi_dict = {row[0]: (row[2], row[3]) for row in umi_reader}
+            log.debug(f"Loaded {len(umi_dict)} UMI map entries.")
+
         # Tag and write to tagged BAM file
         with ExitStack() as stack:
             input_bam = stack.enter_context(
@@ -180,7 +215,7 @@ class TagDedup:
             )
 
             # Tag
-            self._tag(input_bam, bam_tagged, bc_dict)
+            self._tag(input_bam, bam_tagged, bc_dict, umi_dict)
 
         pysam.index(BAM_TAGGED_PATH)
         log.info(

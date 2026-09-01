@@ -204,19 +204,21 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix, trim_r1, trim
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-d", "--dedup", is_flag=True, default=False, help="Flag describing whether or not to reads should be deduplicated during barcode tagging")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
+@click.option("--umi-map", required=False, type=click.Path(exists=True), default=None, help="Corrected UMI map (TSV: read_id, barcode, UR, UB) for UMI-aware tagging and deduplication.")
+def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix, umi_map):
     """
     Tag reads with barcodes and deduplicate.
 
     The reads are tagged with their corresponding barcodes and written to an output BAM file.
     If dedup is set to True, reads are also deduplicated based on the start position, end position and barcode of the read pairs.
     An additional file containing the number of unique and duplicate read pairs is also saved to the output directory.
+    If a UMI map is supplied, reads are additionally tagged with their raw (UR) and corrected (UB) UMI and deduplicated on the corrected UMI.
     """
     if bai is None:
         bai = get_bai(bam)
 
     log.info("Tagging reads with barcodes and deduplicating if requested...")
-    tag_dedup = TagDedup(bam, bai, valid_barcodes)
+    tag_dedup = TagDedup(bam, bai, valid_barcodes, umi_map=umi_map)
     tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
 
 

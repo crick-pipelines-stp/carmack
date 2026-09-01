@@ -177,7 +177,7 @@ class TestCli(unittest.TestCase):
 
         # Assert
         self.assertEqual(result.exit_code, 0)
-        mock_tag_dedup.assert_called_once_with(BAM_PATH, BAI_PATH, BC_VALID_PATH)
+        mock_tag_dedup.assert_called_once_with(BAM_PATH, BAI_PATH, BC_VALID_PATH, umi_map=None)
         mock_tag_dedup.return_value.tag_dedup_reads.assert_called_once_with(False, ".", "")
 
     @mock.patch("carmack.__main__.TagDedup", autospec=True)
@@ -197,8 +197,28 @@ class TestCli(unittest.TestCase):
 
         # Assert
         self.assertEqual(result.exit_code, 0)
-        mock_tag_dedup.assert_called_once_with(BAM_PATH, BAI_PATH, BC_VALID_PATH)
+        mock_tag_dedup.assert_called_once_with(BAM_PATH, BAI_PATH, BC_VALID_PATH, umi_map=None)
         mock_tag_dedup.return_value.tag_dedup_reads.assert_called_once_with(True, ".", "test")
+
+    @mock.patch("carmack.__main__.TagDedup", autospec=True)
+    def test_cli_command_bam_tag_deduplicate_with_umi_map(self, mock_tag_dedup):
+        """Test bam-tag-deduplicate command threads --umi-map to TagDedup."""
+        # Init - any existing file satisfies the click.Path(exists=True) check.
+        params = {"output_dir": ".", "prefix": "", "umi-map": BC_VALID_PATH}
+
+        # Test
+        cmd = (
+            ["bam-tag-deduplicate"]
+            + [BAM_PATH, BAI_PATH, BC_VALID_PATH]
+            + self.assemble_params(params)
+        )
+        result = self.invoke_cli(cmd)
+
+        # Assert
+        self.assertEqual(result.exit_code, 0)
+        mock_tag_dedup.assert_called_once_with(
+            BAM_PATH, BAI_PATH, BC_VALID_PATH, umi_map=BC_VALID_PATH
+        )
 
     @mock.patch("carmack.__main__.TagDedup", autospec=True)
     def test_cli_command_bam_tag_deduplicate_default_dedup_false(self, mock_tag_dedup):
