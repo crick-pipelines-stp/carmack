@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from carmack.chemistry.annotation import position_key
+
 
 class ReadComponentType(StrEnum):
     BARCODE = "BARCODE"
@@ -41,6 +43,11 @@ class ReadComponent:
 
         if self.type is ReadComponentType.BARCODE and self.sequence is not None:
             raise ValueError("Barcode components should not be instantiated with a sequence.")
+
+    @property
+    def position_key(self) -> str:
+        """Return the annotation header key for this component's position."""
+        return position_key(self.name)
 
     @property
     def start(self) -> int:
