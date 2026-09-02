@@ -10,18 +10,13 @@ matching and spacer checks ignore them; they model the post-barcode layout for
 downstream UMI extraction only.
 """
 
-import logging
 from functools import cached_property
 from importlib.resources import files
 
-from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
+from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors, WhitelistSource
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
-from carmack.io.gzip_file import GzipFile
-
-log = logging.getLogger(__name__)
-
 
 # Primer sequences
 PRIMER_C = "TGTGTATAAGGACCTCGTTGCC"
@@ -108,45 +103,18 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
         """Return the whitelist of valid TGIDX sequences for this chemistry."""
         return TGIDX_WHITELIST
 
-    def load_barcode_whitelist(self, barcode_name: str) -> tuple[str, ...]:
-        """
-        Load the barcode whitelist for a specific barcode component.
-
-        Args:
-            barcode_name: The name of the barcode component ("BC1", "BC2", or "BC3")
-                Must match the names defined in get_read_structure() for barcode components.
+    def whitelist_sources(self) -> dict[str, WhitelistSource]:
+        """Return the packaged whitelist file for each barcode component.
 
         Returns:
-            Tuple of valid barcode sequences
-
-        Raises:
-            ValueError: If the barcode name is not recognized
+            Dictionary mapping barcode component names to their whitelist
+            sources. Each line of these files is a barcode on its own.
         """
-        path_map = {
-            "BC1": BC1_PATH,
-            "BC2": BC2_PATH,
-            "BC3": BC3_PATH,
+        return {
+            "BC1": WhitelistSource(path=BC1_PATH),
+            "BC2": WhitelistSource(path=BC2_PATH),
+            "BC3": WhitelistSource(path=BC3_PATH),
         }
-
-        if barcode_name not in path_map:
-            raise ValueError(
-                f"Unknown barcode name: {barcode_name}. Valid names: {list(path_map.keys())}"
-            )
-
-        path = path_map[barcode_name]
-        log.debug(f"Loading barcode whitelist for {barcode_name} from {path}")
-
-        barcodes = []
-        stream = GzipFile(str(path)).open_read_iterator(as_string=True)
-        for line in stream:
-            barcode = line.strip()
-            if barcode:
-                barcodes.append(barcode)
-        stream.close()
-
-        result = tuple(barcodes)
-        log.debug(f"Loaded {len(result)} barcodes for {barcode_name}")
-        return result
 
 
 # Register this chemistry with the factory

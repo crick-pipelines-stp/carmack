@@ -2,10 +2,15 @@
 Tests for the chemistry module.
 """
 
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from functools import cached_property
+from pathlib import Path
+
 import pytest
 from assertpy import assert_that
 
-from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
+from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors, WhitelistSource
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
     POLYG_BASE,
     POLYG_MIN_RUN,
@@ -22,6 +27,7 @@ from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
+from carmack.io.gzip_file import GzipFile
 
 
 class TestReadComponent:
@@ -596,7 +602,7 @@ class TestChemistryBase:
         for component in chemistry.read_structure.get_components_by_type(
             ReadComponentType.BARCODE
         ):
-            whitelist = chemistry.load_barcode_whitelist(component.name)
+            whitelist = chemistry.load_whitelist(component.name)
             assert_that(whitelist).is_instance_of(tuple)
             assert_that(len(whitelist)).is_greater_than(0)
 
@@ -612,6 +618,58 @@ class TestChemistryBase:
         assert_that(set(known_seqs.keys())).is_subset_of(structure_spacer_names)
 
     # ===== Tests for abstract properties =====
+
+    def test_abstract_members_are_registered_as_abstract(self):
+        """Test that the read layout and tolerance members are seen by the ABC machinery."""
+        assert_that(set(ChemistryBase.__abstractmethods__)).is_equal_to(
+            {"name", "read_structure", "max_errors"}
+        )
+
+    def test_chemistry_base_cannot_be_instantiated(self):
+        """Test that the abstract base class itself cannot be constructed."""
+        with pytest.raises(TypeError) as exc_info:
+            ChemistryBase()
+
+        assert_that(str(exc_info.value)).contains("Can't instantiate abstract class")
+
+    def test_partial_subclass_cannot_be_instantiated(self):
+        """Test that a subclass leaving an abstract member unimplemented cannot be constructed."""
+
+        @dataclass
+        class PartialChemistry(ChemistryBase):
+            """Chemistry implementing every abstract member except max_errors."""
+
+            @cached_property
+            def name(self) -> str:
+                """Return the identifier for this partial chemistry."""
+                return "partial_chemistry"
+
+            @cached_property
+            def read_structure(self) -> ReadStructure:
+                """Return a read structure holding a single non-barcode component."""
+                return ReadStructure(
+                    [
+                        ReadComponent(
+                            name="SPACER_1",
+                            type=ReadComponentType.OTHER,
+                            length=4,
+                            sequence="ACGT",
+                        )
+                    ]
+                )
+
+        with pytest.raises(TypeError) as exc_info:
+            PartialChemistry()
+
+        assert_that(str(exc_info.value)).contains("Can't instantiate abstract class")
+        assert_that(str(exc_info.value)).contains("max_errors")
+
+    def test_read_structure_is_cached(self, chemistry: ChemistryBase):
+        """Test that repeated read_structure access returns the identical object."""
+        read_structure1 = chemistry.read_structure
+        read_structure2 = chemistry.read_structure
+
+        assert_that(read_structure1 is read_structure2).is_true()
 
     def test_chemistry_name_property(self, chemistry: ChemistryBase):
         """Test that name property returns a string."""
@@ -688,11 +746,11 @@ class TestChemistryBase:
             sizes = [len(wl) for wl in whitelists.values()]
             assert_that(sizes).is_not_empty()
 
-    def test_load_barcode_whitelist_returns_tuple_not_list(self, chemistry: ChemistryBase):
-        """Test that load_barcode_whitelist returns tuple, not list."""
+    def test_load_whitelist_returns_tuple_not_list(self, chemistry: ChemistryBase):
+        """Test that load_whitelist returns tuple, not list."""
         for component in chemistry.read_structure:
             if component.type is ReadComponentType.BARCODE:
-                whitelist = chemistry.load_barcode_whitelist(component.name)
+                whitelist = chemistry.load_whitelist(component.name)
                 assert_that(type(whitelist)).is_equal_to(tuple)
 
     def test_barcode_components_are_distinguishable(self, chemistry: ChemistryBase):
@@ -835,16 +893,16 @@ class TestChemistryCarmackCustomSeq10:
         """Appending UMI/poly-G/TGIDX leaves the barcode whitelists at BC1/BC2/BC3 only."""
         assert_that(set(chemistry.barcode_whitelists.keys())).is_equal_to({"BC1", "BC2", "BC3"})
 
-    def test_load_barcode_whitelist(self, chemistry: ChemistryCarmackCustomSeq10):
+    def test_load_whitelist(self, chemistry: ChemistryCarmackCustomSeq10):
         """Test loading barcode whitelists."""
         for bc_name in ["BC1", "BC2", "BC3"]:
-            whitelist = chemistry.load_barcode_whitelist(bc_name)
+            whitelist = chemistry.load_whitelist(bc_name)
             assert_that(whitelist).is_instance_of(tuple)
             assert_that(len(whitelist)).is_greater_than(0)
             assert_that(len(whitelist)).is_equal_to(96)
 
         with pytest.raises(ValueError):
-            chemistry.load_barcode_whitelist("INVALID")
+            chemistry.load_whitelist("INVALID")
 
     def test_max_errors_includes_tgidx(self, chemistry: ChemistryCarmackCustomSeq10):
         """max_errors carries a TGIDX tolerance of 1 alongside barcode/spacer."""
@@ -927,18 +985,16 @@ class TestChemistryCarmackCustomSeq10PrimD:
         for component in read_structure:
             assert_that(component.start).is_equal_to(expected_starts[component.name])
 
-    def test_load_barcode_whitelist_matches_base(
-        self, chemistry: ChemistryCarmackCustomSeq10PrimD
-    ):
+    def test_load_whitelist_matches_base(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
         """Whitelists are inherited unchanged from the base chemistry."""
         base = ChemistryCarmackCustomSeq10()
         for bc_name in ["BC1", "BC2", "BC3"]:
-            assert_that(chemistry.load_barcode_whitelist(bc_name)).is_equal_to(
-                base.load_barcode_whitelist(bc_name)
+            assert_that(chemistry.load_whitelist(bc_name)).is_equal_to(
+                base.load_whitelist(bc_name)
             )
 
         with pytest.raises(ValueError):
-            chemistry.load_barcode_whitelist("PRIMER_D")
+            chemistry.load_whitelist("PRIMER_D")
 
     def test_max_errors_inherited(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
         """max_errors is inherited from the base chemistry."""
@@ -1007,16 +1063,16 @@ class TestChemistryHydrop:
         expected_barcodes = ["BC3", "BC2", "BC1"]
         assert_that(barcode_components).is_equal_to(expected_barcodes)
 
-    def test_load_barcode_whitelist(self, chemistry: ChemistryHydrop):
+    def test_load_whitelist(self, chemistry: ChemistryHydrop):
         """Test loading barcode whitelists."""
         for bc_name in ["BC1", "BC2", "BC3"]:
-            whitelist = chemistry.load_barcode_whitelist(bc_name)
+            whitelist = chemistry.load_whitelist(bc_name)
             assert_that(whitelist).is_instance_of(tuple)
             assert_that(len(whitelist)).is_greater_than(0)
             assert_that(len(whitelist)).is_equal_to(96)
 
         with pytest.raises(ValueError):
-            chemistry.load_barcode_whitelist("INVALID")
+            chemistry.load_whitelist("INVALID")
 
     def test_barcode_whitelists_cached_property(self, chemistry: ChemistryHydrop):
         """Test that barcode_whitelists is properly cached."""
@@ -1063,3 +1119,316 @@ class TestChemistryHydrop:
         assert_that(full_bc).is_equal_to(
             whitelists["BC3"][0] + whitelists["BC2"][0] + whitelists["BC1"][0]
         )
+
+
+REGISTERED_CHEMISTRY_NAMES = (
+    "carmack_custom_seq_1_0",
+    "carmack_custom_seq_1_0_primd",
+    "hydrop",
+)
+
+# First entry of each 96-entry barcode whitelist. These are identical across every
+# registered chemistry: hydrop's padded lines slice down to the same sequences.
+EXPECTED_FIRST_SEQUENCES = (
+    ("BC1", "TGTAGCAAGT"),
+    ("BC2", "TTAGTTGGAC"),
+    ("BC3", "TGACCGTACT"),
+)
+
+LEFT_PAD = "AAAAAAAAAA"
+RIGHT_PAD = "TTTTTTTTTT"
+CORE_SEQUENCES = ("ACGTACGTAC", "TGCATGCATG")
+
+
+@dataclass
+class StubChemistry(ChemistryBase):
+    """Chemistry whose read structure and whitelist sources are supplied by a test.
+
+    Attributes:
+        sources: Whitelist sources returned by :meth:`whitelist_sources`.
+        components: Read components making up the read structure, in read order.
+    """
+
+    sources: dict[str, WhitelistSource] = field(default_factory=dict)
+    components: tuple[ReadComponent, ...] = ()
+
+    @cached_property
+    def name(self) -> str:
+        """Return the identifier for this stub chemistry."""
+        return "stub_chemistry"
+
+    @cached_property
+    def read_structure(self) -> ReadStructure:
+        """Return the read structure built from the supplied components."""
+        return ReadStructure(list(self.components))
+
+    @cached_property
+    def max_errors(self) -> MatchErrors:
+        """Return permissive match tolerances for this stub chemistry."""
+        return MatchErrors(barcode=1, spacer=1)
+
+    def whitelist_sources(self) -> dict[str, WhitelistSource]:
+        """Return the whitelist sources supplied by the test."""
+        return dict(self.sources)
+
+
+@dataclass
+class StubChemistryNoSources(ChemistryBase):
+    """Chemistry that declares no whitelist sources, inheriting the base default."""
+
+    @cached_property
+    def name(self) -> str:
+        """Return the identifier for this stub chemistry."""
+        return "stub_chemistry_no_sources"
+
+    @cached_property
+    def read_structure(self) -> ReadStructure:
+        """Return a read structure holding a single non-barcode component."""
+        return ReadStructure(
+            [
+                ReadComponent(
+                    name="SPACER_1",
+                    type=ReadComponentType.OTHER,
+                    length=4,
+                    sequence="ACGT",
+                )
+            ]
+        )
+
+    @cached_property
+    def max_errors(self) -> MatchErrors:
+        """Return permissive match tolerances for this stub chemistry."""
+        return MatchErrors(barcode=1, spacer=1)
+
+
+class TestWhitelistLoading:
+    """Tests for the data-driven whitelist loading shared by every chemistry."""
+
+    @pytest.fixture
+    def whitelist_file(self, tmp_path: Path) -> Callable[[str, list[str]], Path]:
+        """Return a factory that writes whitelist lines to a file under tmp_path."""
+
+        def write(filename: str, lines: list[str]) -> Path:
+            path = tmp_path / filename
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return path
+
+        return write
+
+    @pytest.fixture
+    def barcode_stub(self) -> Callable[..., StubChemistry]:
+        """Return a factory building a stub chemistry with a single BC1 barcode source."""
+
+        def build(path: Path, line_slice: tuple[int, int | None] | None = None) -> StubChemistry:
+            return StubChemistry(
+                sources={"BC1": WhitelistSource(path=path, line_slice=line_slice)},
+                components=(ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),),
+            )
+
+        return build
+
+    # ===== Value pins against the shipped whitelist data =====
+
+    @pytest.mark.parametrize("chemistry_name", REGISTERED_CHEMISTRY_NAMES)
+    @pytest.mark.parametrize("component_name,expected_first", EXPECTED_FIRST_SEQUENCES)
+    def test_load_whitelist_pins_shipped_sequences(
+        self, chemistry_name: str, component_name: str, expected_first: str
+    ):
+        """Every registered chemistry loads 96 ten-base sequences led by the expected entry."""
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+
+        whitelist = chemistry.load_whitelist(component_name)
+
+        assert_that(whitelist).is_instance_of(tuple)
+        assert_that(whitelist).is_length(96)
+        assert_that(whitelist[0]).is_equal_to(expected_first)
+        for sequence in whitelist:
+            assert_that(sequence).is_length(10)
+
+    @pytest.mark.parametrize("chemistry_name", REGISTERED_CHEMISTRY_NAMES)
+    def test_load_whitelist_unknown_component_raises_value_error(self, chemistry_name: str):
+        """An undeclared component name is rejected instead of yielding an empty whitelist."""
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+
+        with pytest.raises(ValueError):
+            chemistry.load_whitelist("NOT_A_COMPONENT")
+
+    @pytest.mark.parametrize("chemistry_name", REGISTERED_CHEMISTRY_NAMES)
+    def test_barcode_whitelists_preserve_read_structure_order(self, chemistry_name: str):
+        """Barcode whitelist keys follow read-structure order, not source declaration order."""
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+
+        assert_that(list(chemistry.barcode_whitelists.keys())).is_equal_to(["BC3", "BC2", "BC1"])
+
+    @pytest.mark.parametrize("chemistry_name", REGISTERED_CHEMISTRY_NAMES)
+    def test_whitelists_read_each_source_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch, chemistry_name: str
+    ):
+        """Construction plus a barcode_whitelists read opens each source file exactly once."""
+        real_open_read_iterator = GzipFile.open_read_iterator
+        opened: list[str] = []
+
+        def spy(self: GzipFile, *args, **kwargs):
+            opened.append(self.filename)
+            return real_open_read_iterator(self, *args, **kwargs)
+
+        monkeypatch.setattr(GzipFile, "open_read_iterator", spy)
+
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+        whitelists = chemistry.barcode_whitelists
+
+        assert_that(whitelists).is_length(3)
+        assert_that(opened).is_length(3)
+        assert_that(set(opened)).is_length(3)
+
+    # ===== line_slice behaviour =====
+
+    def test_load_whitelist_with_line_slice_returns_sliced_sequences(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        barcode_stub: Callable[..., StubChemistry],
+    ):
+        """A declared line_slice trims the flanking padding from every whitelist line."""
+        path = whitelist_file(
+            "padded.tsv", [LEFT_PAD + core + RIGHT_PAD for core in CORE_SEQUENCES]
+        )
+        chemistry = barcode_stub(path, (10, -10))
+
+        assert_that(chemistry.load_whitelist("BC1")).is_equal_to(CORE_SEQUENCES)
+
+    def test_load_whitelist_without_line_slice_returns_whole_lines(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        barcode_stub: Callable[..., StubChemistry],
+    ):
+        """Omitting line_slice keeps each stripped line intact."""
+        path = whitelist_file("bare.tsv", list(CORE_SEQUENCES))
+        chemistry = barcode_stub(path)
+
+        assert_that(chemistry.load_whitelist("BC1")).is_equal_to(CORE_SEQUENCES)
+
+    def test_load_whitelist_skips_blank_and_whitespace_lines(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        barcode_stub: Callable[..., StubChemistry],
+    ):
+        """Blank and whitespace-only lines are dropped when no slice is declared."""
+        path = whitelist_file(
+            "sparse.tsv", [CORE_SEQUENCES[0], "", "   ", "\t", CORE_SEQUENCES[1]]
+        )
+        chemistry = barcode_stub(path)
+
+        assert_that(chemistry.load_whitelist("BC1")).is_equal_to(CORE_SEQUENCES)
+
+    def test_load_whitelist_skips_lines_that_slice_to_empty(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        barcode_stub: Callable[..., StubChemistry],
+    ):
+        """A non-blank line whose slice yields nothing is dropped, so slicing precedes the check."""
+        path = whitelist_file(
+            "slices_to_empty.tsv",
+            [
+                LEFT_PAD + CORE_SEQUENCES[0] + RIGHT_PAD,
+                LEFT_PAD + RIGHT_PAD,
+                "",
+                "   ",
+                LEFT_PAD + CORE_SEQUENCES[1] + RIGHT_PAD,
+            ],
+        )
+        chemistry = barcode_stub(path, (10, -10))
+
+        assert_that(chemistry.load_whitelist("BC1")).is_equal_to(CORE_SEQUENCES)
+
+    # ===== whitelists versus barcode_whitelists =====
+
+    def test_barcode_whitelists_excludes_declared_non_barcode_source(
+        self, whitelist_file: Callable[[str, list[str]], Path]
+    ):
+        """A non-barcode source lands in whitelists but is kept out of barcode_whitelists."""
+        barcode_path = whitelist_file("bc1.tsv", list(CORE_SEQUENCES))
+        tgidx_path = whitelist_file("tgidx.tsv", ["TATAGCCT"])
+
+        chemistry = StubChemistry(
+            sources={
+                "BC1": WhitelistSource(path=barcode_path),
+                "TGIDX": WhitelistSource(path=tgidx_path),
+            },
+            components=(
+                ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),
+            ),
+        )
+
+        assert_that(chemistry.whitelists).contains_key("BC1", "TGIDX")
+        assert_that(chemistry.whitelists["TGIDX"]).is_equal_to(("TATAGCCT",))
+        assert_that(chemistry.barcode_whitelists).contains_key("BC1")
+        assert_that(chemistry.barcode_whitelists).does_not_contain_key("TGIDX")
+
+    def test_whitelists_loads_source_declared_outside_read_structure(
+        self, whitelist_file: Callable[[str, list[str]], Path]
+    ):
+        """A source for a component absent from the read structure loads without error."""
+        barcode_path = whitelist_file("bc1.tsv", list(CORE_SEQUENCES))
+        spare_path = whitelist_file("spare.tsv", ["TATAGCCT"])
+
+        chemistry = StubChemistry(
+            sources={
+                "BC1": WhitelistSource(path=barcode_path),
+                "NOT_IN_READ_STRUCTURE": WhitelistSource(path=spare_path),
+            },
+            components=(ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),),
+        )
+
+        assert_that(chemistry.whitelists).contains_key("BC1", "NOT_IN_READ_STRUCTURE")
+        assert_that(chemistry.barcode_whitelists).is_equal_to({"BC1": CORE_SEQUENCES})
+
+    def test_default_whitelist_sources_is_empty_and_allows_construction(self):
+        """A chemistry declaring no sources constructs and exposes empty whitelist mappings."""
+        chemistry = StubChemistryNoSources()
+
+        assert_that(chemistry.whitelist_sources()).is_equal_to({})
+        assert_that(chemistry.whitelists).is_equal_to({})
+        assert_that(chemistry.barcode_whitelists).is_equal_to({})
+
+    # ===== Failure reporting =====
+
+    def test_whitelists_wraps_barcode_load_failure_as_key_error(self, tmp_path: Path):
+        """An unreadable barcode source is reported as a barcode whitelist lookup failure."""
+        missing_path = tmp_path / "does_not_exist.tsv"
+
+        with pytest.raises(KeyError) as exc_info:
+            StubChemistry(
+                sources={"BC1": WhitelistSource(path=missing_path)},
+                components=(ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),),
+            )
+
+        message = exc_info.value.args[0]
+        assert_that(message).starts_with("Barcode layout 'BC1' not found in whitelist: ")
+
+    def test_whitelists_wraps_non_barcode_load_failure_without_barcode_wording(
+        self, tmp_path: Path
+    ):
+        """An unreadable non-barcode source is reported without calling it a barcode."""
+        missing_path = tmp_path / "does_not_exist.tsv"
+
+        with pytest.raises(KeyError) as exc_info:
+            StubChemistry(
+                sources={"TGIDX": WhitelistSource(path=missing_path)},
+                components=(ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),),
+            )
+
+        message = exc_info.value.args[0]
+        assert_that(message).starts_with("Whitelist for component 'TGIDX' could not be loaded: ")
+        assert_that(message).does_not_contain("Barcode layout")
+
+    def test_barcode_component_without_declared_source_raises_key_error(self):
+        """A barcode component with no declared whitelist source fails at construction."""
+        with pytest.raises(KeyError) as exc_info:
+            StubChemistry(
+                sources={},
+                components=(ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),),
+            )
+
+        message = exc_info.value.args[0]
+        assert_that(message).starts_with("Barcode layout 'BC1' not found in whitelist: ")

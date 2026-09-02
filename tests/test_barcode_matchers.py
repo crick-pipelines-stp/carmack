@@ -179,7 +179,7 @@ class TestBarcodeMatcherBase:
 
         chemistry = ChemistryCarmackCustomSeq10()
         comp = chemistry.read_structure.get_component_by_name(bc)
-        whitelist = chemistry.load_barcode_whitelist(bc)
+        whitelist = chemistry.load_whitelist(bc)
         matcher = FixedPositionMatcher(
             whitelist=whitelist, barcode_component=comp, chemistry=chemistry
         )

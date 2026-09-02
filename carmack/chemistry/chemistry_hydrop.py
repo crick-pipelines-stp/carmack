@@ -5,18 +5,13 @@ Read structure (5' to 3'):
 BC3 (10bp) -> SPACER_1 (10bp) -> BC2 (10bp) -> SPACER_2 (10bp) -> BC1 (10bp) -> ...
 """
 
-import logging
 from functools import cached_property
 from importlib.resources import files
 
-from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
+from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors, WhitelistSource
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
-from carmack.io.gzip_file import GzipFile
-
-log = logging.getLogger(__name__)
-
 
 # Spacer sequences
 SPACER_1 = "AGGGTACTCG"
@@ -69,48 +64,19 @@ class ChemistryHydrop(ChemistryBase):
         """Return the maximum allowed errors for barcode matching."""
         return MatchErrors(barcode=2, spacer=1)
 
-    def load_barcode_whitelist(self, barcode_name: str) -> tuple[str, ...]:
-        """
-        Load the barcode whitelist for a specific barcode component.
-
-        Args:
-            barcode_name: The name of the barcode component ("BC1", "BC2", or "BC3")
-                Must match the names defined in get_read_structure() for barcode components.
+    def whitelist_sources(self) -> dict[str, WhitelistSource]:
+        """Return the packaged whitelist file for each barcode component.
 
         Returns:
-            Tuple of valid barcode sequences
-
-        Raises:
-            ValueError: If the barcode name is not recognized
+            Dictionary mapping barcode component names to their whitelist
+            sources. Hydrop ships each barcode flanked by padding, so every
+            source declares the slice that trims it back to the barcode.
         """
-        path_map = {
-            "BC1": BC1_PATH,
-            "BC2": BC2_PATH,
-            "BC3": BC3_PATH,
+        return {
+            "BC1": WhitelistSource(path=BC1_PATH, line_slice=(10, -10)),
+            "BC2": WhitelistSource(path=BC2_PATH, line_slice=(10, -10)),
+            "BC3": WhitelistSource(path=BC3_PATH, line_slice=(15, -10)),
         }
-
-        bc_strip_map = {"BC1": (10, -10), "BC2": (10, -10), "BC3": (15, -10)}
-
-        if barcode_name not in path_map:
-            raise ValueError(
-                f"Unknown barcode name: {barcode_name}. Valid names: {list(path_map.keys())}"
-            )
-
-        path = path_map[barcode_name]
-        strip_idx = bc_strip_map[barcode_name]
-        log.debug(f"Loading barcode whitelist for {barcode_name} from {path}")
-
-        barcodes = []
-        stream = GzipFile(str(path)).open_read_iterator(as_string=True)
-        for line in stream:
-            barcode = line.strip()[strip_idx[0] : strip_idx[1]]
-            if barcode:
-                barcodes.append(barcode)
-        stream.close()
-
-        result = tuple(barcodes)
-        log.debug(f"Loaded {len(result)} barcodes for {barcode_name}")
-        return result
 
 
 # Register this chemistry with the factory
