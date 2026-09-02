@@ -199,44 +199,9 @@ class TestFixedPositionMatcher:
     """Tests for FixedPositionMatcher barcode matching logic."""
 
     @pytest.fixture
-    def hydrop_chemistry(self) -> ChemistryHydrop:
-        """Provide a HyDrop chemistry instance."""
-        return ChemistryHydrop()
-
-    @pytest.fixture
-    def hydrop_whitelists(self, hydrop_chemistry: ChemistryHydrop) -> dict[str, tuple[str, ...]]:
-        """Provide stripped HyDrop whitelists (10bp variable regions)."""
-        return hydrop_chemistry.barcode_whitelists
-
-    @pytest.fixture
-    def bc3_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> FixedPositionMatcher:
-        """Provide a FixedPositionMatcher for HyDrop BC3 (start=0, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC3")
-        return FixedPositionMatcher(
-            whitelist=hydrop_whitelists["BC3"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc2_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> FixedPositionMatcher:
-        """Provide a FixedPositionMatcher for HyDrop BC2 (start=20, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
-        return FixedPositionMatcher(
-            whitelist=hydrop_whitelists["BC2"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc1_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> FixedPositionMatcher:
-        """Provide a FixedPositionMatcher for HyDrop BC1 (start=40, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC1")
-        return FixedPositionMatcher(
-            whitelist=hydrop_whitelists["BC1"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
+    def matcher_class(self) -> type[MatcherBase]:
+        """Build HyDrop matcher fixtures as FixedPositionMatcher instances."""
+        return FixedPositionMatcher
 
     def test_match_returns_barcode_match_attempt(self, bc3_matcher: FixedPositionMatcher) -> None:
         """Test that match() returns a BarcodeMatchAttempt instance."""
@@ -349,56 +314,9 @@ class TestKmerMatcher:
     # --- Fixtures ---
 
     @pytest.fixture
-    def hydrop_chemistry(self) -> ChemistryHydrop:
-        """Provide a HyDrop chemistry instance."""
-        return ChemistryHydrop()
-
-    @pytest.fixture
-    def hydrop_whitelists(self, hydrop_chemistry: ChemistryHydrop) -> dict[str, tuple[str, ...]]:
-        """Provide stripped HyDrop whitelists (10bp variable regions)."""
-        return hydrop_chemistry.barcode_whitelists
-
-    @pytest.fixture
-    def bc3_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> KmerMatcher:
-        """Provide a KmerMatcher for HyDrop BC3 (start=0, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC3")
-        return KmerMatcher(
-            whitelist=hydrop_whitelists["BC3"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc2_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> KmerMatcher:
-        """Provide a KmerMatcher for HyDrop BC2 (start=20, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
-        return KmerMatcher(
-            whitelist=hydrop_whitelists["BC2"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc1_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> KmerMatcher:
-        """Provide a KmerMatcher for HyDrop BC1 (start=40, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC1")
-        return KmerMatcher(
-            whitelist=hydrop_whitelists["BC1"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def small_whitelist(self) -> tuple[str, ...]:
-        """Provide a small, deterministic whitelist for isolated tests."""
-        return ("ACGTACGTAC", "TGCATGCATG", "GGGGGGGGGG", "CCCCCCCCCC")
-
-    @pytest.fixture
-    def small_matcher(self, small_whitelist: tuple[str, ...]) -> KmerMatcher:
-        """Provide a KmerMatcher with a small whitelist and simple chemistry (HyDrop BC3)."""
-        chemistry = ChemistryHydrop()
-        comp = chemistry.read_structure.get_component_by_name("BC3")
-        return KmerMatcher(whitelist=small_whitelist, barcode_component=comp, chemistry=chemistry)
+    def matcher_class(self) -> type[MatcherBase]:
+        """Build HyDrop matcher fixtures as KmerMatcher instances."""
+        return KmerMatcher
 
     # --- Helper to build a full HyDrop read ---
 
@@ -1449,58 +1367,9 @@ class TestAlignmentMatcher:
     # --- Fixtures ---
 
     @pytest.fixture
-    def hydrop_chemistry(self) -> ChemistryHydrop:
-        """Provide a HyDrop chemistry instance."""
-        return ChemistryHydrop()
-
-    @pytest.fixture
-    def hydrop_whitelists(self, hydrop_chemistry: ChemistryHydrop) -> dict[str, tuple[str, ...]]:
-        """Provide stripped HyDrop whitelists (10bp variable regions)."""
-        return hydrop_chemistry.barcode_whitelists
-
-    @pytest.fixture
-    def bc3_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> AlignmentMatcher:
-        """Provide an AlignmentMatcher for HyDrop BC3 (start=0, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC3")
-        return AlignmentMatcher(
-            whitelist=hydrop_whitelists["BC3"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc2_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> AlignmentMatcher:
-        """Provide an AlignmentMatcher for HyDrop BC2 (start=20, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
-        return AlignmentMatcher(
-            whitelist=hydrop_whitelists["BC2"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc1_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> AlignmentMatcher:
-        """Provide an AlignmentMatcher for HyDrop BC1 (start=40, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC1")
-        return AlignmentMatcher(
-            whitelist=hydrop_whitelists["BC1"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def small_whitelist(self) -> tuple[str, ...]:
-        """Provide a small, deterministic whitelist for isolated tests."""
-        return ("ACGTACGTAC", "TGCATGCATG", "GGGGGGGGGG", "CCCCCCCCCC")
-
-    @pytest.fixture
-    def small_matcher(self, small_whitelist: tuple[str, ...]) -> AlignmentMatcher:
-        """Provide an AlignmentMatcher with a small whitelist and simple chemistry (HyDrop BC3)."""
-        chemistry = ChemistryHydrop()
-        comp = chemistry.read_structure.get_component_by_name("BC3")
-        return AlignmentMatcher(
-            whitelist=small_whitelist, barcode_component=comp, chemistry=chemistry
-        )
+    def matcher_class(self) -> type[MatcherBase]:
+        """Build HyDrop matcher fixtures as AlignmentMatcher instances."""
+        return AlignmentMatcher
 
     # --- Helper to build a full HyDrop read ---
 
