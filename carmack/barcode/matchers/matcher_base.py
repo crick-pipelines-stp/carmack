@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Literal
+from typing import ClassVar, Literal
 
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt
 from carmack.chemistry.chemistry_base import ChemistryBase
@@ -9,28 +9,56 @@ from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 log = logging.getLogger(__name__)
 
 
+class UnresolvedComponentStartError(ValueError):
+    """
+    Raised when an operation needs a fixed start position the component does not have.
+
+    ``ReadStructure.compute_start_positions`` can only resolve offsets while every preceding
+    component has a known length. Once a variable-length component is reached, ``start`` is left
+    as ``None`` for that component and for every component following it. A matcher may therefore
+    hold a component with no fixed start, so helpers that assume one must say so explicitly
+    rather than fail on arithmetic against ``None``.
+
+    Subclasses ``ValueError`` because an unresolved start is a bad-value condition, which also
+    keeps any existing broad ``except ValueError`` handling working unchanged.
+    """
+
+
 class MatcherBase(ABC):
     """
     Abstract base class for barcode matchers.
 
     Subclasses must implement the match method to perform barcode matching
     based on the provided whitelist and read structure.
+
+    Attributes:
+        allowed_component_types: The component types this matcher can structurally handle.
+            It is a class attribute rather than a constructor argument deliberately, so that a
+            caller cannot widen it by accident; a subclass that can genuinely handle another
+            component type overrides it.
     """
+
+    allowed_component_types: ClassVar[frozenset[ReadComponentType]] = frozenset(
+        {ReadComponentType.BARCODE}
+    )
 
     def __init__(
         self,
         whitelist: tuple[str, ...],
-        barcode_component: ReadComponent,
+        component: ReadComponent,
         chemistry: ChemistryBase,
     ):
         self.whitelist_set = frozenset(whitelist)
-        self.barcode_component = barcode_component
+        self.component = component
         self.chemistry = chemistry
 
-        # Check if barcode_component is actually a barcode
-        if self.barcode_component.type is not ReadComponentType.BARCODE:
+        # Check the component is a type this matcher class declares it can handle
+        allowed = type(self).allowed_component_types
+        if self.component.type not in allowed:
+            permitted = ", ".join(sorted(allowed))
             raise ValueError(
-                f"barcode_component must be a barcode component (type=ReadComponentType.BARCODE), got {self.barcode_component}"
+                f"{type(self).__name__} cannot handle component {self.component} of type "
+                f"{self.component.type}; permitted component types: {permitted}"
             )
 
     @abstractmethod
@@ -40,18 +68,52 @@ class MatcherBase(ABC):
 
         Args:
             read: The sequencing read to match against.
-            start_idx: The index in the read to start matching from (default is 0).
+            start_idx: Bounds where in the read this matcher looks, as a hint from the caller that
+                everything before it has already been consumed. *What* it bounds is
+                matcher-specific and is documented on each implementation: for some it is a hard
+                floor on where a match may begin, for others only a floor on where the search is
+                seeded, in which case a returned match is **not** guaranteed to begin at or after
+                it. Defaults to 0, which imposes no bound.
 
         Returns:
             List of BarcodeMatchAttempt objects representing the match results. Ambiguity can be
-            represented by multiple attempts with the same candidate but different matches.
+            represented by multiple attempts with the same candidate but different matches. Every
+            ``read_idx`` is in original-read coordinates regardless of ``start_idx``, so a caller
+            never has to add the offset back.
+
+        Note:
+            The two searching matchers enforce ``start_idx`` differently and are deliberately not
+            unified: ``KmerMatcher`` treats it as a floor on seeding only, while
+            ``AlignmentMatcher`` trims the read to it and so treats it as a floor on the match
+            itself. Changing either would move existing barcode calls, so the divergence is
+            recorded here rather than reconciled.
         """
         pass
 
     # Helper funcs
     def check_read_len(self, read: str) -> bool:
-        """Check if the read is long enough to contain the barcode component."""
-        end = self.barcode_component.start + self.barcode_component.length
+        """
+        Check if the read is long enough to contain the component.
+
+        Requires a resolved start position, since the component's extent in the read is its
+        start plus its length.
+
+        Args:
+            read: The sequencing read to measure.
+
+        Returns:
+            True if the read extends to the end of the component, False otherwise.
+
+        Raises:
+            UnresolvedComponentStartError: If the component has no resolved start position.
+        """
+        if self.component.start is None:
+            raise UnresolvedComponentStartError(
+                f"Component {self.component.name} has no resolved start position, so its extent "
+                "in the read cannot be computed. A component without a resolved start must be "
+                "located by a matcher that does not rely on a fixed start."
+            )
+        end = self.component.start + self.component.length
         return len(read) >= end
 
     def trim_read(self, read: str, start_idx: int) -> str:
@@ -75,8 +137,8 @@ class MatcherBase(ABC):
 
         # Get adjacent spacer regions based on read structure
         spacer_components: dict[Literal["upstream", "downstream"], ReadComponent | None] = {
-            "upstream": self.chemistry.read_structure.get_previous(self.barcode_component),
-            "downstream": self.chemistry.read_structure.get_next(self.barcode_component),
+            "upstream": self.chemistry.read_structure.get_previous(self.component),
+            "downstream": self.chemistry.read_structure.get_next(self.component),
         }
 
         def match_seq(

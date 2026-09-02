@@ -3,7 +3,8 @@ Shared pytest fixtures for the barcode matcher test classes.
 
 The matcher implementations share a constructor signature, so the HyDrop chemistry,
 whitelist and per-component matcher fixtures are defined once here. A test class opts in
-by overriding the `matcher_class` fixture with the matcher it exercises.
+by overriding the `matcher_class` fixture with the matcher it exercises, and supplies any
+constructor arguments unique to that matcher by overriding the `matcher_kwargs` fixture.
 """
 
 from typing import Any, Callable
@@ -56,8 +57,23 @@ def matcher_class() -> type[MatcherBase]:
 
 
 @pytest.fixture
+def matcher_kwargs() -> dict[str, Any]:
+    """
+    Provide the extra constructor arguments for the matcher under test.
+
+    Matchers differ in the arguments they require beyond whitelist, component and chemistry,
+    so a test class whose matcher takes any extras overrides this fixture with them.
+
+    Returns:
+        Mapping of keyword argument name to value; empty when the matcher takes no extras.
+    """
+    return {}
+
+
+@pytest.fixture
 def hydrop_matcher(
     matcher_class: type[MatcherBase],
+    matcher_kwargs: dict[str, Any],
     hydrop_chemistry: ChemistryHydrop,
     hydrop_whitelists: dict[str, tuple[str, ...]],
 ) -> Callable[..., MatcherBase]:
@@ -66,21 +82,23 @@ def hydrop_matcher(
 
     Args:
         matcher_class: The matcher class to instantiate, from the consuming test class.
+        matcher_kwargs: Extra constructor arguments required by that matcher class.
         hydrop_chemistry: The HyDrop chemistry to configure the matcher with.
         hydrop_whitelists: Mapping of barcode component name to whitelist sequences.
 
     Returns:
         Callable taking a HyDrop barcode component name plus any matcher-specific keyword
-        arguments, and returning the configured matcher.
+        arguments, and returning the configured matcher. Per-call keyword arguments take
+        precedence over `matcher_kwargs`.
     """
 
     def build(bc_name: str, **kwargs: Any) -> MatcherBase:
         comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
         return matcher_class(
             whitelist=hydrop_whitelists[bc_name],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
-            **kwargs,
+            **{**matcher_kwargs, **kwargs},
         )
 
     return build
@@ -141,13 +159,16 @@ def small_whitelist() -> tuple[str, ...]:
 
 @pytest.fixture
 def small_matcher(
-    matcher_class: type[MatcherBase], small_whitelist: tuple[str, ...]
+    matcher_class: type[MatcherBase],
+    matcher_kwargs: dict[str, Any],
+    small_whitelist: tuple[str, ...],
 ) -> MatcherBase:
     """
     Provide a matcher with a small whitelist and simple chemistry (HyDrop BC3).
 
     Args:
         matcher_class: The matcher class to instantiate, from the consuming test class.
+        matcher_kwargs: Extra constructor arguments required by that matcher class.
         small_whitelist: The small, deterministic whitelist to match against.
 
     Returns:
@@ -155,4 +176,6 @@ def small_matcher(
     """
     chemistry = ChemistryHydrop()
     comp = chemistry.read_structure.get_component_by_name("BC3")
-    return matcher_class(whitelist=small_whitelist, barcode_component=comp, chemistry=chemistry)
+    return matcher_class(
+        whitelist=small_whitelist, component=comp, chemistry=chemistry, **matcher_kwargs
+    )

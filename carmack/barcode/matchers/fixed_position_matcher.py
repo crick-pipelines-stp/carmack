@@ -12,6 +12,10 @@ class FixedPositionMatcher(MatcherBase):
 
     Attempts to match barcodes at their expected positions in the read.
     This is the fastest method but requires no indels in the read.
+
+    This matcher inherits the barcode-only allowed_component_types of MatcherBase, and must stay
+    that way: it reads component.start directly, which is unresolved for any component following
+    a variable-length one.
     """
 
     def match(self, read: str, start_idx: int = 0) -> list[BarcodeMatchAttempt]:
@@ -20,11 +24,14 @@ class FixedPositionMatcher(MatcherBase):
 
         Args:
             read: The sequencing read to match against.
-            start_idx: Not used for this matcher since it relies on fixed positions defined in the
-            read structure.
+            start_idx: Ignored. This matcher reads the component's fixed start from the read
+                structure rather than searching, so there is no search to bound.
+
+        Returns:
+            List of BarcodeMatchAttempt objects representing the match results.
         """
-        start = self.barcode_component.start
-        end = start + self.barcode_component.length
+        start = self.component.start
+        end = start + self.component.length
         candidate = read[start:end]
 
         # Init a match attempt

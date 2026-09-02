@@ -47,21 +47,39 @@ class AlignmentMatcher(MatcherBase):
     matrix that treats N bases as wildcards matching any nucleotide. Candidate
     selection and ranking are driven entirely by alignment scores rather than
     edit distance computation.
+
+    This matcher keeps the barcode-only allowed_component_types of MatcherBase, and that
+    declaration is the only thing stopping it being pointed at another component type. The
+    narrowness is a deliberate default rather than a structural bar: unlike FixedPositionMatcher
+    it never reads component.start, so widening it would need only the score threshold, which is
+    derived from component.length, re-examined against the new component's length and budget.
     """
 
     def __init__(
         self,
         whitelist: tuple[str, ...],
-        barcode_component: ReadComponent,
+        component: ReadComponent,
         chemistry: ChemistryBase,
+        max_errors: int,
     ) -> None:
-        super().__init__(whitelist, barcode_component, chemistry)
-        self.max_errors = chemistry.max_errors.barcode
+        """
+        Initialize the AlignmentMatcher with the given whitelist and barcode component.
+
+        Args:
+            whitelist: Tuple of valid barcode sequences.
+            component: The ReadComponent defining the barcode's position and length.
+            chemistry: The chemistry defining the surrounding read structure.
+            max_errors: Maximum edit distance allowed against a whitelist entry. Supplied by the
+                caller so the matcher does not reach into the chemistry for a budget that may not
+                be the barcode one.
+        """
+        super().__init__(whitelist, component, chemistry)
+        self.max_errors = max_errors
         self.score_threshold = self.compute_score_threshold()
         self.aligner = self.build_aligner()
 
         log.debug(
-            f"AlignmentMatcher initialized for {self.barcode_component.name} with max_errors_barcode={self.max_errors}, {len(whitelist)} barcodes, score_threshold={self.score_threshold}"
+            f"AlignmentMatcher initialized for {self.component.name} with max_errors={self.max_errors}, {len(whitelist)} barcodes, score_threshold={self.score_threshold}"
         )
 
     def build_substitution_matrix(self) -> Array:
@@ -106,7 +124,7 @@ class AlignmentMatcher(MatcherBase):
         Returns:
             Minimum alignment score to consider (as float)
         """
-        bc_len = self.barcode_component.length
+        bc_len = self.component.length
         max_errors = self.max_errors
 
         perfect_score = bc_len * MATCH_SCORE
@@ -182,7 +200,16 @@ class AlignmentMatcher(MatcherBase):
 
         Args:
             read: The sequencing read to match against.
-            start_idx: The index in the read to start matching from (default is 0).
+            start_idx: A hard floor on where a match may begin. The read is trimmed to
+                ``read[start_idx:]`` before alignment, so bases before ``start_idx`` are invisible
+                to this matcher and no match can begin before it. A window that starts before
+                ``start_idx`` is therefore seen only in truncated form, and resolves only while
+                the truncation stays within ``max_errors``. Alignment coordinates are shifted by
+                ``start_idx`` before being returned, so ``read_idx`` is in original-read
+                coordinates.
+
+        Returns:
+            List of BarcodeMatchAttempt objects representing the match results.
         """
         best_alignments = []
 
