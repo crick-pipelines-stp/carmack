@@ -2,9 +2,11 @@
 Tests for the chemistry module.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cached_property
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,6 @@ from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
     POLYG_BASE,
     POLYG_MIN_RUN,
     TGIDX_LENGTH,
-    TGIDX_WHITELIST,
     UMI_LENGTH,
     UMI_LENGTH_TOLERANCE,
     ChemistryCarmackCustomSeq10,
@@ -430,6 +431,15 @@ class TestComputeStartPositionsVariable:
         assert_that(starts["BC1"]).is_equal_to(0)
         assert_that(starts["polyG"]).is_equal_to(10)
         assert_that(starts["TGIDX"]).is_none()
+
+
+class TestMatchErrors:
+    """Tests for the MatchErrors dataclass."""
+
+    def test_tgidx_defaults_to_one(self):
+        """tgidx defaults to 1 so a chemistry adding a target index is not exact-match-only."""
+        errors = MatchErrors(barcode=1, spacer=1)
+        assert_that(errors.tgidx).is_equal_to(1)
 
 
 class TestChemistryBase:
@@ -873,6 +883,20 @@ class TestChemistryCarmackCustomSeq10:
         """custom_seq_1_0 supports UMI extraction (UMI anchored on its left by BC1)."""
         assert_that(chemistry.supports_umi_extraction()).is_true()
 
+    def test_tgidx_component_and_anchor_accessors(self, chemistry: ChemistryCarmackCustomSeq10):
+        """The TGIDX accessors return the TGIDX component and its poly-G anchor."""
+        tgidx = chemistry.tgidx_component()
+        assert_that(tgidx).is_not_none()
+        assert_that(tgidx.name).is_equal_to("TGIDX")
+        assert_that(tgidx.type).is_equal_to(ReadComponentType.TGIDX)
+
+        anchor = chemistry.tgidx_anchor()
+        assert_that(anchor).is_not_none()
+        assert_that(anchor.name).is_equal_to("POLYG")
+        assert_that(anchor.homopolymer_base).is_equal_to("G")
+
+        assert_that(chemistry.supports_target_assignment()).is_true()
+
     def test_start_positions(self, chemistry: ChemistryCarmackCustomSeq10):
         """Test that the start positions of read components are computed correctly."""
         read_structure = chemistry.read_structure
@@ -909,13 +933,32 @@ class TestChemistryCarmackCustomSeq10:
         assert_that(chemistry.max_errors).is_equal_to(MatchErrors(barcode=1, spacer=2, tgidx=1))
         assert_that(chemistry.max_errors.tgidx).is_equal_to(1)
 
-    def test_tgidx_whitelist(self, chemistry: ChemistryCarmackCustomSeq10):
-        """The TGIDX whitelist holds the single confirmed entry, sized to TGIDX_LENGTH."""
+    def test_tgidx_whitelist_loads_from_packaged_data(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ):
+        """The single confirmed TGIDX entry comes from the packaged data file."""
         whitelist = chemistry.tgidx_whitelist()
         assert_that(whitelist).is_equal_to(("TATAGCCT",))
-        assert_that(whitelist).is_equal_to(TGIDX_WHITELIST)
         for entry in whitelist:
             assert_that(len(entry)).is_equal_to(TGIDX_LENGTH)
+
+    def test_tgidx_whitelist_declared_as_a_whitelist_source(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ):
+        """The TGIDX whitelist is declared as a source file, not hard-coded in the module."""
+        sources = chemistry.whitelist_sources()
+        assert_that(sources).contains_key("TGIDX")
+
+        source = sources["TGIDX"]
+        assert_that(source.path.name).is_equal_to("carmack_custom_seq_1_0_tgidx.tsv")
+        assert_that(source.line_slice).is_none()
+        assert_that(chemistry.whitelists["TGIDX"]).is_equal_to(("TATAGCCT",))
+
+    def test_load_whitelist_reads_tgidx_from_packaged_file(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ):
+        """load_whitelist reads the TGIDX entry straight from its packaged data file."""
+        assert_that(chemistry.load_whitelist("TGIDX")).is_equal_to(("TATAGCCT",))
 
 
 class TestChemistryCarmackCustomSeq10PrimD:
@@ -968,6 +1011,14 @@ class TestChemistryCarmackCustomSeq10PrimD:
         """The PRIMER_D variant also supports UMI extraction."""
         assert_that(chemistry.supports_umi_extraction()).is_true()
 
+    def test_tgidx_component_and_anchor_accessors(
+        self, chemistry: ChemistryCarmackCustomSeq10PrimD
+    ):
+        """The PRIMER_D variant exposes the inherited TGIDX component and poly-G anchor."""
+        assert_that(chemistry.supports_target_assignment()).is_true()
+        assert_that(chemistry.tgidx_component().name).is_equal_to("TGIDX")
+        assert_that(chemistry.tgidx_anchor().name).is_equal_to("POLYG")
+
     def test_start_positions(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
         """Start positions account for the prepended PRIMER_D."""
         read_structure = chemistry.read_structure
@@ -1002,7 +1053,8 @@ class TestChemistryCarmackCustomSeq10PrimD:
         assert_that(chemistry.max_errors).is_equal_to(base.max_errors)
 
     def test_tgidx_whitelist_inherited(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
-        """The _primd subclass inherits the TGIDX whitelist and error tolerance."""
+        """The primd subclass inherits the TGIDX whitelist source and error tolerance."""
+        assert_that(chemistry.whitelist_sources()).contains_key("TGIDX")
         assert_that(chemistry.tgidx_whitelist()).is_equal_to(("TATAGCCT",))
         assert_that(chemistry.max_errors.tgidx).is_equal_to(1)
 
@@ -1029,10 +1081,10 @@ class TestChemistryHydrop:
         assert_that(known_seqs["SPACER_1"]).is_equal_to("AGGGTACTCG")
         assert_that(known_seqs["SPACER_2"]).is_equal_to("GCAGTAGCTG")
 
-    def test_tgidx_whitelist_empty_and_no_tgidx_errors(self, chemistry: ChemistryHydrop):
-        """A chemistry with no TGIDX component yields an empty whitelist and zero TGIDX errors."""
+    def test_tgidx_whitelist_empty_and_default_tgidx_errors(self, chemistry: ChemistryHydrop):
+        """No TGIDX component, so the whitelist is empty and tgidx keeps the inherited default."""
         assert_that(chemistry.tgidx_whitelist()).is_equal_to(())
-        assert_that(chemistry.max_errors.tgidx).is_equal_to(0)
+        assert_that(chemistry.max_errors.tgidx).is_equal_to(1)
 
     def test_start_positions(self, chemistry: ChemistryHydrop):
         """Test that the start positions of read components are computed correctly."""
@@ -1102,6 +1154,12 @@ class TestChemistryHydrop:
         """The barcode-only hydrop chemistry does not support UMI extraction (no raise)."""
         assert_that(chemistry.supports_umi_extraction()).is_false()
 
+    def test_tgidx_component_is_none(self, chemistry: ChemistryHydrop):
+        """A barcode-only chemistry has no TGIDX component and no target-assignment support."""
+        assert_that(chemistry.tgidx_component()).is_none()
+        assert_that(chemistry.tgidx_anchor()).is_none()
+        assert_that(chemistry.supports_target_assignment()).is_false()
+
     def test_construct_full_barcode_hydrop(self, chemistry: ChemistryHydrop):
         """Test full barcode construction for hydrop chemistry."""
         whitelists = chemistry.barcode_whitelists
@@ -1138,6 +1196,11 @@ EXPECTED_FIRST_SEQUENCES = (
 LEFT_PAD = "AAAAAAAAAA"
 RIGHT_PAD = "TTTTTTTTTT"
 CORE_SEQUENCES = ("ACGTACGTAC", "TGCATGCATG")
+
+# Target index entries, none of which lead with the poly-G anchor base.
+TGIDX_ENTRIES = ("TATAGCCT", "ATTGGCTC", "CCTATCCT", "ACTCGACT", "AGGCTTAG")
+
+CHEMISTRY_BASE_LOGGER = "carmack.chemistry.chemistry_base"
 
 
 @dataclass
@@ -1201,19 +1264,20 @@ class StubChemistryNoSources(ChemistryBase):
         return MatchErrors(barcode=1, spacer=1)
 
 
+@pytest.fixture
+def whitelist_file(tmp_path: Path) -> Callable[[str, list[str]], Path]:
+    """Return a factory that writes whitelist lines to a file under tmp_path."""
+
+    def write(filename: str, lines: list[str]) -> Path:
+        path = tmp_path / filename
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    return write
+
+
 class TestWhitelistLoading:
     """Tests for the data-driven whitelist loading shared by every chemistry."""
-
-    @pytest.fixture
-    def whitelist_file(self, tmp_path: Path) -> Callable[[str, list[str]], Path]:
-        """Return a factory that writes whitelist lines to a file under tmp_path."""
-
-        def write(filename: str, lines: list[str]) -> Path:
-            path = tmp_path / filename
-            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            return path
-
-        return write
 
     @pytest.fixture
     def barcode_stub(self) -> Callable[..., StubChemistry]:
@@ -1245,6 +1309,16 @@ class TestWhitelistLoading:
         for sequence in whitelist:
             assert_that(sequence).is_length(10)
 
+    def test_packaged_tgidx_data_file_ships_the_confirmed_entry(self):
+        """The TGIDX data file is importable like the barcode data and holds one entry."""
+        resource = files("carmack.data.tgidx.carmack.custom_seq").joinpath(
+            "carmack_custom_seq_1_0_tgidx.tsv"
+        )
+
+        assert_that(resource.is_file()).is_true()
+        entries = [line for line in resource.read_text(encoding="utf-8").split("\n") if line]
+        assert_that(entries).is_equal_to(["TATAGCCT"])
+
     @pytest.mark.parametrize("chemistry_name", REGISTERED_CHEMISTRY_NAMES)
     def test_load_whitelist_unknown_component_raises_value_error(self, chemistry_name: str):
         """An undeclared component name is rejected instead of yielding an empty whitelist."""
@@ -1264,7 +1338,7 @@ class TestWhitelistLoading:
     def test_whitelists_read_each_source_exactly_once(
         self, monkeypatch: pytest.MonkeyPatch, chemistry_name: str
     ):
-        """Construction plus a barcode_whitelists read opens each source file exactly once."""
+        """Construction plus a barcode_whitelists read opens each declared source once."""
         real_open_read_iterator = GzipFile.open_read_iterator
         opened: list[str] = []
 
@@ -1277,9 +1351,10 @@ class TestWhitelistLoading:
         chemistry = ChemistryFactory.get_chemistry(chemistry_name)
         whitelists = chemistry.barcode_whitelists
 
+        expected_sources = len(chemistry.whitelist_sources())
         assert_that(whitelists).is_length(3)
-        assert_that(opened).is_length(3)
-        assert_that(set(opened)).is_length(3)
+        assert_that(opened).is_length(expected_sources)
+        assert_that(set(opened)).is_length(expected_sources)
 
     # ===== line_slice behaviour =====
 
@@ -1356,6 +1431,12 @@ class TestWhitelistLoading:
             },
             components=(
                 ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                ReadComponent(
+                    name="POLYG",
+                    type=ReadComponentType.HOMOPOLYMER,
+                    homopolymer_base="G",
+                    min_run=3,
+                ),
                 ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),
             ),
         )
@@ -1432,3 +1513,212 @@ class TestWhitelistLoading:
 
         message = exc_info.value.args[0]
         assert_that(message).starts_with("Barcode layout 'BC1' not found in whitelist: ")
+
+
+class TestTargetIndexValidation:
+    """Tests for the construction-time validation of a declared target index."""
+
+    @pytest.fixture
+    def tgidx_stub(self) -> Callable[..., StubChemistry]:
+        """Return a factory building a homopolymer-anchored target index stub."""
+
+        def build(path: Path, anchor_base: str = "G") -> StubChemistry:
+            return StubChemistry(
+                sources={"TGIDX": WhitelistSource(path=path)},
+                components=(
+                    ReadComponent(
+                        name=f"POLY{anchor_base}",
+                        type=ReadComponentType.HOMOPOLYMER,
+                        homopolymer_base=anchor_base,
+                        min_run=3,
+                    ),
+                    ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),
+                ),
+            )
+
+        return build
+
+    # ===== A declared target index must have a whitelist source =====
+
+    def test_target_index_without_declared_source_raises_key_error(self):
+        """A target index component with no declared whitelist source fails at construction."""
+        with pytest.raises(KeyError) as exc_info:
+            StubChemistry(
+                sources={},
+                components=(
+                    ReadComponent(
+                        name="POLYG",
+                        type=ReadComponentType.HOMOPOLYMER,
+                        homopolymer_base="G",
+                        min_run=3,
+                    ),
+                    ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),
+                ),
+            )
+
+        message = exc_info.value.args[0]
+        assert_that(message).starts_with("Target index layout 'TGIDX' not found in whitelist: ")
+
+    # ===== A declared target index must be anchored by a homopolymer =====
+
+    def test_target_index_preceded_by_a_barcode_raises_value_error(
+        self, whitelist_file: Callable[[str, list[str]], Path]
+    ):
+        """A target index whose 5' neighbour is a barcode has no run end to locate it from."""
+        barcode_path = whitelist_file("bc1.tsv", list(CORE_SEQUENCES))
+        tgidx_path = whitelist_file("tgidx.tsv", [TGIDX_ENTRIES[0]])
+
+        with pytest.raises(ValueError, match="must be preceded by a homopolymer") as exc_info:
+            StubChemistry(
+                sources={
+                    "BC1": WhitelistSource(path=barcode_path),
+                    "TGIDX": WhitelistSource(path=tgidx_path),
+                },
+                components=(
+                    ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                    ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),
+                ),
+            )
+
+        message = str(exc_info.value)
+        assert_that(message).contains("TGIDX")
+        assert_that(message).contains("component 'BC1'")
+
+    def test_target_index_as_the_first_component_raises_value_error(
+        self, whitelist_file: Callable[[str, list[str]], Path]
+    ):
+        """A target index opening the read structure is reported as preceded by nothing."""
+        tgidx_path = whitelist_file("tgidx.tsv", [TGIDX_ENTRIES[0]])
+
+        with pytest.raises(ValueError, match="must be preceded by a homopolymer") as exc_info:
+            StubChemistry(
+                sources={"TGIDX": WhitelistSource(path=tgidx_path)},
+                components=(ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),),
+            )
+
+        message = str(exc_info.value)
+        assert_that(message).contains("TGIDX")
+        assert_that(message).contains("nothing")
+
+    # ===== Entries may not extend the anchor run beyond the allowed bound =====
+
+    @pytest.mark.parametrize(
+        "sequence,leading_anchor_bases",
+        [
+            ("TATAGCCT", 0),
+            ("GTATAGCC", 1),
+            ("GGTATAGC", 2),
+        ],
+    )
+    def test_leading_anchor_bases_within_the_bound_are_accepted(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        tgidx_stub: Callable[..., StubChemistry],
+        sequence: str,
+        leading_anchor_bases: int,
+    ):
+        """An entry may open with anchor bases while the run stays inside the bound."""
+        assert_that(len(sequence) - len(sequence.lstrip("G"))).is_equal_to(leading_anchor_bases)
+        path = whitelist_file("tgidx.tsv", [sequence])
+
+        chemistry = tgidx_stub(path)
+
+        assert_that(chemistry.tgidx_whitelist()).is_equal_to((sequence,))
+
+    @pytest.mark.parametrize(
+        "sequence,leading_anchor_bases",
+        [
+            ("GGGTATAG", "3"),
+            ("GGGGGGGG", "8"),
+        ],
+    )
+    def test_leading_anchor_bases_beyond_the_bound_raise_value_error(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        tgidx_stub: Callable[..., StubChemistry],
+        sequence: str,
+        leading_anchor_bases: str,
+    ):
+        """An entry opening past the bound is rejected, naming what breached it.
+
+        The all-anchor entry is the edge the leading-run count is most likely to
+        get wrong, since stripping the run leaves nothing behind.
+        """
+        path = whitelist_file("tgidx.tsv", [sequence])
+
+        with pytest.raises(ValueError) as exc_info:
+            tgidx_stub(path)
+
+        message = str(exc_info.value)
+        assert_that(message).contains(sequence)
+        assert_that(message).contains(leading_anchor_bases)
+        assert_that(message).contains("G")
+
+    # ===== The anchor base is read from the read structure =====
+
+    def test_leading_run_is_counted_in_the_anchor_base_of_the_read_structure(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        tgidx_stub: Callable[..., StubChemistry],
+    ):
+        """A poly-T anchored chemistry counts leading T, not leading G."""
+        path = whitelist_file("tgidx.tsv", ["TTTAGCCT"])
+
+        with pytest.raises(ValueError) as exc_info:
+            tgidx_stub(path, anchor_base="T")
+
+        message = str(exc_info.value)
+        assert_that(message).contains("TTTAGCCT")
+        assert_that(message).contains("3")
+        assert_that(message).contains("T")
+
+    def test_leading_bases_other_than_the_anchor_base_are_accepted(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        tgidx_stub: Callable[..., StubChemistry],
+    ):
+        """Three leading G are harmless when the read structure anchors on poly-T."""
+        path = whitelist_file("tgidx.tsv", ["GGGTATAG"])
+
+        chemistry = tgidx_stub(path, anchor_base="T")
+
+        assert_that(chemistry.tgidx_whitelist()).is_equal_to(("GGGTATAG",))
+
+    # ===== A large whitelist warns rather than failing =====
+
+    def test_whitelist_above_the_size_limit_warns_about_mosaic_end(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        tgidx_stub: Callable[..., StubChemistry],
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Five entries still construct, but raise a Mosaic End warning."""
+        path = whitelist_file("tgidx.tsv", list(TGIDX_ENTRIES))
+
+        with caplog.at_level(logging.WARNING, logger=CHEMISTRY_BASE_LOGGER):
+            chemistry = tgidx_stub(path)
+
+        warnings = [
+            record
+            for record in caplog.records
+            if record.levelno == logging.WARNING and record.name == CHEMISTRY_BASE_LOGGER
+        ]
+        assert_that(warnings).is_length(1)
+        assert_that(warnings[0].getMessage()).contains("Mosaic End")
+        assert_that(chemistry.tgidx_whitelist()).is_length(5)
+
+    def test_whitelist_at_the_size_limit_does_not_warn(
+        self,
+        whitelist_file: Callable[[str, list[str]], Path],
+        tgidx_stub: Callable[..., StubChemistry],
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Four entries sit on the limit, so construction stays silent."""
+        path = whitelist_file("tgidx.tsv", list(TGIDX_ENTRIES[:4]))
+
+        with caplog.at_level(logging.WARNING, logger=CHEMISTRY_BASE_LOGGER):
+            chemistry = tgidx_stub(path)
+
+        warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+        assert_that(warnings).is_empty()
+        assert_that(chemistry.tgidx_whitelist()).is_length(4)

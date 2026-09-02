@@ -30,7 +30,6 @@ UMI_LENGTH_TOLERANCE = 1
 POLYG_BASE = "G"
 POLYG_MIN_RUN = 3
 TGIDX_LENGTH = 8
-TGIDX_WHITELIST = ("TATAGCCT",)
 
 # Barcode file paths
 BC1_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
@@ -41,6 +40,12 @@ BC2_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
 )
 BC3_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
     "carmack_custom_seq_1_0_96_bc3.tsv"
+)
+
+# The confirmed target indexes ship as data, one sequence per line, so the set can grow
+# without a code change. The loader has no comment syntax, so the file carries sequences only.
+TGIDX_PATH = files("carmack.data.tgidx.carmack.custom_seq").joinpath(
+    "carmack_custom_seq_1_0_tgidx.tsv"
 )
 
 
@@ -99,21 +104,19 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
         """Return the maximum allowed errors for component matching."""
         return MatchErrors(barcode=1, spacer=2, tgidx=1)
 
-    def tgidx_whitelist(self) -> tuple[str, ...]:
-        """Return the whitelist of valid TGIDX sequences for this chemistry."""
-        return TGIDX_WHITELIST
-
     def whitelist_sources(self) -> dict[str, WhitelistSource]:
-        """Return the packaged whitelist file for each barcode component.
+        """Return the packaged whitelist file for each whitelisted component.
 
         Returns:
-            Dictionary mapping barcode component names to their whitelist
-            sources. Each line of these files is a barcode on its own.
+            Dictionary mapping component names to their whitelist sources. Each
+            line of these files is one sequence on its own, for the three
+            barcodes and the target index alike.
         """
         return {
             "BC1": WhitelistSource(path=BC1_PATH),
             "BC2": WhitelistSource(path=BC2_PATH),
             "BC3": WhitelistSource(path=BC3_PATH),
+            "TGIDX": WhitelistSource(path=TGIDX_PATH),
         }
 
 
