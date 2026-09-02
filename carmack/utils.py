@@ -126,3 +126,28 @@ def format_duration(seconds):
         parts.append(f"{s}s")
 
     return " ".join(parts)
+
+
+def homopolymer_run_length(seq: str, run_start: int, base: str) -> int:
+    """Return the length of the homopolymer run of ``base`` beginning at ``run_start``.
+
+    Counts consecutive copies of ``base`` from ``run_start`` onward, capturing the
+    observed run length, which varies with polymerase slippage. The base is an explicit
+    argument rather than state held by a caller, so any holder of an anchor base can run
+    the same scan.
+
+    Args:
+        seq: The read sequence.
+        run_start: 0-based index where the homopolymer run begins.
+        base: The single repeated base of the run (e.g. ``"G"``).
+
+    Returns:
+        The number of consecutive ``base`` characters. Zero when ``run_start`` is past the
+        end of ``seq`` or the base there does not match.
+    """
+    length = 0
+    position = run_start
+    while position < len(seq) and seq[position] == base:
+        length += 1
+        position += 1
+    return length

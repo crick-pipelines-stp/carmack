@@ -25,7 +25,7 @@ from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
 from carmack.umi.umi_corrector import CorrectedUmi, UmiCorrector, UmiRecord
 from carmack.umi.umi_reporting import CorrectionStats, UmiExtractionStats
-from carmack.utils import get_prefix
+from carmack.utils import get_prefix, homopolymer_run_length
 
 log = logging.getLogger(__name__)
 
@@ -108,26 +108,6 @@ class UmiExtractor:
             if end <= len(seq) and seq[polyg_start:end] == run:
                 return polyg_start
         return None
-
-    def homopolymer_run_length(self, seq: str, run_start: int) -> int:
-        """Return the length of the anchor homopolymer run beginning at ``run_start``.
-
-        Counts consecutive anchor-base characters from ``run_start`` onward,
-        capturing the observed run length (which varies with slippage).
-
-        Args:
-            seq: The read sequence.
-            run_start: 0-based index where the homopolymer run begins.
-
-        Returns:
-            The number of consecutive anchor-base characters.
-        """
-        length = 0
-        position = run_start
-        while position < len(seq) and seq[position] == self.polyg_base:
-            length += 1
-            position += 1
-        return length
 
     def validate_header(self, ann: ReadAnnotation) -> None:
         """Validate that an annotated read carries the tags this chemistry needs.
@@ -219,7 +199,7 @@ class UmiExtractor:
 
                 accepted += 1
                 length_counts[len(raw_umi)] += 1
-                run_counts[self.homopolymer_run_length(seq, polyg_start)] += 1
+                run_counts[homopolymer_run_length(seq, polyg_start, self.polyg_base)] += 1
                 if not raw:
                     records.append(
                         UmiRecord(
