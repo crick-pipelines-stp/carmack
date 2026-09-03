@@ -2415,8 +2415,9 @@ class TestAlignmentMatcher:
         landing depends on alignment position. This test verifies that a borderline case
         (3 substitutions, score typically 7.5) returns a valid result.
         """
-        bc3_wl = list(bc3_matcher.whitelist_set)
-        bc3 = bc3_wl[0]
+        # Sorted, not set-iteration order, so the barcode drawn does not vary with
+        # PYTHONHASHSEED.
+        bc3 = sorted(bc3_matcher.whitelist_set)[0]
 
         # With local alignment including mismatch penalties, 3 subs typically scores ~7.5
         # which is above threshold=7.0
@@ -2436,16 +2437,16 @@ class TestAlignmentMatcher:
     ) -> None:
         """Test that align_seqs returns None when the alignment score falls below the threshold.
 
-        With threshold=7.0, 4 substitutions on a 10bp barcode: score = 10 - 4 = 6.0,
-        which is below threshold=7.0.
+        The substitutions are spread across the barcode rather than clustered at its
+        start. Alignment is local, so four consecutive substitutions at the 5' end are
+        simply trimmed away and the clean 6bp suffix still scores above threshold for a
+        fifth of the whitelist. Spreading them leaves no sub-span long enough to clear
+        threshold=7.0, which holds for every barcode rather than most of them.
         """
-        bc3_wl = list(bc3_matcher.whitelist_set)
-        bc3 = bc3_wl[0]
+        bc3 = sorted(bc3_matcher.whitelist_set)[0]
 
-        # Introduce 4 substitutions to fall below threshold (score = 6.0 < 7.0)
         mutated = list(bc3)
-        n_subs = 4
-        for i in range(n_subs):
+        for i in (0, 3, 6, 9):
             mutated[i] = "A" if mutated[i] != "A" else "C"
         mutated_str = "".join(mutated)
 
