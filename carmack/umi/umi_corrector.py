@@ -138,6 +138,16 @@ class UmiCorrector:
     def build_representatives(self, counts: Counter[bytes]) -> dict[bytes, str]:
         """Cluster one barcode's normalised UMIs and map each to its representative.
 
+        A cluster's representative is its highest-count member, with equal counts
+        resolved in favour of the lexicographically smaller UMI sequence. That
+        tie-break has to be imposed here: umi_tools seeds its cluster search by
+        stably sorting the mapping it is handed on count alone, so equal-count
+        UMIs are seeded in that mapping's own iteration order and whichever seeds
+        first permanently claims a lower-count neighbour they share. Left in the
+        read-arrival order the counts were tallied in, the same reads presented
+        in a different order would therefore correct differently, so the counts
+        are handed over ordered by descending count then ascending sequence.
+
         Args:
             counts: Mapping of normalised-UMI bytes to observed read counts within
                 a single cell barcode.
@@ -146,7 +156,8 @@ class UmiCorrector:
             A mapping from each normalised-UMI bytes key to its cluster
             representative string (the highest-count member, decoded).
         """
-        clusters = self.clusterer(dict(counts), threshold=1)
+        ordered_counts = dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+        clusters = self.clusterer(ordered_counts, threshold=1)
         representative: dict[bytes, str] = {}
         for cluster in clusters:
             rep = cluster[0].decode()
