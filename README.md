@@ -66,3 +66,11 @@ in it, not the total concurrent footprint.
 
 If a `carmack` on `PATH` shadows the source tree a stage dies with click's `No such
 command`, so run from the repo root with `--carmack-command "python -m carmack"`.
+
+### Compressed output
+
+Writing `.gz` output prefers `pigz`, which compresses in parallel and keeps compression
+off the critical path of every stage that writes gzip. Without it on `PATH` the stages
+still produce identical output, just more slowly, and log a warning saying so. Install
+it from your package manager if throughput matters; benchmark numbers are not comparable
+between a machine that has it and one that does not.
