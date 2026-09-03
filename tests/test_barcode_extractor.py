@@ -2,6 +2,12 @@
 Tests for barcode extraction pipeline: HybridExtractor, dataclasses, and utility functions.
 """
 
+import gzip
+import multiprocessing
+import os
+import signal
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -462,8 +468,6 @@ class TestBarcodeExtractor:
 
         # bc_all / bc_valid are written as gzip; decompressed contents must match
         # the plain-text annotated read name exactly (one line for the single read).
-        import gzip
-
         expected_line = result.get_annotated_readname()
         with gzip.open(tmp_path / "test.bc_all.txt.gz", "rt") as f:
             assert_that(f.read()).is_equal_to(f"{expected_line}\n")
@@ -1255,3 +1259,94 @@ class TestHybridExtractor:
 
         with pytest.raises(ValueError, match="BC3"):
             extractor.process_read("test", "A" * 52, "I" * 52)
+
+
+REAL_POOL_READS = 24
+REAL_POOL_TIMEOUT_S = 180
+REAL_POOL_PREFIX = "real_pool"
+REAL_POOL_OUTPUTS = (
+    f"{REAL_POOL_PREFIX}.bc_all.txt.gz",
+    f"{REAL_POOL_PREFIX}.bc_valid.txt.gz",
+    f"{REAL_POOL_PREFIX}.bc_counts.csv",
+    f"{REAL_POOL_PREFIX}.bc_rank.png",
+    f"{REAL_POOL_PREFIX}.bc_stats.txt",
+)
+
+
+def write_fastq_head(source_path: str, dest_path: Path, n_reads: int) -> None:
+    """Copy the first n_reads records of a gzipped FASTQ into a new gzipped FASTQ."""
+    with gzip.open(source_path, "rt") as src, gzip.open(dest_path, "wt") as dst:
+        for line_no, line in enumerate(src):
+            if line_no >= n_reads * 4:
+                break
+            dst.write(line)
+
+
+def run_extraction_in_process_group(fastq_path: str, output_dir: Path, prefix: str) -> None:
+    """
+    Run a real extraction in a forked child that leads its own process group.
+
+    A teardown-order regression deadlocks rather than fails, so the run is given a
+    deadline. The child leads its own process group so that killing it takes the pool
+    workers with it -- that releases the inherited pipe write ends, letting the stranded
+    gzip writers see EOF and exit instead of lingering for the rest of the session.
+    """
+
+    def target() -> None:
+        os.setsid()
+        extractor = BarcodeExtractor(fastq_path, "hydrop", n_workers=2)
+        extractor.extract_barcodes(str(output_dir), prefix)
+
+    proc = multiprocessing.get_context("fork").Process(target=target)
+    proc.start()
+    proc.join(REAL_POOL_TIMEOUT_S)
+
+    if proc.is_alive():
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.join(REAL_POOL_TIMEOUT_S)
+        pytest.fail(
+            f"extract_barcodes did not finish within {REAL_POOL_TIMEOUT_S}s - the gzip "
+            "writers are most likely blocked waiting on EOF for pipes still held open "
+            "by pool workers"
+        )
+
+    assert_that(proc.exitcode).is_equal_to(0)
+
+
+class TestBarcodeExtractorRealProcessPool:
+    """
+    End-to-end extraction driven by a real forked worker pool.
+
+    Every other extract_barcodes test substitutes the executor, so none of them exercise
+    the interaction between forked pool workers and the gzip writer subprocesses. Workers
+    are forked on first submit and inherit the writers' pipe write ends, so tearing the
+    two down in the wrong order strands gzip on an EOF that never arrives.
+    """
+
+    @pytest.fixture(scope="class")
+    def extraction_output(self, tmp_path_factory) -> Path:
+        """Run one real-pool extraction and hand its output directory to the tests."""
+        work_dir = tmp_path_factory.mktemp("real_pool")
+        fastq_path = work_dir / "small_R1.fastq.gz"
+        write_fastq_head(R1_PATH, fastq_path, REAL_POOL_READS)
+
+        output_dir = work_dir / "out"
+        output_dir.mkdir()
+        run_extraction_in_process_group(str(fastq_path), output_dir, REAL_POOL_PREFIX)
+
+        return output_dir
+
+    def test_extraction_completes_and_writes_every_output(self, extraction_output: Path) -> None:
+        """A real-pool run reaches finalisation, so all five output files are written."""
+        for name in REAL_POOL_OUTPUTS:
+            assert_that((extraction_output / name).exists()).is_true()
+
+    def test_streamed_gzip_outputs_are_complete(self, extraction_output: Path) -> None:
+        """The gzip writers terminate cleanly, so their streams decompress whole."""
+        with gzip.open(extraction_output / f"{REAL_POOL_PREFIX}.bc_all.txt.gz", "rt") as f:
+            bc_all_lines = f.read().splitlines()
+        with gzip.open(extraction_output / f"{REAL_POOL_PREFIX}.bc_valid.txt.gz", "rt") as f:
+            bc_valid_lines = f.read().splitlines()
+
+        assert_that(bc_all_lines).is_length(REAL_POOL_READS)
+        assert_that(len(bc_valid_lines)).is_less_than_or_equal_to(REAL_POOL_READS)

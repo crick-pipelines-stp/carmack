@@ -175,10 +175,15 @@ class BarcodeExtractor:
 
         stats_acc = ExtractionStatsAccumulator(self.matchers)
 
+        # The gzip streams must be entered BEFORE the executor. Pool workers are
+        # forked on first submit and inherit the streams' pipe write ends, so
+        # `gzip` only sees EOF once the pool is gone. `with` unwinds in reverse,
+        # so the executor has to be innermost for its shutdown to run first --
+        # otherwise the stream close waits on a `gzip` the workers keep alive.
         with (
-            ProcessPoolExecutor(max_workers=self.n_workers) as executor,
             GzipFile(str(bc_all_path)).open_write_stream() as bc_all_f,
             GzipFile(str(bc_valid_path)).open_write_stream() as bc_valid_f,
+            ProcessPoolExecutor(max_workers=self.n_workers) as executor,
         ):
             hybrid_extractor = HybridExtractor(chemistry=self.chemistry, matchers=self.matchers)
 
