@@ -13,6 +13,7 @@ import rich.traceback
 import rich_click as click
 
 import carmack
+from carmack.assign_targets.target_assigner import TargetAssigner
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.cell_caller.cell_caller import CellCaller
 from carmack.fastq_tools.fastq_filter import FastqFilter
@@ -35,6 +36,7 @@ click.rich_click.COMMAND_GROUPS = {
             "commands": [
                 "extract-barcodes",
                 "extract-umis",
+                "assign-targets",
                 "fastq-filter",
                 "bam-tag-deduplicate",
                 "call-cells",
@@ -174,6 +176,27 @@ def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix, raw):
     log.info("Extracting UMIs from annotated FASTQ file...")
     extractor = UmiExtractor(r1_annotated_fastq, chemistry)
     extractor.extract_umis(output_dir, prefix, raw=raw)
+
+
+@carmack_cli.command("assign-targets")
+@click.argument("r1_umi_fastq", required=True, nargs=1, type=click.Path(exists=True), metavar="<r1_umi_fastq>")
+@click.option("-c", "--chemistry", required=True, type=str, help="Chemistry name for target index layout")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+def assign_targets(r1_umi_fastq, chemistry, output_dir, prefix):
+    """
+    Assign target indices from a UMI-annotated R1 FASTQ.
+
+    For each annotated read a bounded window is taken off the end of the poly-G run recorded by UMI
+    extraction, and the target index inside that window is matched against the chemistry whitelist.
+    Every read is re-emitted carrying a TGIDX tag: either a whitelist entry with its TGIDX_POS span,
+    or NONE. An unassigned read is an expected outcome rather than a failure - in a mixed library
+    NONE is the correct answer for every scRNA read.
+    """
+
+    log.info("Assigning target indices from UMI-annotated FASTQ file...")
+    assigner = TargetAssigner(r1_umi_fastq, chemistry)
+    assigner.assign_targets(output_dir, prefix)
 
 
 @carmack_cli.command("fastq-filter")

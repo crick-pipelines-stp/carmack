@@ -1,5 +1,5 @@
 """
-Golden output regression baseline for the barcode and UMI extraction pipelines.
+Golden output regression baseline for the barcode, UMI and target assignment pipelines.
 
 Each test runs a real extraction over a committed FASTQ input and compares every generated
 output file against a blessed copy under ``tests/data/golden/expected/``. The point is not
@@ -15,6 +15,11 @@ reads of ``hydrop``) and cost roughly half a minute in total. Two full-scale cas
 conftest skips them unless ``-k`` selects them. The full-scale HyDrop case alone takes about
 ten minutes: that library barely matches the HyDrop chemistry, so nearly every read falls
 through all three matcher tiers.
+
+Each case covers every stage its chemistry supports. The ``carmack_custom_seq_1_0`` cases
+run barcode extraction, UMI extraction and target assignment; the HyDrop cases stop after
+barcode extraction, because that chemistry declares neither a UMI component nor a target
+index.
 
 Determinism
 -----------
@@ -62,6 +67,7 @@ import pytest
 from assertpy import assert_that
 
 import carmack.barcode.barcode_extractor as barcode_extractor_module
+from carmack.assign_targets.target_assigner import TargetAssigner
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.utils import get_prefix
@@ -127,9 +133,11 @@ def execute_golden_run(
     input_name: str,
     chemistry_name: str,
     extract_umis: bool,
+    assign_targets: bool,
 ) -> GoldenRun:
     """
-    Run barcode extraction, and optionally UMI extraction, over one golden input.
+    Run barcode extraction, and optionally UMI extraction and target assignment, over one
+    golden input.
 
     The multiprocessing context is forced to ``spawn`` for the duration of the barcode
     extraction. This is a workaround for a production bug, not a test convenience:
@@ -152,6 +160,7 @@ def execute_golden_run(
         input_name: File name of the input FASTQ under the golden input directory.
         chemistry_name: Registered chemistry name to extract with.
         extract_umis: Whether to chain UMI extraction onto the annotated R1 output.
+        assign_targets: Whether to chain target assignment onto the UMI-annotated R1 output.
 
     Returns:
         The completed run, locating its outputs and goldens.
@@ -175,6 +184,10 @@ def execute_golden_run(
     if extract_umis:
         annotated_fastq = output_dir / f"{prefix}.r1_annotated.fastq.gz"
         UmiExtractor(str(annotated_fastq), chemistry_name).extract_umis(str(output_dir), prefix)
+
+    if assign_targets:
+        umi_fastq = output_dir / f"{prefix}.r1_umi.fastq.gz"
+        TargetAssigner(str(umi_fastq), chemistry_name).assign_targets(str(output_dir), prefix)
 
     return GoldenRun(output_dir=output_dir, prefix=prefix)
 
@@ -238,7 +251,7 @@ def assert_report_output_matches_golden(run: GoldenRun, suffix: str) -> None:
 @pytest.fixture(scope="module")
 def custom_seq_small_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
     """
-    Extract barcodes and UMIs from the 200-read carmack_custom_seq_1_0 input.
+    Extract barcodes, UMIs and target indices from the 200-read carmack_custom_seq_1_0 input.
 
     Args:
         tmp_path_factory: Session-scoped factory supplying the run's output directory.
@@ -251,6 +264,7 @@ def custom_seq_small_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
         input_name="custom_seq_1_0_small_R1.fastq.gz",
         chemistry_name=CUSTOM_SEQ_CHEMISTRY,
         extract_umis=True,
+        assign_targets=True,
     )
 
 
@@ -272,13 +286,14 @@ def hydrop_small_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
         input_name="hydrop_small_R1.fastq.gz",
         chemistry_name=HYDROP_CHEMISTRY,
         extract_umis=False,
+        assign_targets=False,
     )
 
 
 @pytest.fixture(scope="module")
 def custom_seq_full_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
     """
-    Extract barcodes and UMIs from the 2000-read carmack_custom_seq_1_0 input.
+    Extract barcodes, UMIs and target indices from the 2000-read carmack_custom_seq_1_0 input.
 
     Args:
         tmp_path_factory: Session-scoped factory supplying the run's output directory.
@@ -291,6 +306,7 @@ def custom_seq_full_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
         input_name="custom_seq_1_0_R1.fastq.gz",
         chemistry_name=CUSTOM_SEQ_CHEMISTRY,
         extract_umis=True,
+        assign_targets=True,
     )
 
 
@@ -310,6 +326,7 @@ def hydrop_full_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
         input_name="hydrop_R1.fastq.gz",
         chemistry_name=HYDROP_CHEMISTRY,
         extract_umis=False,
+        assign_targets=False,
     )
 
 
@@ -418,8 +435,37 @@ class UmiGoldenOutputChecks:
         assert_text_output_matches_golden(golden_run, "umi_map.tsv")
 
 
-class TestCustomSeqSmallGoldenOutputs(BarcodeGoldenOutputChecks, UmiGoldenOutputChecks):
-    """Golden outputs for 200 reads of carmack_custom_seq_1_0, barcodes and UMIs."""
+class TargetGoldenOutputChecks:
+    """
+    Per-file golden checks for the two target assignment outputs.
+
+    Only chemistries declaring a target index reach this stage, so HyDrop test classes do
+    not inherit it. This class is not collected itself: it has no Test prefix.
+    """
+
+    def test_r1_tgidx_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the target-annotated R1 FASTQ matches the golden file.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_gzip_output_matches_golden(golden_run, "r1_tgidx.fastq.gz", "r1_tgidx.fastq")
+
+    def test_tgidx_stats_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the target stats report matches the golden file once run details are stripped.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_report_output_matches_golden(golden_run, "tgidx_stats.txt")
+
+
+class TestCustomSeqSmallGoldenOutputs(
+    BarcodeGoldenOutputChecks, UmiGoldenOutputChecks, TargetGoldenOutputChecks
+):
+    """Golden outputs for 200 reads of carmack_custom_seq_1_0, barcodes, UMIs and targets."""
 
     @pytest.fixture
     def golden_run(self, custom_seq_small_run: GoldenRun) -> GoldenRun:
@@ -453,7 +499,9 @@ class TestHydropSmallGoldenOutputs(BarcodeGoldenOutputChecks):
 
 
 @pytest.mark.only_run_with_direct_target
-class TestCustomSeqFullScaleGoldenOutputs(BarcodeGoldenOutputChecks, UmiGoldenOutputChecks):
+class TestCustomSeqFullScaleGoldenOutputs(
+    BarcodeGoldenOutputChecks, UmiGoldenOutputChecks, TargetGoldenOutputChecks
+):
     """Golden outputs for 2000 reads of carmack_custom_seq_1_0, selected with -k only."""
 
     @pytest.fixture

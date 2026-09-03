@@ -18,10 +18,12 @@ using the config in `pyproject.toml`. Install the dev tools with
 
 ### Golden output baseline
 
-`tests/test_golden_outputs.py` runs real barcode and UMI extractions over committed
-FASTQ inputs and compares every output file against blessed copies in
+`tests/test_golden_outputs.py` runs real barcode, UMI and target assignment stages over
+committed FASTQ inputs and compares every output file against blessed copies in
 `tests/data/golden/expected/`. It exists so that any change to the matchers shows up as
-a diff rather than going unnoticed.
+a diff rather than going unnoticed. Each case runs only the stages its chemistry
+supports: the `carmack_custom_seq_1_0` cases run all three, the HyDrop cases stop after
+barcode extraction.
 
 Two small cases run as part of the normal suite (about 30s). Two full-scale 2000-read
 cases are marked `only_run_with_direct_target`, so they are skipped unless `-k` selects
