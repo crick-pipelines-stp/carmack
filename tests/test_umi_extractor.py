@@ -9,6 +9,8 @@ the CLI wiring.
 """
 
 import gzip
+from collections import defaultdict
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -19,8 +21,10 @@ import carmack.__main__
 from carmack.chemistry.annotation import format_span, parse_span, position_key
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.io.read_annotation import ReadAnnotation
+from carmack.umi.umi_corrector import CorrectedUmi, UmiCorrector, UmiRecord
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.umi.umi_reporting import CorrectionStats, UmiExtractionStats
+from carmack.umi.umi_shards import shard_index
 
 CHEMISTRY = "carmack_custom_seq_1_0"
 DUMMY_FASTQ = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
@@ -436,7 +440,7 @@ class TestExtractUmisCli:
         assert_that(result.exit_code).is_equal_to(0)
         mock_extractor.assert_called_once_with(DUMMY_FASTQ, CHEMISTRY)
         mock_extractor.return_value.extract_umis.assert_called_once_with(
-            str(tmp_path), None, raw=True
+            str(tmp_path), None, raw=True, temp_dir=None, shard_count=256
         )
 
     def test_cli_listed_in_help(self) -> None:
@@ -573,3 +577,404 @@ class TestExtractUmisHeaderValidation:
 
         with pytest.raises(ValueError, match="BC1_POS"):
             extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=True)
+
+
+class TestCorrectionStatsCombine:
+    """Summing per-shard correction stats back into one run-level total."""
+
+    # Twelve cell barcodes whose crc32 digests populate all four shards, so the
+    # sharded run genuinely spans several shards rather than degenerating to one.
+    BARCODES = [f"{'ACGT' * 2}{index:02d}{'C' * 10}" for index in range(12)]
+
+    def sharded_records(self) -> list[UmiRecord]:
+        """Build a record set spanning many barcodes, collapses and both drop reasons.
+
+        Every barcode carries a three-read parent UMI, a one-read neighbour that
+        clustering collapses into it and a distant UMI that stays separate; some
+        barcodes additionally carry a short UMI that normalisation pads, a raw
+        UMI holding the padding sentinel and an off-length UMI.
+
+        Returns:
+            The assembled records in extraction order.
+        """
+        records: list[UmiRecord] = []
+        for index, barcode in enumerate(self.BARCODES):
+            umis = ["AAAAAAAA"] * 3 + ["AAAAAAAT"] + ["CCCCCCCC"] * 2
+            if index % 2 == 0:
+                umis.append("GGGGGGG")
+            if index % 3 == 0:
+                umis.append("AAAANAAA")
+            if index % 4 == 0:
+                umis.append("TTT")
+            for position, raw_umi in enumerate(umis):
+                records.append(
+                    UmiRecord(
+                        read_id=f"r{index:02d}_{position:02d}", barcode=barcode, raw_umi=raw_umi
+                    )
+                )
+        return records
+
+    def test_combine_sums_every_field(self) -> None:
+        parts = [
+            CorrectionStats(1, 2, 3, 4, 5, 6, 7),
+            CorrectionStats(10, 20, 30, 40, 50, 60, 70),
+            CorrectionStats(100, 0, 5, 0, 1, 2, 0),
+        ]
+
+        combined = CorrectionStats.combine(parts)
+
+        assert_that(combined).is_equal_to(CorrectionStats(111, 22, 38, 44, 56, 68, 77))
+
+    def test_combine_of_nothing_is_all_zero_stats(self) -> None:
+        combined = CorrectionStats.combine([])
+
+        assert_that(combined).is_equal_to(CorrectionStats(0, 0, 0, 0, 0, 0, 0))
+
+    def test_combine_of_a_single_part_returns_that_part(self) -> None:
+        part = CorrectionStats(
+            assigned_reads=9,
+            corrections_applied=2,
+            num_cell_barcodes=3,
+            dropped_raw_n=1,
+            dropped_off_length=4,
+            distinct_corrected_umis=5,
+            umi_collapses=6,
+        )
+
+        assert_that(CorrectionStats.combine([part])).is_equal_to(part)
+
+    def test_sharded_stats_combine_to_the_monolithic_stats(self) -> None:
+        records = self.sharded_records()
+        monolithic_map, monolithic = UmiCorrector(x=8, tol=1).correct(records)
+
+        shards: dict[int, list[UmiRecord]] = defaultdict(list)
+        for record in records:
+            shards[shard_index(record.barcode, 4)].append(record)
+        parts = []
+        sharded_map: dict[str, CorrectedUmi] = {}
+        for index in sorted(shards):
+            mapping, stats = UmiCorrector(x=8, tol=1).correct(shards[index])
+            sharded_map.update(mapping)
+            parts.append(stats)
+        combined = CorrectionStats.combine(parts)
+
+        # Several shards must be populated or the equality proves nothing.
+        assert_that(len(parts)).is_greater_than(1)
+        assert_that(combined).is_equal_to(monolithic)
+        assert_that(combined.num_cell_barcodes).is_equal_to(monolithic.num_cell_barcodes)
+        assert_that(combined.distinct_corrected_umis).is_equal_to(
+            monolithic.distinct_corrected_umis
+        )
+        assert_that(combined.umi_collapses).is_equal_to(monolithic.umi_collapses)
+        assert_that(sharded_map).is_equal_to(monolithic_map)
+
+
+# Synthetic cell-barcode panel used by the sharding tests. Seven barcodes each
+# carrying four reads put twenty-eight reads through the run, so the ordinals run
+# well past ten and the barcodes land in several distinct shards.
+SHARDED_BARCODE_COUNT = 7
+SHARDED_UMIS = ["ACTACTAC", "ACTACTAC", "ACTACTAC", "ACTACTTC"]
+
+
+def make_cell_barcode(index: int) -> str:
+    """Return a distinct ten-base BC1 sequence for one synthetic cell barcode.
+
+    Args:
+        index: Position of the barcode in the synthetic panel (0-15).
+
+    Returns:
+        A ten-base sequence differing from that of every other index.
+    """
+    bases = "ACGT"
+    return f"AACCGGTT{bases[index // 4]}{bases[index % 4]}"
+
+
+def make_many_barcode_records() -> list[tuple[str, str, str]]:
+    """Build annotated reads spanning many cell barcodes and many ordinals.
+
+    Every barcode carries a three-read parent UMI plus one single-read neighbour
+    that directional clustering collapses into it, so the run exercises grouping,
+    collapsing and more than ten reads at once.
+
+    Returns:
+        The ``(header, seq, qual)`` records in input order.
+    """
+    records: list[tuple[str, str, str]] = []
+    for index in range(SHARDED_BARCODE_COUNT):
+        for umi_seq in SHARDED_UMIS:
+            read_id = f"read{len(records) + 1:02d}"
+            records.append(make_read(read_id, umi_seq, 4, bc1=make_cell_barcode(index)))
+    return records
+
+
+def input_read_ids(records: list[tuple[str, str, str]]) -> list[str]:
+    """Return the read ids of annotated records in input order.
+
+    Args:
+        records: The ``(header, seq, qual)`` records handed to the extractor.
+
+    Returns:
+        The parsed read ids, in the order the reads appear in the FASTQ.
+    """
+    return [ReadAnnotation.parse(header).read_id for header, _seq, _qual in records]
+
+
+class TestExtractUmisSharding:
+    """Sharded correction must be invisible in the extractor's output."""
+
+    def read_map(self, path) -> list[list[str]]:
+        """Read the tab-separated, header-less umi_map.tsv into split rows."""
+        return [line.split("\t") for line in path.read_text().splitlines()]
+
+    def full_barcodes(self, extractor: UmiExtractor) -> set[str]:
+        """Return the full cell barcodes the synthetic panel resolves to.
+
+        Args:
+            extractor: The extractor whose chemistry assembles the barcode.
+
+        Returns:
+            The distinct full barcodes carried by the panel's reads.
+        """
+        return {
+            extractor.chemistry.construct_full_barcode(
+                {"BC1": make_cell_barcode(index), "BC2": BC2_SEQ, "BC3": BC3_SEQ}
+            )
+            for index in range(SHARDED_BARCODE_COUNT)
+        }
+
+    def test_umi_map_is_identical_across_shard_counts(self, build_extractor, tmp_path) -> None:
+        records = make_many_barcode_records()
+        extractor = build_extractor(records)
+
+        outputs: dict[int, bytes] = {}
+        for shard_count in (1, 3, 7, 256):
+            output_dir = tmp_path / f"shards{shard_count}"
+            output_dir.mkdir()
+            extractor.extract_umis(
+                output_dir=str(output_dir), prefix="out", shard_count=shard_count
+            )
+            outputs[shard_count] = (output_dir / "out.umi_map.tsv").read_bytes()
+
+        # The panel must straddle several shards or the equality proves nothing.
+        barcodes = self.full_barcodes(extractor)
+        for shard_count in (3, 7, 256):
+            spread = {shard_index(barcode, shard_count) for barcode in barcodes}
+            assert_that(len(spread)).is_greater_than(1)
+
+        # shard_count=1 reproduces the old single-pass behaviour, so it is the reference.
+        reference = outputs[1]
+        assert_that(reference).is_not_empty()
+        assert_that(outputs[3]).is_equal_to(reference)
+        assert_that(outputs[7]).is_equal_to(reference)
+        assert_that(outputs[256]).is_equal_to(reference)
+
+    @pytest.mark.parametrize("shard_count", [3, 7, 256])
+    def test_correction_stats_match_the_single_shard_run(
+        self, build_extractor, tmp_path, shard_count: int
+    ) -> None:
+        records = make_many_barcode_records()
+        extractor = build_extractor(records)
+        single_dir = tmp_path / "single"
+        single_dir.mkdir()
+        sharded_dir = tmp_path / "sharded"
+        sharded_dir.mkdir()
+
+        reference = extractor.extract_umis(output_dir=str(single_dir), prefix="out", shard_count=1)
+        sharded = extractor.extract_umis(
+            output_dir=str(sharded_dir), prefix="out", shard_count=shard_count
+        )
+
+        assert_that(sharded.correction).is_equal_to(reference.correction)
+        # The three counts of distinct things are the ones sharding could double count.
+        assert_that(sharded.correction.num_cell_barcodes).is_equal_to(
+            reference.correction.num_cell_barcodes
+        )
+        assert_that(sharded.correction.distinct_corrected_umis).is_equal_to(
+            reference.correction.distinct_corrected_umis
+        )
+        assert_that(sharded.correction.umi_collapses).is_equal_to(
+            reference.correction.umi_collapses
+        )
+        # The fixture must actually group and collapse, or the equality is vacuous.
+        assert_that(reference.correction.num_cell_barcodes).is_equal_to(SHARDED_BARCODE_COUNT)
+        assert_that(reference.correction.umi_collapses).is_greater_than(0)
+
+    @pytest.mark.parametrize("shard_count", [1, 3, 7, 256])
+    def test_read_order_is_preserved_past_the_tenth_read(
+        self, build_extractor, tmp_path, shard_count: int
+    ) -> None:
+        records = make_many_barcode_records()
+        extractor = build_extractor(records)
+
+        extractor.extract_umis(output_dir=str(tmp_path), prefix="out", shard_count=shard_count)
+
+        read_ids = [row[0] for row in self.read_map(tmp_path / "out.umi_map.tsv")]
+        # Ordinals compared as text would sort 1, 10, 11, 2, ..., so the run must
+        # be long enough for that scramble to show up in the read order.
+        assert_that(len(read_ids)).is_greater_than(10)
+        assert_that(read_ids).is_equal_to(input_read_ids(records))
+
+    def test_dropped_read_omitted_while_neighbours_keep_their_order(
+        self, build_extractor, tmp_path
+    ) -> None:
+        records = make_many_barcode_records()
+        records.insert(14, make_read("sentinel", "ACTNCTAC", 4, bc1=make_cell_barcode(2)))
+        extractor = build_extractor(records)
+
+        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", shard_count=7)
+
+        read_ids = [row[0] for row in self.read_map(tmp_path / "out.umi_map.tsv")]
+        expected = [read_id for read_id in input_read_ids(records) if read_id != "sentinel"]
+        assert_that(read_ids).does_not_contain("sentinel")
+        assert_that(read_ids).is_equal_to(expected)
+        assert_that(stats.correction.dropped_raw_n).is_equal_to(1)
+
+    def test_every_read_rejected_writes_an_empty_map(self, build_extractor, tmp_path) -> None:
+        records = [(make_read_header(f"nog{index}"), "A" * 40, "I" * 40) for index in range(3)]
+        extractor = build_extractor(records)
+
+        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", shard_count=4)
+
+        umi_map_path = tmp_path / "out.umi_map.tsv"
+        assert_that(umi_map_path.exists()).is_true()
+        assert_that(umi_map_path.read_bytes()).is_empty()
+        assert_that(stats.correction).is_equal_to(CorrectionStats(0, 0, 0, 0, 0, 0, 0))
+
+    @pytest.mark.parametrize("shard_count", [0, -1])
+    def test_shard_count_below_one_raises(
+        self, build_extractor, tmp_path, shard_count: int
+    ) -> None:
+        extractor = build_extractor([make_read("a", "ACTACTAC", 4)])
+
+        with pytest.raises(ValueError, match="shard_count"):
+            extractor.extract_umis(output_dir=str(tmp_path), prefix="out", shard_count=shard_count)
+
+
+class TestExtractUmisTempDir:
+    """Where the spill tree is created, and that it never outlives the run."""
+
+    @pytest.fixture
+    def spill_dir(self, tmp_path):
+        """Return a pre-created, empty directory to hold the spill tree."""
+        path = tmp_path / "spill"
+        path.mkdir()
+        return path
+
+    def test_raw_run_does_no_shard_work(self, build_extractor, tmp_path, spill_dir) -> None:
+        extractor = build_extractor([make_read("a", "ACTACTAC", 4), make_read("b", "ACTACTAC", 4)])
+
+        extractor.extract_umis(
+            output_dir=str(tmp_path), prefix="out", raw=True, temp_dir=str(spill_dir)
+        )
+
+        assert_that(list(spill_dir.iterdir())).is_empty()
+        assert_that((tmp_path / "out.umi_map.tsv").exists()).is_false()
+
+    def test_successful_run_leaves_no_spill_tree(
+        self, build_extractor, tmp_path, spill_dir
+    ) -> None:
+        extractor = build_extractor(make_many_barcode_records())
+
+        extractor.extract_umis(
+            output_dir=str(tmp_path), prefix="out", temp_dir=str(spill_dir), shard_count=4
+        )
+
+        assert_that(list(spill_dir.iterdir())).is_empty()
+        assert_that((tmp_path / "out.umi_map.tsv").exists()).is_true()
+
+    def test_failed_correction_still_removes_the_spill_tree(
+        self, build_extractor, tmp_path, spill_dir
+    ) -> None:
+        extractor = build_extractor(make_many_barcode_records())
+
+        with mock.patch(
+            "carmack.umi.umi_extractor.UmiCorrector.correct",
+            side_effect=RuntimeError("correction exploded"),
+        ):
+            with pytest.raises(RuntimeError, match="correction exploded"):
+                extractor.extract_umis(
+                    output_dir=str(tmp_path), prefix="out", temp_dir=str(spill_dir), shard_count=4
+                )
+
+        assert_that(list(spill_dir.iterdir())).is_empty()
+
+    def test_spill_tree_is_created_under_the_supplied_temp_dir(
+        self, build_extractor, tmp_path, spill_dir
+    ) -> None:
+        extractor = build_extractor(make_many_barcode_records())
+        original_correct = UmiCorrector.correct
+        observed: list[list[str]] = []
+
+        def spying_correct(corrector, records):
+            """Record the supplied temp dir's contents at the moment correction runs."""
+            observed.append([entry.name for entry in sorted(Path(spill_dir).iterdir())])
+            return original_correct(corrector, records)
+
+        with mock.patch.object(UmiCorrector, "correct", spying_correct):
+            extractor.extract_umis(
+                output_dir=str(tmp_path), prefix="out", temp_dir=str(spill_dir), shard_count=4
+            )
+
+        assert_that(observed).is_not_empty()
+        assert_that(observed[0]).is_not_empty()
+        for name in observed[0]:
+            assert_that(name).starts_with("carmack-umi-")
+        # The tree the run created is gone once the run is over.
+        assert_that(list(spill_dir.iterdir())).is_empty()
+
+
+class TestExtractUmisCliShardOptions:
+    """CLI wiring for the temp-dir and shard-count options."""
+
+    def test_cli_passes_temp_dir_and_shard_count(self, tmp_path) -> None:
+        runner = CliRunner()
+        with mock.patch("carmack.__main__.UmiExtractor", autospec=True) as mock_extractor:
+            result = runner.invoke(
+                carmack.__main__.carmack_cli,
+                [
+                    "extract-umis",
+                    DUMMY_FASTQ,
+                    "--chemistry",
+                    CHEMISTRY,
+                    "--output_dir",
+                    str(tmp_path),
+                    "--temp-dir",
+                    str(tmp_path),
+                    "--shard-count",
+                    "8",
+                ],
+            )
+
+        assert_that(result.exit_code).is_equal_to(0)
+        mock_extractor.return_value.extract_umis.assert_called_once_with(
+            str(tmp_path), None, raw=False, temp_dir=str(tmp_path), shard_count=8
+        )
+
+    def test_cli_help_lists_the_sharding_options(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(carmack.__main__.carmack_cli, ["extract-umis", "--help"])
+
+        assert_that(result.exit_code).is_equal_to(0)
+        assert_that(result.output).contains("--temp-dir")
+        assert_that(result.output).contains("--shard-count")
+
+    def test_cli_rejects_a_shard_count_below_one(self, tmp_path) -> None:
+        runner = CliRunner()
+        with mock.patch("carmack.__main__.UmiExtractor", autospec=True) as mock_extractor:
+            result = runner.invoke(
+                carmack.__main__.carmack_cli,
+                [
+                    "extract-umis",
+                    DUMMY_FASTQ,
+                    "--chemistry",
+                    CHEMISTRY,
+                    "--output_dir",
+                    str(tmp_path),
+                    "--shard-count",
+                    "0",
+                ],
+            )
+
+        assert_that(result.exit_code).is_not_equal_to(0)
+        assert_that(result.output).contains("not in the range")
+        mock_extractor.return_value.extract_umis.assert_not_called()

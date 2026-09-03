@@ -7,6 +7,7 @@ length / anchor-run distributions; the correction stage populates
 :class:`CorrectionStats`.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -44,6 +45,40 @@ class CorrectionStats:
     dropped_off_length: int
     distinct_corrected_umis: int
     umi_collapses: int
+
+    @classmethod
+    def combine(cls, parts: Iterable["CorrectionStats"]) -> "CorrectionStats":
+        """Sum per-shard correction tallies into one run-level total.
+
+        Three of the fields count distinct things rather than reads:
+        ``num_cell_barcodes``, ``distinct_corrected_umis`` and ``umi_collapses``.
+        Summing counts of distinct things is only exact when no thing can be
+        counted in two parts, which is exactly what sharded correction
+        guarantees: the shard is a pure function of the cell barcode, so a
+        barcode group -- and therefore every UMI and every collapse within it --
+        is confined to one shard and contributes to one part alone. The
+        remaining fields are per-read tallies over disjoint reads and so add
+        unconditionally, with one premise worth stating: ``assigned_reads``
+        counts distinct read ids rather than group members, so its sum is exact
+        on the standing invariant that a read id occurs once in the input.
+
+        Args:
+            parts: The per-shard correction summaries to total.
+
+        Returns:
+            A :class:`CorrectionStats` holding the field-wise sum, all-zero when
+            ``parts`` is empty.
+        """
+        collected = list(parts)
+        return cls(
+            assigned_reads=sum(part.assigned_reads for part in collected),
+            corrections_applied=sum(part.corrections_applied for part in collected),
+            num_cell_barcodes=sum(part.num_cell_barcodes for part in collected),
+            dropped_raw_n=sum(part.dropped_raw_n for part in collected),
+            dropped_off_length=sum(part.dropped_off_length for part in collected),
+            distinct_corrected_umis=sum(part.distinct_corrected_umis for part in collected),
+            umi_collapses=sum(part.umi_collapses for part in collected),
+        )
 
     @property
     def mean_reads_per_umi(self) -> float:

@@ -22,7 +22,9 @@ from carmack.umi.umi_normalizer import UMI_PAD_CHAR, normalize_umi
 from carmack.umi.umi_reporting import CorrectionStats
 
 
-@dataclass(frozen=True)
+# Slots trim the per-record dict; a constant-factor tidy on a structure that now
+# only ever holds one shard, not the mitigation for the record volume itself.
+@dataclass(frozen=True, slots=True)
 class UmiRecord:
     """A single extracted UMI observation awaiting correction.
 
