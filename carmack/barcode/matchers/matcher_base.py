@@ -1,12 +1,9 @@
-import logging
 from abc import ABC, abstractmethod
 from typing import ClassVar, Literal
 
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
-
-log = logging.getLogger(__name__)
 
 
 class UnresolvedComponentStartError(ValueError):
@@ -115,20 +112,6 @@ class MatcherBase(ABC):
             )
         end = self.component.start + self.component.length
         return len(read) >= end
-
-    def trim_read(self, read: str, start_idx: int) -> str:
-        """
-        Trim the read to the expected length for the barcode component.
-
-        This is used to ensure that the read segment being matched is of the correct length, which
-        can help improve matching accuracy and reduce false positives.
-        """
-        if start_idx >= len(read):
-            log.debug(
-                f"Start index {start_idx} is beyond read length {len(read)}. Returning empty string."
-            )
-            return ""
-        return read[start_idx:]
 
     def check_spacers(
         self, read: str, match_idx: tuple[int, int]

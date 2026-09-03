@@ -2,11 +2,13 @@
 Tests for barcode matcher classes: MatcherBase, FixedPositionMatcher, KmerMatcher, and AlignmentMatcher.
 """
 
+import logging
 from collections.abc import Callable
 from typing import Any, Literal
 
 import pytest
 from assertpy import assert_that
+from Bio.Align import PairwiseAligner, PairwiseAlignments
 
 from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
@@ -195,22 +197,6 @@ class TestBarcodeMatcherBase:
         # start=5, length=10, so need >= 15
         read = "A" * 15
         assert_that(matcher.check_read_len(read)).is_true()
-
-    def test_trim_read_basic(self, matcher: MatcherBase) -> None:
-        """Test that trim_read returns the substring from the given start position."""
-        assert_that(matcher.trim_read("ACGTACGT", 4)).is_equal_to("ACGT")
-
-    def test_trim_read_start_zero(self, matcher: MatcherBase) -> None:
-        """Test that trim_read with start=0 returns the full read."""
-        assert_that(matcher.trim_read("ACGTACGT", 0)).is_equal_to("ACGTACGT")
-
-    def test_trim_read_start_beyond_length(self, matcher: MatcherBase) -> None:
-        """Test that trim_read returns empty string when start is beyond read length."""
-        assert_that(matcher.trim_read("ACGT", 10)).is_equal_to("")
-
-    def test_trim_read_start_at_length(self, matcher: MatcherBase) -> None:
-        """Test that trim_read returns empty string when start equals read length."""
-        assert_that(matcher.trim_read("ACGT", 4)).is_equal_to("")
 
     @pytest.mark.parametrize(
         "read_len, start, bc_len, expected",
@@ -2518,6 +2504,26 @@ class TestAlignmentMatcher:
             assert_that(mat[base, "N"]).is_equal_to(MATCH_SCORE)
 
     # ==========================================
+    # trim_read() Tests
+    # ==========================================
+
+    def test_trim_read_basic(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that trim_read returns the substring from the given start position."""
+        assert_that(bc3_matcher.trim_read("ACGTACGT", 4)).is_equal_to("ACGT")
+
+    def test_trim_read_start_zero(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that trim_read with start=0 returns the full read."""
+        assert_that(bc3_matcher.trim_read("ACGTACGT", 0)).is_equal_to("ACGTACGT")
+
+    def test_trim_read_start_beyond_length(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that trim_read returns empty string when start is beyond read length."""
+        assert_that(bc3_matcher.trim_read("ACGT", 10)).is_equal_to("")
+
+    def test_trim_read_start_at_length(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that trim_read returns empty string when start equals read length."""
+        assert_that(bc3_matcher.trim_read("ACGT", 4)).is_equal_to("")
+
+    # ==========================================
     # align_seqs() Tests
     # ==========================================
 
@@ -2587,14 +2593,13 @@ class TestAlignmentMatcher:
         bc3_matcher: AlignmentMatcher,
         hydrop_whitelists: dict[str, tuple[str, ...]],
     ) -> None:
-        """Test that seq1_coords from align_seqs correctly span the matched region in seq1."""
+        """Test that seq1_span from align_seqs correctly spans the matched region in seq1."""
         bc3 = hydrop_whitelists["BC3"][0]
         result = bc3_matcher.align_seqs(bc3, bc3)
 
         assert_that(result).is_not_none()
         assert result is not None
-        assert_that(result.seq1_coords).is_not_empty()
-        start, end = result.seq1_coords[0]
+        start, end = result.seq1_span
         assert_that(bc3[start:end]).is_equal_to(bc3)
 
     def test_align_seqs_perfect_match_has_full_bc_length_score(
@@ -2610,6 +2615,99 @@ class TestAlignmentMatcher:
         result = bc3_matcher.align_seqs(bc3, bc3)
         assert_that(result).is_not_none()
         assert_that(result.score).is_equal_to(expected_score)  # type: ignore[union-attr]
+
+    # ==========================================
+    # align_seqs() debug logging Tests
+    # ==========================================
+
+    def test_align_seqs_emits_both_debug_lines_when_debug_enabled(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test that align_seqs emits both guarded debug lines when DEBUG is enabled.
+
+        Both log.debug calls sit behind an isEnabledFor guard, so nothing is emitted unless
+        DEBUG is on. The level is set on the alignment_matcher logger specifically rather than
+        on the root, since the guard reads that logger's own effective level.
+        """
+        caplog.set_level(logging.DEBUG, logger="carmack.barcode.matchers.alignment_matcher")
+        bc3 = hydrop_whitelists["BC3"][0]
+
+        bc3_matcher.align_seqs(bc3, bc3)
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "carmack.barcode.matchers.alignment_matcher"
+        ]
+        assert_that(messages).is_length(2)
+        assert_that(messages[0]).contains("Aligning sequences")
+        assert_that(messages[1]).contains("Found", "alignments")
+
+    def test_align_seqs_does_not_evaluate_alignment_count_when_debug_disabled(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that the debug guard leaves the expensive log arguments unevaluated.
+
+        The second debug line interpolates ``len(alignments)`` and ``{alignments}``, and both
+        make BioPython walk the dynamic programming matrix to count optimal paths. align_seqs
+        runs once per whitelist entry per read, so that work must not happen with DEBUG off.
+        The stand-in aligner hands back a proxy that flags any call to its length or text
+        conversion, and that flag must stay unset while the call still yields a normal
+        AlignmentContainer.
+        """
+        caplog.set_level(logging.INFO, logger="carmack.barcode.matchers.alignment_matcher")
+        bc3 = hydrop_whitelists["BC3"][0]
+
+        class CountingAlignments:
+            """Delegating proxy recording whether its length or text was ever taken."""
+
+            def __init__(self, alignments: PairwiseAlignments) -> None:
+                self.alignments = alignments
+                self.counted = False
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self.alignments, name)
+
+            def __getitem__(self, index: int) -> Any:
+                return self.alignments[index]
+
+            def __len__(self) -> int:
+                self.counted = True
+                return len(self.alignments)
+
+            def __str__(self) -> str:
+                self.counted = True
+                return str(self.alignments)
+
+        class RecordingAligner:
+            """Aligner stand-in handing back the real alignments inside a counting proxy."""
+
+            def __init__(self, aligner: PairwiseAligner) -> None:
+                self.aligner = aligner
+                self.proxies: list[CountingAlignments] = []
+
+            def align(self, seq1: str, seq2: str) -> CountingAlignments:
+                proxy = CountingAlignments(self.aligner.align(seq1, seq2))
+                self.proxies.append(proxy)
+                return proxy
+
+        recorder = RecordingAligner(bc3_matcher.aligner)
+        monkeypatch.setattr(bc3_matcher, "aligner", recorder)
+
+        result = bc3_matcher.align_seqs(bc3, bc3)
+
+        expected_score = float(bc3_matcher.component.length * MATCH_SCORE)
+        assert_that(result).is_instance_of(AlignmentContainer)
+        assert_that(result.score).is_equal_to(expected_score)  # type: ignore[union-attr]
+        assert_that(recorder.proxies).is_length(1)
+        assert_that(recorder.proxies[0].counted).is_false()
 
     # ==========================================
     # match() - Return Type & Basic Structure
@@ -3042,6 +3140,55 @@ class TestAlignmentMatcher:
         for r in result:
             assert_that(r.match).is_none()
             assert_that(r.method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+    def test_match_ambiguous_with_no_spacer_evidence_returns_every_tied_candidate(
+        self,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """Test that a tie with no spacer evidence at all returns every tied candidate.
+
+        Two very distinct barcodes tie at the perfect alignment score and NEITHER sits next to a
+        real spacer, so the spacer-validation pass keeps nothing and the tie-break ladder falls
+        through to its final exit, which returns every tied candidate rather than a
+        spacer-validated subset. What distinguishes this exit from the spacer-validated
+        ambiguity exit above it is that BOTH ``spacer_upstream`` and ``spacer_downstream`` are
+        None on every returned attempt, so those two assertions carry the characterisation.
+
+        BC2 is the component because it is the only HyDrop barcode with a defined spacer on both
+        sides, which is what makes the spacer check meaningful here rather than vacuous.
+
+        The filler is ten T's rather than five deliberately. ``check_spacers`` guards its
+        upstream window with ``match_idx[0] >= spacer_component.length`` and its downstream
+        window with the mirror-image bound, and HyDrop spacers are 10bp; with only five bases of
+        filler those guards short-circuit and this test would pin a bounds check instead of a
+        spacer-sequence comparison. With ten, every spacer window genuinely exists and simply
+        fails to match the expected spacer sequence, which is the condition being pinned.
+        """
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        matcher = AlignmentMatcher(
+            whitelist=(self.BC_X, self.BC_Y),
+            component=comp,
+            chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
+        )
+        # Filler is neither spacer sequence, so no spacer window can validate a candidate.
+        filler = "TTTTTTTTTT"
+        read = filler + self.BC_X + filler + self.BC_Y + filler
+        result = matcher.match(read)
+
+        assert_that(result).is_length(2)
+        for attempt in result:
+            assert_that(attempt.match).is_none()
+            assert_that(attempt.edit_distance).is_none()
+            assert_that(attempt.spacer_upstream).is_none()
+            assert_that(attempt.spacer_downstream).is_none()
+            assert_that(attempt.read_idx).is_not_none()
+            assert_that(attempt.method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+        # Returned order derives from frozenset iteration and is hash-seed dependent, so the
+        # candidates are compared as a sorted list rather than positionally.
+        candidates = sorted(attempt.candidate for attempt in result)
+        assert_that(candidates).is_equal_to(sorted([self.BC_X, self.BC_Y]))
 
     def test_match_ambiguous_resolved_by_spacer_returns_single_result(
         self,
