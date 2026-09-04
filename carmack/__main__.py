@@ -163,7 +163,9 @@ def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count, fast):
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
 @click.option("--raw", is_flag=True, default=False, help="Stop after raw extraction; do not correct UMIs.")
-def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix, raw):
+@click.option("--temp-dir", required=False, type=click.Path(exists=True, file_okay=False, writable=True), default=None, help="Directory UMI correction spills its shard files to (default: system temp, which may be RAM-backed tmpfs). The spill takes roughly 100 bytes per accepted read (~36 GB at 400M reads), so size the volume before the run.")
+@click.option("--shard-count", required=False, type=click.IntRange(1, 1024), default=256, show_default=True, help="Number of shards UMI correction spreads reads over; more shards means lower peak memory, though past about 256 the peak stops improving. Each shard costs an open file descriptor, so a count near the cap needs a raised ulimit.")
+def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix, raw, temp_dir, shard_count):
     """
     Extract raw UMIs from an annotated R1 FASTQ.
 
@@ -175,7 +177,7 @@ def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix, raw):
 
     log.info("Extracting UMIs from annotated FASTQ file...")
     extractor = UmiExtractor(r1_annotated_fastq, chemistry)
-    extractor.extract_umis(output_dir, prefix, raw=raw)
+    extractor.extract_umis(output_dir, prefix, raw=raw, temp_dir=temp_dir, shard_count=shard_count)
 
 
 @carmack_cli.command("assign-targets")

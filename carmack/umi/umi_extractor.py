@@ -10,10 +10,18 @@ then groups the accepted reads by full cell barcode and collapses directional
 UMI variants (see :mod:`carmack.umi.umi_corrector`), writing the corrected map
 to ``{prefix}.umi_map.tsv``. With ``raw`` this is the terminal step: no map is
 written and the faithful raw ``UMI`` tag stands alone.
+
+A production run carries far more reads than the correction pass could hold at
+once, so the accepted records are never accumulated in memory: they are spilled
+during extraction to the per-barcode shards of a
+:class:`carmack.umi.umi_shards.UmiShardStore`, corrected one shard at a time and
+merged back into extraction order. The map is therefore byte for byte what a
+single in-memory pass would have written, at the peak cost of one shard.
 """
 
 import logging
 from collections import Counter
+from contextlib import ExitStack
 from itertools import chain
 from pathlib import Path
 
@@ -23,8 +31,9 @@ from carmack.chemistry.read_component import ReadComponentType
 from carmack.io.fastq_file import FastqFile
 from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
-from carmack.umi.umi_corrector import CorrectedUmi, UmiCorrector, UmiRecord
+from carmack.umi.umi_corrector import UmiCorrector, UmiRecord
 from carmack.umi.umi_reporting import CorrectionStats, UmiExtractionStats
+from carmack.umi.umi_shards import DEFAULT_SHARD_COUNT, UmiShardStore
 from carmack.utils import get_prefix, homopolymer_run_length
 
 log = logging.getLogger(__name__)
@@ -138,8 +147,15 @@ class UmiExtractor:
         output_dir: str = ".",
         prefix: str | None = None,
         raw: bool = False,
+        temp_dir: str | None = None,
+        shard_count: int = DEFAULT_SHARD_COUNT,
     ) -> UmiExtractionStats:
         """Stream the reads, annotate extracted UMIs and write the output files.
+
+        Accepted records are spilled to a :class:`UmiShardStore` as they are
+        extracted rather than accumulated, and correction then runs shard by
+        shard so only one shard is ever resident. Under ``raw`` no store is
+        created at all: nothing is spilled, hashed or merged.
 
         Args:
             output_dir: Directory for the generated files.
@@ -147,9 +163,22 @@ class UmiExtractor:
                 input filename).
             raw: When ``True`` this is the terminal step and no correction is
                 applied; no ``UB`` tag or map is emitted.
+            temp_dir: Directory to create the correction spill tree in; ``None``
+                inherits the platform default (``TMPDIR``). Ignored under
+                ``raw``. The tree is removed when the run ends, whether it
+                succeeds or raises.
+            shard_count: Number of shards to spread the spilled records over.
+                Peak memory is roughly one shard, so more shards means less of
+                it, down to the floor the largest single cell barcode sets: a
+                barcode group is indivisible, so no shard count splits it. One
+                shard reproduces the old single-pass behaviour.
 
         Returns:
             The reconciling :class:`UmiExtractionStats` for the run.
+
+        Raises:
+            ValueError: If ``shard_count`` is less than one, or the first read's
+                header does not match the supplied chemistry.
         """
         log.info(f"Extracting UMIs from {self.fastq.filename} (raw={raw})...")
 
@@ -165,7 +194,7 @@ class UmiExtractor:
         no_polyg_anchor = 0
         length_counts: Counter[int] = Counter()
         run_counts: Counter[int] = Counter()
-        records: list[UmiRecord] = []
+        correction_stats: CorrectionStats | None = None
 
         # Validate the first read's header against the chemistry before writing
         # anything, so a chemistry / FASTQ mismatch fails fast with a clear error
@@ -176,7 +205,11 @@ class UmiExtractor:
             self.validate_header(ReadAnnotation.parse(first_read[0]))
             reads = chain([first_read], reads)
 
-        with GzipFile(str(umi_fastq_path)).open_write_stream() as umi_stream:
+        with ExitStack() as stack:
+            # The store's lifetime spans extraction and correction alike, so the
+            # spill tree is removed even when correction raises part-way through.
+            store = None if raw else stack.enter_context(UmiShardStore(shard_count, temp_dir))
+            umi_stream = stack.enter_context(GzipFile(str(umi_fastq_path)).open_write_stream())
             for name, seq, qual, *_ in reads:
                 total += 1
                 ann = ReadAnnotation.parse(name)
@@ -200,23 +233,22 @@ class UmiExtractor:
                 accepted += 1
                 length_counts[len(raw_umi)] += 1
                 run_counts[homopolymer_run_length(seq, polyg_start, self.polyg_base)] += 1
-                if not raw:
-                    records.append(
+                if store is not None:
+                    # The ordinal is the read's 0-based position among accepted
+                    # reads; the merge sorts on it to restore extraction order.
+                    store.write(
+                        accepted - 1,
                         UmiRecord(
                             read_id=ann.read_id,
                             barcode=self.chemistry.construct_full_barcode(
                                 {name: ann.get(name) for name in self.barcode_names}
                             ),
                             raw_umi=raw_umi,
-                        )
+                        ),
                     )
 
-        correction_stats: CorrectionStats | None = None
-        if not raw:
-            mapping, correction_stats = UmiCorrector(
-                self.umi_length, self.umi_length_tolerance
-            ).correct(records)
-            self.write_umi_map(umi_map_path, records, mapping)
+            if store is not None:
+                correction_stats = self.correct_shards(store, umi_map_path)
 
         stats = UmiExtractionStats(
             total_reads=total,
@@ -235,26 +267,31 @@ class UmiExtractor:
         log.info(f"Extracted UMIs for {accepted}/{total} reads")
         return stats
 
-    @staticmethod
-    def write_umi_map(
-        path: Path, records: list[UmiRecord], mapping: dict[str, CorrectedUmi]
-    ) -> None:
-        """Write the corrected-UMI map in read order.
+    def correct_shards(self, store: UmiShardStore, umi_map_path: Path) -> CorrectionStats:
+        """Correct every spilled shard in turn and merge their map rows into order.
 
-        The file is tab-separated with no header and one row per corrected read,
-        columns ordered ``read_id``, ``barcode``, ``UR``, ``UB``. Reads dropped
-        during correction (raw sentinel or off-length) are omitted.
+        The store is closed first so the whole spill is readable, then each shard
+        is read, corrected, written out as map rows and discarded, holding one
+        shard at a time. Correcting a shard in isolation is exact because the
+        shard is a function of the cell barcode alone, so a barcode's reads are
+        never split across two shards. One corrector serves every shard: it is
+        stateless between calls and building its clusterer is not free.
 
         Args:
-            path: Destination path for the ``umi_map.tsv`` file.
-            records: The accepted reads in extraction order.
-            mapping: The correction result keyed by read id.
+            store: The shard store holding the run's spilled records.
+            umi_map_path: Destination path for the merged ``umi_map.tsv``.
+
+        Returns:
+            The run-level :class:`CorrectionStats`, summed over the shards.
         """
-        with path.open("w") as handle:
-            for record in records:
-                corrected = mapping.get(record.read_id)
-                if corrected is None:
-                    continue
-                handle.write(
-                    f"{record.read_id}\t{corrected.barcode}\t{corrected.ur}\t{corrected.ub}\n"
-                )
+        store.close()
+        corrector = UmiCorrector(self.umi_length, self.umi_length_tolerance)
+        parts: list[CorrectionStats] = []
+        for index in store.indexes:
+            shard = store.read_shard(index)
+            mapping, shard_stats = corrector.correct(record for ordinal, record in shard)
+            store.write_shard_map(index, shard, mapping)
+            store.discard_shard(index)
+            parts.append(shard_stats)
+        store.merge_shard_maps(umi_map_path)
+        return CorrectionStats.combine(parts)
