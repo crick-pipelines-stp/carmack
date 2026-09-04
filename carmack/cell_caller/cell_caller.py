@@ -55,7 +55,7 @@ class CellCaller:
         for overlap in bam.fetch(chrom, start, end):
             overlap_bases = min(end, overlap.reference_end) - max(start, overlap.reference_start)
             if overlap_bases >= min_overlap:
-                yield overlap.get_tag("BC")
+                yield overlap.get_tag("CB")
 
     def compute_matrix(self, min_overlap: int = 1, force: bool = False) -> None:
         """
@@ -83,7 +83,7 @@ class CellCaller:
         peaks = tuple(peaks)
         barcodes = set(
             [
-                read.get_tag("BC")
+                read.get_tag("CB")
                 for read in pysam.AlignmentFile(self.bam_path, "rb", index_filename=self.bai_path)
             ]
         )

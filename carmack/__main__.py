@@ -18,8 +18,8 @@ from carmack.cell_caller.cell_caller import CellCaller
 from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.split_reads.split_reads import BamSplitter
 from carmack.tag_dedup.tag_dedup import TagDedup
+from carmack.umi.umi_extractor import UmiExtractor
 from carmack.utils import format_duration, get_bai, get_cpu_count
-
 
 # Set up logging as the root logger
 # Submodules should all traverse back to this
@@ -34,6 +34,7 @@ click.rich_click.COMMAND_GROUPS = {
             "name": "Commands for users",
             "commands": [
                 "extract-barcodes",
+                "extract-umis",
                 "fastq-filter",
                 "bam-tag-deduplicate",
                 "call-cells",
@@ -154,6 +155,27 @@ def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count, fast):
     extractor.extract_barcodes(output_dir, prefix)
 
 
+@carmack_cli.command("extract-umis")
+@click.argument("r1_annotated_fastq", required=True, nargs=1, type=click.Path(exists=True), metavar="<r1_annotated_fastq>")
+@click.option("-c", "--chemistry", required=True, type=str, help="Chemistry name for UMI layout")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+@click.option("--raw", is_flag=True, default=False, help="Stop after raw extraction; do not correct UMIs.")
+def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix, raw):
+    """
+    Extract raw UMIs from an annotated R1 FASTQ.
+
+    For each annotated read the raw UMI is extracted between its left anchor (BC1, read from the
+    header) and the downstream poly-G run, then annotated onto the read with UMI / UMI_POS tags. The
+    UMI length distribution is written to a stats report. With --raw this is the terminal step; UMI
+    correction is not performed.
+    """
+
+    log.info("Extracting UMIs from annotated FASTQ file...")
+    extractor = UmiExtractor(r1_annotated_fastq, chemistry)
+    extractor.extract_umis(output_dir, prefix, raw=raw)
+
+
 @carmack_cli.command("fastq-filter")
 @click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
 @click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")
@@ -182,19 +204,21 @@ def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix, trim_r1, trim
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-d", "--dedup", is_flag=True, default=False, help="Flag describing whether or not to reads should be deduplicated during barcode tagging")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix):
+@click.option("--umi-map", required=False, type=click.Path(exists=True), default=None, help="Corrected UMI map (TSV: read_id, barcode, UR, UB) for UMI-aware tagging and deduplication.")
+def bam_tag_deduplicate(bam, bai, valid_barcodes, output_dir, dedup, prefix, umi_map):
     """
     Tag reads with barcodes and deduplicate.
 
     The reads are tagged with their corresponding barcodes and written to an output BAM file.
     If dedup is set to True, reads are also deduplicated based on the start position, end position and barcode of the read pairs.
     An additional file containing the number of unique and duplicate read pairs is also saved to the output directory.
+    If a UMI map is supplied, reads are additionally tagged with their raw (UR) and corrected (UB) UMI and deduplicated on the corrected UMI.
     """
     if bai is None:
         bai = get_bai(bam)
 
     log.info("Tagging reads with barcodes and deduplicating if requested...")
-    tag_dedup = TagDedup(bam, bai, valid_barcodes)
+    tag_dedup = TagDedup(bam, bai, valid_barcodes, umi_map=umi_map)
     tag_dedup.tag_dedup_reads(dedup, output_dir, prefix)
 
 

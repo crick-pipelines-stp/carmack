@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
 
-from carmack.chemistry.read_component import ReadComponentType
+from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
 
 
@@ -93,6 +93,71 @@ class ChemistryBase(ABC):
             raise KeyError(f"Missing whitelists for barcode components: {missing}")
 
         return whitelists
+
+    def umi_component(self) -> ReadComponent | None:
+        """Return the UMI component of the read structure, if one is defined.
+
+        Returns:
+            The single ``UMI`` :class:`ReadComponent`, or ``None`` for
+            barcode-only chemistries that carry no UMI.
+        """
+        return next(
+            (comp for comp in self.read_structure if comp.type is ReadComponentType.UMI),
+            None,
+        )
+
+    def umi_left_anchor(self) -> ReadComponent | None:
+        """Return the anchor component immediately 5' of the UMI.
+
+        The left anchor is the component preceding the UMI in the read
+        structure, but only when that neighbour exists and can anchor a
+        variable-length component (:attr:`ReadComponent.is_anchor`). For
+        ``custom_seq_1_0`` this is the ``BC1`` barcode.
+
+        Returns:
+            The anchoring :class:`ReadComponent`, or ``None`` when there is no
+            UMI or its left neighbour cannot anchor it.
+        """
+        umi = self.umi_component()
+        if umi is None:
+            return None
+        previous = self.read_structure.get_previous(umi)
+        if previous is not None and previous.is_anchor:
+            return previous
+        return None
+
+    def umi_right_anchor(self) -> ReadComponent | None:
+        """Return the anchor component immediately 3' of the UMI.
+
+        The right anchor is the component following the UMI in the read
+        structure, but only when that neighbour exists and can anchor a
+        variable-length component (:attr:`ReadComponent.is_anchor`). For
+        ``custom_seq_1_0`` this is the ``POLYG`` homopolymer.
+
+        Returns:
+            The anchoring :class:`ReadComponent`, or ``None`` when there is no
+            UMI or its right neighbour cannot anchor it.
+        """
+        umi = self.umi_component()
+        if umi is None:
+            return None
+        following = self.read_structure.get_next(umi)
+        if following is not None and following.is_anchor:
+            return following
+        return None
+
+    def supports_umi_extraction(self) -> bool:
+        """Return whether this chemistry can support UMI extraction.
+
+        UMI extraction requires a UMI component whose left neighbour exists and
+        can anchor it. Barcode-only chemistries without a UMI (e.g. hydrop)
+        return ``False`` rather than raising.
+
+        Returns:
+            ``True`` when the read structure contains a UMI anchored on its 5'
+            side, ``False`` otherwise.
+        """
+        return self.umi_left_anchor() is not None
 
     def construct_full_barcode(self, barcodes: dict[str, str]) -> str:
         """

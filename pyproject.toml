@@ -19,6 +19,7 @@ dependencies = [
     "scipy",
     "kneed",
     "biopython",
+    "umi_tools>=1.1.0",
 ]
 scripts = { "carmack" = "carmack.__main__:run_carmack" }
 
@@ -85,7 +86,9 @@ profile = "black"
 atomic = true
 indent = 4
 line_length = 200
-lines_after_imports = 2
+# -1 = context-aware, matching black: 1 blank line before a plain statement,
+# 2 before a def/class. A fixed value fights black in one case or the other.
+lines_after_imports = -1
 include_trailing_comma = true
 
 [tool.pylint.FORMAT]
