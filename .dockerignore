@@ -1,0 +1,40 @@
+# .git is 163 MB of the 247 MB context and nothing in the build reads it: the version
+# comes in as the CARMACK_VERSION build arg instead.
+.git
+.gitignore
+
+# Development environment, not runtime.
+.devcontainer
+.github
+.githooks
+.vscode
+.editorconfig
+.prettierrc
+tox.ini
+update_version.py
+containers
+docs
+
+# Local-only benchmarking harness, gitignored for the same reason: a development
+# tool that is never part of the distributed package, and would otherwise reach the
+# image from a working tree even though it is absent from a clean checkout.
+benchmark_pipeline.py
+tests/test_benchmark_pipeline.py
+
+# Build and tool output.
+build
+dist
+*.egg-info
+prof
+prototype
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.tox
+.coverage
+.coverage.*
+
+Dockerfile
+.dockerignore

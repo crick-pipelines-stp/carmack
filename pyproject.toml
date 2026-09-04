@@ -46,11 +46,12 @@ include-package-data = true
 carmack = ["data/**/*"]
 
 [tool.setuptools.packages.find]
-exclude = [
-    "docs",
-    "prof",
-    "prototype",
-]
+# Without this the default namespace discovery sweeps in every directory that is not
+# excluded by name, so the wheel shipped a top-level "tests" package into site-packages.
+# Namespace discovery itself has to stay on: carmack/cell_caller, carmack/fastq_tools,
+# carmack/split_reads and carmack/tag_dedup carry no __init__.py, and are only found
+# that way.
+include = ["carmack*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
