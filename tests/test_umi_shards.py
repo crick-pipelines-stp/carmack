@@ -5,9 +5,10 @@ chosen by a stable digest of its cell barcode, so correction can run one shard a
 a time instead of holding every record of the run in memory. These tests pin the
 properties the design rests on: the shard digest is stable across processes and
 hash seeds, a whole cell barcode always lands in exactly one shard, each shard is
-written in ascending extraction order, the temporary tree is always torn down,
-and the k-way merge of the per-shard map files restores exact extraction order
-byte for byte.
+written in ascending extraction order, a shard reads back whole without anything
+outside the store having flushed it first, the temporary tree is always torn
+down, and the k-way merge of the per-shard map files restores exact extraction
+order byte for byte.
 """
 
 import errno
@@ -157,7 +158,6 @@ class TestUmiShardStore:
         with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
             for ordinal, record in enumerate(records):
                 store.write(ordinal, record)
-            store.close()
             recovered = [pair for index in store.indexes for pair in store.read_shard(index)]
 
         assert_that(recovered).is_length(len(records))
@@ -177,7 +177,6 @@ class TestUmiShardStore:
                     )
                     store.write(ordinal, record)
                     ordinal += 1
-            store.close()
             shards_per_barcode: dict[str, set[int]] = {barcode: set() for barcode in BARCODES}
             populated = 0
             for index in store.indexes:
@@ -198,7 +197,6 @@ class TestUmiShardStore:
                 store.write(
                     ordinal, UmiRecord(read_id=f"r{ordinal}", barcode=barcode, raw_umi="ACGTACGT")
                 )
-            store.close()
             ordinals = [ordinal for ordinal, _ in store.read_shard(target)]
 
         assert_that(ordinals).is_equal_to(sorted(ordinals))
@@ -209,7 +207,6 @@ class TestUmiShardStore:
         temp_root.mkdir()
         with UmiShardStore(shard_count=4, temp_dir=str(temp_root)) as store:
             store.write(0, UmiRecord(read_id="r0", barcode=BARCODES[0], raw_umi="ACGTACGT"))
-            store.close()
             files = [path for path in temp_root.rglob("*") if path.is_file()]
 
         assert_that(files).is_not_empty()
@@ -219,7 +216,6 @@ class TestUmiShardStore:
         temp_root.mkdir()
         with UmiShardStore(shard_count=4, temp_dir=str(temp_root)) as store:
             store.write(0, UmiRecord(read_id="r0", barcode=BARCODES[0], raw_umi="ACGTACGT"))
-            store.close()
             assert_that(list(temp_root.iterdir())).is_not_empty()
 
         assert_that(list(temp_root.iterdir())).is_empty()
@@ -276,7 +272,6 @@ class TestUmiShardStore:
         destination = tmp_path / "umi_map.tsv"
         with UmiShardStore(shard_count=4, temp_dir=str(temp_root)) as store:
             store.write(0, record)
-            store.close()
             write_all_shard_maps(store, {target: [(0, record)]}, mapping)
             before = {path for path in temp_root.rglob("*") if path.is_file()}
 
@@ -294,12 +289,79 @@ class TestUmiShardStore:
         target = shard_index(barcode, 4)
         with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
             store.write(0, UmiRecord(read_id="r0", barcode=barcode, raw_umi="ACGTACGT"))
-            store.close()
             empties = [index for index in store.indexes if index != target]
             contents = {index: store.read_shard(index) for index in empties}
 
         for index, shard in contents.items():
             assert_that(shard).described_as(f"shard {index}").is_empty()
+
+    def test_read_shard_recovers_records_still_held_in_the_write_buffer(self, tmp_path) -> None:
+        # Two rows are a fraction of the write handle's text buffer, so not one
+        # byte of the shard has reached the file yet. Reading the shard has to be
+        # what makes it whole; nothing else in the run will.
+        barcode = BARCODES[0]
+        target = shard_index(barcode, 4)
+        records = [
+            UmiRecord(read_id=f"r{ordinal}", barcode=barcode, raw_umi="ACGTACGT")
+            for ordinal in range(2)
+        ]
+        with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
+            for ordinal, record in enumerate(records):
+                store.write(ordinal, record)
+            recovered = store.read_shard(target)
+
+        assert_that(recovered).is_equal_to([(0, records[0]), (1, records[1])])
+
+    def test_read_shard_recovers_every_record_across_many_buffer_fills(self, tmp_path) -> None:
+        # A row is around forty bytes, so a thousand of them overrun the write
+        # handle's buffer several times over: earlier rows have reached the file
+        # while the tail is still buffered. A shard read that misses the buffered
+        # tail therefore returns a plausible prefix rather than nothing at all,
+        # which is how the loss stays silent.
+        record_count = 1000
+        records = [
+            UmiRecord(read_id=f"r{ordinal:04d}", barcode=BARCODES[0], raw_umi="ACGTACGT")
+            for ordinal in range(record_count)
+        ]
+        with UmiShardStore(shard_count=1, temp_dir=str(tmp_path)) as store:
+            for ordinal, record in enumerate(records):
+                store.write(ordinal, record)
+            recovered = store.read_shard(0)
+
+        assert_that(recovered).is_length(record_count)
+        assert_that([ordinal for ordinal, _ in recovered]).is_equal_to(list(range(record_count)))
+        assert_that([record.read_id for _, record in recovered]).is_equal_to(
+            [record.read_id for record in records]
+        )
+
+    def test_writing_to_a_shard_after_it_is_read_raises(self, tmp_path) -> None:
+        # Reading a shard hands its descriptor back, so a record written to that
+        # shard afterwards would land in a file nothing reads again. Giving the
+        # handle up rather than merely flushing it is what turns that silent loss
+        # into a raised error.
+        barcode = BARCODES[0]
+        target = shard_index(barcode, 4)
+        record = UmiRecord(read_id="r0", barcode=barcode, raw_umi="ACGTACGT")
+        with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
+            store.write(0, record)
+            store.read_shard(target)
+
+            with pytest.raises(ValueError, match="closed file"):
+                store.write(1, record)
+
+    def test_a_shard_can_be_read_more_than_once(self, tmp_path) -> None:
+        # Correction reads each shard once, but a second read of the same shard
+        # must still return the same records rather than tripping over the handle
+        # the first read gave up.
+        barcode = BARCODES[0]
+        target = shard_index(barcode, 4)
+        with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
+            store.write(0, UmiRecord(read_id="r0", barcode=barcode, raw_umi="ACGTACGT"))
+            first = store.read_shard(target)
+            second = store.read_shard(target)
+
+        assert_that(first).is_not_empty()
+        assert_that(second).is_equal_to(first)
 
 
 class TestMergeShardMaps:
@@ -322,7 +384,6 @@ class TestMergeShardMaps:
         }
         destination = tmp_path / "umi_map.tsv"
         with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
-            store.close()
             write_all_shard_maps(store, rows_by_shard, mapping)
             store.merge_shard_maps(destination)
 
@@ -340,7 +401,6 @@ class TestMergeShardMaps:
         }
         destination = tmp_path / "umi_map.tsv"
         with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
-            store.close()
             write_all_shard_maps(store, rows_by_shard, mapping)
             store.merge_shard_maps(destination)
 
@@ -362,7 +422,6 @@ class TestMergeShardMaps:
         }
         destination = tmp_path / "umi_map.tsv"
         with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
-            store.close()
             write_all_shard_maps(store, rows_by_shard, mapping)
             store.merge_shard_maps(destination)
 
@@ -372,7 +431,6 @@ class TestMergeShardMaps:
     def test_merging_empty_shards_writes_an_empty_destination(self, tmp_path) -> None:
         destination = tmp_path / "umi_map.tsv"
         with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
-            store.close()
             write_all_shard_maps(store, {}, {})
             store.merge_shard_maps(destination)
 
