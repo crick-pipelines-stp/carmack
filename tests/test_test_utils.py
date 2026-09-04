@@ -4,10 +4,14 @@
 Tests for the shared test helpers in tests/utils.py.
 
 These cover the golden-comparison helpers rather than any production module: report
-normalisation, golden assertion and regeneration, and the PNG sanity check.
+normalisation, golden assertion and regeneration, the PNG sanity check, and the fixture
+builders used to stand up damaged gzip files and stub compressors.
 """
 
 import gzip
+import os
+import stat
+import subprocess
 
 import pytest
 from assertpy import assert_that
@@ -17,8 +21,10 @@ from tests.utils import (
     REGEN_GOLDEN_ENV_VAR,
     assert_is_png,
     assert_matches_golden,
+    gzip_bytes,
     read_gzip_text,
     strip_report_run_details,
+    write_executable_stub,
 )
 
 BARCODE_REPORT = (
@@ -61,6 +67,32 @@ class TestReadGzipText:
 
         assert_that(read_gzip_text(path)).is_equal_to("line one\nline two\n")
         assert_that(read_gzip_text(str(path))).is_equal_to("line one\nline two\n")
+
+
+class TestGzipBytes:
+    """Tests for gzip_bytes."""
+
+    def test_produces_a_readable_member(self, tmp_path) -> None:
+        """Test that the returned bytes are a gzip file the stdlib can read back."""
+        path = tmp_path / "sample.txt.gz"
+        path.write_bytes(gzip_bytes("line one\nline two\n"))
+
+        assert_that(read_gzip_text(path)).is_equal_to("line one\nline two\n")
+
+    def test_is_byte_identical_across_calls(self) -> None:
+        """Test that the fixed modification time makes the same text give the same bytes."""
+        assert_that(gzip_bytes("payload")).is_equal_to(gzip_bytes("payload"))
+
+
+class TestWriteExecutableStub:
+    """Tests for write_executable_stub."""
+
+    def test_writes_a_stub_that_runs_and_reports_its_exit_status(self, tmp_path) -> None:
+        """Test that the stub is executable and reports the exit status its body sets."""
+        path = write_executable_stub(tmp_path, "failing-stub", "exit 3")
+
+        assert_that(stat.S_IMODE(os.stat(path).st_mode)).is_equal_to(0o755)
+        assert_that(subprocess.run([path], check=False).returncode).is_equal_to(3)
 
 
 class TestStripReportRunDetails:

@@ -8,11 +8,16 @@ import functools
 import gzip
 import os
 import tempfile
+from io import BytesIO
 from pathlib import Path
 
 REGEN_GOLDEN_ENV_VAR = "CARMACK_REGEN_GOLDEN"
 
 PNG_MAGIC_BYTES = b"\x89PNG\r\n\x1a\n"
+
+# Owner-writable, world-executable, so a stub written into a folder on PATH is found and
+# run the way any other command on PATH would be.
+STUB_EXECUTABLE_MODE = 0o755
 
 # Run-detail lines vary between runs, so golden comparisons drop them. Matching on the full
 # comment prefix keeps section headers, which are comments too, and lines that merely mention
@@ -62,6 +67,51 @@ def read_gzip_text(path: str | Path) -> str:
 
     with gzip.open(path, "rt") as handle:
         return handle.read()
+
+
+def gzip_bytes(text: str) -> bytes:
+    """
+    Compress text into the bytes of a single-member gzip file.
+
+    The member header carries a fixed zero modification time, so the same text always
+    compresses to the same bytes. Returning bytes rather than writing a file lets a test
+    derive corrupted variants - truncated, bit-flipped, concatenated - by slicing the
+    result, without a healthy file on disk that nothing reads.
+
+    Args:
+        text: Text to compress, encoded as UTF-8.
+
+    Returns:
+        The complete bytes of a valid single-member gzip file holding the text.
+    """
+
+    buffer = BytesIO()
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as handle:
+        handle.write(text.encode("UTF-8"))
+    return buffer.getvalue()
+
+
+def write_executable_stub(folder: str | Path, name: str, body: str) -> str:
+    """
+    Write an executable POSIX shell script into a folder and return its path.
+
+    Used to stand a stub compressor in for gzip or pigz. Writing it under a chosen name
+    inside a folder placed on PATH lets a test exercise command resolution, PATH lookup
+    and process exit status end to end, rather than mocking the subprocess away.
+
+    Args:
+        folder: Directory to write the stub into. It must already exist.
+        name: File name for the stub, which is the name PATH lookup will find.
+        body: Shell commands making up the stub, without the shebang line.
+
+    Returns:
+        The path of the stub, as a str for direct use in a command list.
+    """
+
+    path = Path(folder) / name
+    path.write_text(f"#!/bin/sh\n{body}\n")
+    path.chmod(STUB_EXECUTABLE_MODE)
+    return str(path)
 
 
 def strip_report_run_details(text: str) -> str:
