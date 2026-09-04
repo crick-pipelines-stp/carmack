@@ -10,11 +10,12 @@ to be explained or re-blessed deliberately.
 Tiers
 -----
 Two always-run cases cover the small inputs (200 reads of ``carmack_custom_seq_1_0`` and 50
-reads of ``hydrop``) and cost roughly half a minute in total. Two full-scale cases cover the
+reads of ``hydrop``) and cost roughly ten seconds in total. Two full-scale cases cover the
 2000-read inputs and carry the ``only_run_with_direct_target`` marker, so the repo-root
 conftest skips them unless ``-k`` selects them. The full-scale HyDrop case alone takes about
-ten minutes: that library barely matches the HyDrop chemistry, so nearly every read falls
-through all three matcher tiers.
+two minutes twenty and still dominates the suite, accounting for some 85% of the full-scale
+tier: that library barely matches the HyDrop chemistry, so nearly every read falls through
+all three matcher tiers.
 
 Each case covers every stage its chemistry supports. The ``carmack_custom_seq_1_0`` cases
 run barcode extraction, UMI extraction and target assignment; the HyDrop cases stop after
@@ -23,12 +24,12 @@ index.
 
 Determinism
 -----------
-``BarcodeExtractor.extract_barcodes`` writes ``bc_all``, ``bc_valid`` and ``r1_annotated``
-in future-completion order rather than input order, and ``bc_counts.csv`` orders ties by
-``Counter`` insertion order. Its output is therefore byte-stable only when there is exactly
-one batch. Every fixture here uses ``n_workers=1``, and all four inputs sit below
-``MAX_READS_PER_BATCH``, so ``calc_batch_size()`` yields a single batch and completion order
-is input order. Raising the worker count would make these tests flaky, not faster.
+``BarcodeExtractor.extract_barcodes`` drains its bounded in-flight window in submission
+order, so ``bc_all``, ``bc_valid`` and ``r1_annotated`` are written in input order and
+``bc_counts.csv`` orders ties by a ``Counter`` populated in that same order. The outputs are
+byte-stable at any worker count. Every fixture here runs at ``n_workers=4`` precisely so
+that the goldens cover a multi-batch, multi-worker configuration rather than the degenerate
+single-batch one a single worker would produce.
 
 ``fast=True`` is deliberately not used: it drops the AlignmentMatcher, which is exactly the
 tier this baseline exists to protect.
@@ -53,20 +54,18 @@ The default path asserts. To re-bless the goldens after an intended change::
     CARMACK_REGEN_GOLDEN=1 python -m pytest tests/test_golden_outputs.py -q -p no:sugar -k golden
 
 The first command re-blesses the always-run tier only. The second adds ``-k`` so the
-full-scale tier is selected as well, and takes ten to twelve minutes. Always run pytest from
-the repo root, or a stale non-editable ``carmack`` in site-packages shadows the repo source
-and silently produces different files. Review the resulting diff before committing it.
+full-scale tier is selected as well, and takes about two and three quarter minutes for the
+whole 34-test tier. Always run pytest from the repo root, or a stale non-editable
+``carmack`` in site-packages shadows the repo source and silently produces different files.
+Review the resulting diff before committing it.
 """
 
-import functools
-import multiprocessing
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from assertpy import assert_that
 
-import carmack.barcode.barcode_extractor as barcode_extractor_module
 from carmack.assign_targets.target_assigner import TargetAssigner
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.umi.umi_extractor import UmiExtractor
@@ -84,10 +83,11 @@ GOLDEN_EXPECTED_DIR = GOLDEN_INPUT_DIR / "expected"
 CUSTOM_SEQ_CHEMISTRY = "carmack_custom_seq_1_0"
 HYDROP_CHEMISTRY = "hydrop"
 
-# Only one worker keeps the extraction to a single batch, which is what makes the outputs
-# byte-stable. See the module docstring: results are written in completion order, so more
-# than one batch reorders bc_all, bc_valid, r1_annotated and the bc_counts tie order.
-GOLDEN_WORKERS = 1
+# Four workers put every golden input over more than one batch: the 200-read input splits
+# 4x50, the 50-read input splits 13/13/13/11 and both 2000-read inputs split 4x500. That
+# multi-batch shape is the property worth protecting, because a single worker would leave
+# every fixture on one batch and so could not detect a reordering regression at all.
+GOLDEN_WORKERS = 4
 
 
 @dataclass(frozen=True)
@@ -139,22 +139,6 @@ def execute_golden_run(
     Run barcode extraction, and optionally UMI extraction and target assignment, over one
     golden input.
 
-    The multiprocessing context is forced to ``spawn`` for the duration of the barcode
-    extraction. This is a workaround for a production bug, not a test convenience:
-
-    ``BarcodeExtractor.extract_barcodes`` opens its ``ProcessPoolExecutor`` first and the
-    three ``gzip`` ``SubprocessStream`` writers second, inside a single ``with`` statement.
-    Under the default ``fork`` context, ``executor.submit`` forks workers that inherit each
-    ``gzip`` child's stdin write end. The ``with`` unwinds in reverse order, so the gzip
-    streams are closed while those workers are still alive holding duplicate write ends,
-    ``gzip`` never sees EOF, and ``SubprocessStream.close`` blocks forever in
-    ``self.proc.wait()``. It reproduces every time, with as few as 25 reads, on both
-    chemistries. Spawned workers are fresh interpreters that inherit no descriptors, so the
-    pipes close cleanly.
-
-    Remove this patch once ``extract_barcodes`` shuts the process pool down before closing
-    the gzip output streams.
-
     Args:
         tmp_path_factory: Session-scoped factory supplying the run's output directory.
         input_name: File name of the input FASTQ under the golden input directory.
@@ -169,17 +153,8 @@ def execute_golden_run(
     prefix = get_prefix(input_fastq)
     output_dir = tmp_path_factory.mktemp(prefix)
 
-    spawning_executor = functools.partial(
-        barcode_extractor_module.ProcessPoolExecutor,
-        mp_context=multiprocessing.get_context("spawn"),
-    )
-
-    # A module-scoped fixture cannot use the function-scoped monkeypatch fixture, so the
-    # patch is applied through an explicit context manager instead.
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(barcode_extractor_module, "ProcessPoolExecutor", spawning_executor)
-        extractor = BarcodeExtractor(str(input_fastq), chemistry_name, n_workers=GOLDEN_WORKERS)
-        extractor.extract_barcodes(str(output_dir), prefix)
+    extractor = BarcodeExtractor(str(input_fastq), chemistry_name, n_workers=GOLDEN_WORKERS)
+    extractor.extract_barcodes(str(output_dir), prefix)
 
     if extract_umis:
         annotated_fastq = output_dir / f"{prefix}.r1_annotated.fastq.gz"

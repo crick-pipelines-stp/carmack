@@ -23,9 +23,7 @@ the grouped help listing - and one end-to-end run chaining barcode extraction,
 UMI extraction and target assignment over a committed golden input.
 """
 
-import functools
 import gzip
-import multiprocessing
 from collections.abc import Callable
 from functools import cached_property
 from inspect import signature
@@ -38,7 +36,6 @@ from assertpy import assert_that
 from click.testing import CliRunner
 
 import carmack.__main__
-import carmack.barcode.barcode_extractor as barcode_extractor_module
 
 # The unassigned sentinel is read off the assigner module rather than imported
 # by name, so this file states the module's own value instead of restating the
@@ -1070,32 +1067,12 @@ class TestAssignTargetsEndToEnd:
         never whether the three stages hand their files to one another
         correctly.
 
-        The multiprocessing context is forced to ``spawn`` for the duration of
-        the barcode step. That is a workaround for a production bug, not a test
-        convenience: ``BarcodeExtractor.extract_barcodes`` opens its
-        ``ProcessPoolExecutor`` before the gzip ``SubprocessStream`` writers, so
-        under the default ``fork`` context the forked workers inherit each gzip
-        child's stdin write end. The single ``with`` unwinds in reverse, closing
-        the gzip streams while those workers still hold duplicate write ends, so
-        ``gzip`` never sees EOF and ``SubprocessStream.close`` blocks forever in
-        ``proc.wait()``. It reproduces every time with as few as 25 reads.
-        Spawned workers are fresh interpreters inheriting no descriptors, so the
-        pipes close cleanly. Remove the patch once ``extract_barcodes`` shuts
-        its process pool down before closing its gzip output streams.
-
         Args:
             tmp_path: Directory all three stages write their outputs into.
         """
         input_fastq = GOLDEN_INPUT_DIR / GOLDEN_INPUT_NAME
-        spawning_executor = functools.partial(
-            barcode_extractor_module.ProcessPoolExecutor,
-            mp_context=multiprocessing.get_context("spawn"),
-        )
-
-        with pytest.MonkeyPatch.context() as patch:
-            patch.setattr(barcode_extractor_module, "ProcessPoolExecutor", spawning_executor)
-            extractor = BarcodeExtractor(str(input_fastq), CHEMISTRY, n_workers=1, fast=True)
-            extractor.extract_barcodes(str(tmp_path), GOLDEN_PREFIX)
+        extractor = BarcodeExtractor(str(input_fastq), CHEMISTRY, n_workers=1, fast=True)
+        extractor.extract_barcodes(str(tmp_path), GOLDEN_PREFIX)
 
         annotated_fastq = tmp_path / f"{GOLDEN_PREFIX}.r1_annotated.fastq.gz"
         UmiExtractor(str(annotated_fastq), CHEMISTRY).extract_umis(str(tmp_path), GOLDEN_PREFIX)

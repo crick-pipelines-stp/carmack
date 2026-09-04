@@ -25,9 +25,9 @@ a diff rather than going unnoticed. Each case runs only the stages its chemistry
 supports: the `carmack_custom_seq_1_0` cases run all three, the HyDrop cases stop after
 barcode extraction.
 
-Two small cases run as part of the normal suite (about 30s). Two full-scale 2000-read
+Two small cases run as part of the normal suite (about 10s). Two full-scale 2000-read
 cases are marked `only_run_with_direct_target`, so they are skipped unless `-k` selects
-them; the HyDrop one alone takes roughly eleven minutes.
+them; that tier takes under three minutes, most of it the HyDrop case.
 
 ```sh
 python -m pytest tests/test_golden_outputs.py            # always-run tier

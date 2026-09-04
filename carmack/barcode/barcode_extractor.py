@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterator, Mapping
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from itertools import islice
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from math import ceil
 from pathlib import Path
 
@@ -20,6 +20,7 @@ from carmack.chemistry.read_component import ReadComponentType
 from carmack.io.fastq_file import FastqFile
 from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
+from carmack.parallel import map_batches_in_order
 from carmack.utils import get_prefix, progress_bar
 
 log = logging.getLogger(__name__)
@@ -194,50 +195,34 @@ class BarcodeExtractor:
             ProcessPoolExecutor(max_workers=self.n_workers) as executor,
         ):
             hybrid_extractor = HybridExtractor(chemistry=self.chemistry, matchers=self.matchers)
+            worker = partial(process_read_batch, hybrid_extractor=hybrid_extractor)
+            log.debug(f"Streaming batches with batch size {self.batch_size}")
 
-            # Bounded in-flight window keeps memory usage proportional to
-            # max_in_flight * batch_size rather than the full FASTQ. Results
-            # are folded into the accumulator and written to disk as they
-            # arrive, so no list of ReadMatchResults is retained.
-            batch_iter = self.iter_batches()
-            max_in_flight = max(self.n_workers * 2, 2)
-            log.debug(
-                f"Streaming batches with batch size {self.batch_size}, max in-flight {max_in_flight}"
-            )
-
-            futures = {
-                executor.submit(process_read_batch, batch, hybrid_extractor=hybrid_extractor)
-                for batch in islice(batch_iter, max_in_flight)
-            }
+            # The driver submits its opening window as soon as it is called, and that
+            # first submit is when the pool forks its workers. Calling it before the
+            # progress bar starts its refresh thread keeps the fork single-threaded --
+            # forking a multi-threaded process can leave an inherited lock held for ever
+            # in the child.
+            results = map_batches_in_order(executor, worker, self.iter_batches(), self.n_workers)
 
             with progress_bar(unit="reads") as pbar:
                 task = pbar.add_task("Extracting barcodes...", total=self.fastq.reads_count)
 
-                while futures:
-                    done, futures = wait(futures, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        batch_results, batch_len = future.result()
-                        for r in batch_results:
-                            annotated = r.get_annotated_readname()
-                            GzipFile.write_string(bc_all_f, f"{annotated}\n")
-                            if r.success and r.full_barcode is not None:
-                                GzipFile.write_string(bc_valid_f, f"{annotated}\n")
-                                ann = ReadAnnotation.parse(r.read_name)
-                                for bc in r.bc_results:
-                                    attempt = bc.attempts[-1]
-                                    ann.set(bc.bc_name, attempt.match)
-                                    start, end = attempt.read_idx
-                                    ann.set(position_key(bc.bc_name), format_span(start, end))
-                                FastqFile.write_read(bc_annotated_f, ann.render(), r.read, r.qual)
-                            stats_acc.update(r)
-                        pbar.update(task, advance=batch_len)
-
-                    for batch in islice(batch_iter, len(done)):
-                        futures.add(
-                            executor.submit(
-                                process_read_batch, batch, hybrid_extractor=hybrid_extractor
-                            )
-                        )
+                for batch_results, batch_len in results:
+                    for r in batch_results:
+                        annotated = r.get_annotated_readname()
+                        GzipFile.write_string(bc_all_f, f"{annotated}\n")
+                        if r.success and r.full_barcode is not None:
+                            GzipFile.write_string(bc_valid_f, f"{annotated}\n")
+                            ann = ReadAnnotation.parse(r.read_name)
+                            for bc in r.bc_results:
+                                attempt = bc.attempts[-1]
+                                ann.set(bc.bc_name, attempt.match)
+                                start, end = attempt.read_idx
+                                ann.set(position_key(bc.bc_name), format_span(start, end))
+                            FastqFile.write_read(bc_annotated_f, ann.render(), r.read, r.qual)
+                        stats_acc.update(r)
+                    pbar.update(task, advance=batch_len)
 
         ex_stats = stats_acc.finalize()
 
