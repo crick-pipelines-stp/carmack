@@ -10,18 +10,13 @@ matching and spacer checks ignore them; they model the post-barcode layout for
 downstream UMI extraction only.
 """
 
-import logging
 from functools import cached_property
 from importlib.resources import files
 
-from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors
+from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors, WhitelistSource
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
-from carmack.io.gzip_file import GzipFile
-
-log = logging.getLogger(__name__)
-
 
 # Primer sequences
 PRIMER_C = "TGTGTATAAGGACCTCGTTGCC"
@@ -45,6 +40,12 @@ BC2_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
 )
 BC3_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
     "carmack_custom_seq_1_0_96_bc3.tsv"
+)
+
+# The confirmed target indexes ship as data, one sequence per line, so the set can grow
+# without a code change. The loader has no comment syntax, so the file carries sequences only.
+TGIDX_PATH = files("carmack.data.tgidx.carmack.custom_seq").joinpath(
+    "carmack_custom_seq_1_0_tgidx.tsv"
 )
 
 
@@ -100,48 +101,23 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
 
     @cached_property
     def max_errors(self) -> MatchErrors:
-        """Return the maximum allowed errors for barcode matching."""
-        return MatchErrors(barcode=1, spacer=2)
+        """Return the maximum allowed errors for component matching."""
+        return MatchErrors(barcode=1, spacer=2, tgidx=1)
 
-    def load_barcode_whitelist(self, barcode_name: str) -> tuple[str, ...]:
-        """
-        Load the barcode whitelist for a specific barcode component.
-
-        Args:
-            barcode_name: The name of the barcode component ("BC1", "BC2", or "BC3")
-                Must match the names defined in get_read_structure() for barcode components.
+    def whitelist_sources(self) -> dict[str, WhitelistSource]:
+        """Return the packaged whitelist file for each whitelisted component.
 
         Returns:
-            Tuple of valid barcode sequences
-
-        Raises:
-            ValueError: If the barcode name is not recognized
+            Dictionary mapping component names to their whitelist sources. Each
+            line of these files is one sequence on its own, for the three
+            barcodes and the target index alike.
         """
-        path_map = {
-            "BC1": BC1_PATH,
-            "BC2": BC2_PATH,
-            "BC3": BC3_PATH,
+        return {
+            "BC1": WhitelistSource(path=BC1_PATH),
+            "BC2": WhitelistSource(path=BC2_PATH),
+            "BC3": WhitelistSource(path=BC3_PATH),
+            "TGIDX": WhitelistSource(path=TGIDX_PATH),
         }
-
-        if barcode_name not in path_map:
-            raise ValueError(
-                f"Unknown barcode name: {barcode_name}. Valid names: {list(path_map.keys())}"
-            )
-
-        path = path_map[barcode_name]
-        log.debug(f"Loading barcode whitelist for {barcode_name} from {path}")
-
-        barcodes = []
-        stream = GzipFile(str(path)).open_read_iterator(as_string=True)
-        for line in stream:
-            barcode = line.strip()
-            if barcode:
-                barcodes.append(barcode)
-        stream.close()
-
-        result = tuple(barcodes)
-        log.debug(f"Loaded {len(result)} barcodes for {barcode_name}")
-        return result
 
 
 # Register this chemistry with the factory

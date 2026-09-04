@@ -14,6 +14,7 @@ written and the faithful raw ``UMI`` tag stands alone.
 
 import logging
 from collections import Counter
+from itertools import chain
 from pathlib import Path
 
 from carmack.chemistry.annotation import format_span, parse_span, position_key
@@ -24,7 +25,7 @@ from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
 from carmack.umi.umi_corrector import CorrectedUmi, UmiCorrector, UmiRecord
 from carmack.umi.umi_reporting import CorrectionStats, UmiExtractionStats
-from carmack.utils import get_prefix
+from carmack.utils import get_prefix, homopolymer_run_length
 
 log = logging.getLogger(__name__)
 
@@ -108,25 +109,29 @@ class UmiExtractor:
                 return polyg_start
         return None
 
-    def homopolymer_run_length(self, seq: str, run_start: int) -> int:
-        """Return the length of the anchor homopolymer run beginning at ``run_start``.
+    def validate_header(self, ann: ReadAnnotation) -> None:
+        """Validate that an annotated read carries the tags this chemistry needs.
 
-        Counts consecutive anchor-base characters from ``run_start`` onward,
-        capturing the observed run length (which varies with slippage).
+        Checks the first annotated read against the supplied chemistry: it must
+        carry the UMI left-anchor position tag and a value tag for every barcode
+        component. A mismatch almost always means the FASTQ was produced with a
+        different chemistry than the one supplied (e.g. a chemistry with three
+        barcodes run against reads annotated with only two).
 
         Args:
-            seq: The read sequence.
-            run_start: 0-based index where the homopolymer run begins.
+            ann: The parsed header of the first annotated read.
 
-        Returns:
-            The number of consecutive anchor-base characters.
+        Raises:
+            ValueError: When an expected tag is absent from the header.
         """
-        length = 0
-        position = run_start
-        while position < len(seq) and seq[position] == self.polyg_base:
-            length += 1
-            position += 1
-        return length
+        required = [self.left_key, *self.barcode_names]
+        missing = [key for key in required if ann.get(key) is None]
+        if missing:
+            raise ValueError(
+                f"Annotated read '{ann.read_id}' is missing expected tag(s) {missing} "
+                f"for chemistry '{self.chemistry_name}'. The annotated FASTQ may have "
+                "been produced with a different chemistry."
+            )
 
     def extract_umis(
         self,
@@ -162,8 +167,17 @@ class UmiExtractor:
         run_counts: Counter[int] = Counter()
         records: list[UmiRecord] = []
 
+        # Validate the first read's header against the chemistry before writing
+        # anything, so a chemistry / FASTQ mismatch fails fast with a clear error
+        # rather than a cryptic failure once correction reconstructs the barcode.
+        reads = self.fastq.open_read_iterator(as_string=True)
+        first_read = next(reads, None)
+        if first_read is not None:
+            self.validate_header(ReadAnnotation.parse(first_read[0]))
+            reads = chain([first_read], reads)
+
         with GzipFile(str(umi_fastq_path)).open_write_stream() as umi_stream:
-            for name, seq, qual, *_ in self.fastq.open_read_iterator(as_string=True):
+            for name, seq, qual, *_ in reads:
                 total += 1
                 ann = ReadAnnotation.parse(name)
 
@@ -185,7 +199,7 @@ class UmiExtractor:
 
                 accepted += 1
                 length_counts[len(raw_umi)] += 1
-                run_counts[self.homopolymer_run_length(seq, polyg_start)] += 1
+                run_counts[homopolymer_run_length(seq, polyg_start, self.polyg_base)] += 1
                 if not raw:
                     records.append(
                         UmiRecord(

@@ -1,46 +1,64 @@
 import logging
 from collections import defaultdict
+from typing import ClassVar
 
 from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
 from carmack.barcode.matchers.matcher_base import MatcherBase
 from carmack.chemistry.chemistry_base import ChemistryBase
-from carmack.chemistry.read_structure import ReadComponent
+from carmack.chemistry.read_structure import ReadComponent, ReadComponentType
 
 log = logging.getLogger(__name__)
+
+# A whitelist entry verified against a window of the read, in original-read coordinates.
+type KmerCandidate = tuple[str, int, int, int]  # (entry, start, end, edit_distance)
 
 
 class KmerMatcher(MatcherBase):
     """
-    Kmer seed-and-extend barcode matching.
+    Kmer seed-and-extend matching against a whitelist.
 
-    Uses k-mer seeding to identify candidate barcodes, then verifies
-    with Levenshtein distance. Handles indels within max_errors.
+    Uses k-mer seeding to identify candidate sequences, then verifies
+    with Levenshtein distance. Handles indels within the max_errors budget.
+
+    Beyond barcodes, this matcher also accepts TGIDX components. That widening is safe
+    precisely because the matcher never reads ``component.start``: it searches the read for
+    seed k-mers instead of indexing a fixed window, so a component whose start is unresolved
+    is located just as well as one whose start is known.
     """
+
+    allowed_component_types: ClassVar[frozenset[ReadComponentType]] = frozenset(
+        {ReadComponentType.BARCODE, ReadComponentType.TGIDX}
+    )
 
     def __init__(
         self,
         whitelist: tuple[str, ...],
-        barcode_component: ReadComponent,
+        component: ReadComponent,
         chemistry: ChemistryBase,
+        max_errors: int,
         k: int = 4,
     ):
         """
-        Initialize the KmerMatcher with the given whitelist and barcode component.
+        Initialize the KmerMatcher with the given whitelist and component.
 
         Args:
-            whitelist: Tuple of valid barcode sequences.
-            barcode_component: The ReadComponent defining the barcode's position and length.
+            whitelist: Tuple of valid sequences to match against.
+            component: The ReadComponent this matcher is matching, defining its length and name.
+            chemistry: The chemistry defining the surrounding read structure.
+            max_errors: Maximum edit distance allowed against a whitelist entry. Supplied by the
+                caller so the matcher does not reach into the chemistry for a budget that may not
+                be the barcode one.
             k: Length of k-mers to use for seeding.
         """
-        super().__init__(whitelist, barcode_component, chemistry)
+        super().__init__(whitelist, component, chemistry)
         self.k = k
-        self.max_errors = chemistry.max_errors.barcode
+        self.max_errors = max_errors
 
         self.kmer_index = self.build_kmer_index()
 
         log.debug(
-            f"KmerMatcher initialized for {self.barcode_component.name} with k={k}, max_errors_barcode={self.max_errors}, {len(whitelist)} barcodes"
+            f"KmerMatcher initialized for {self.component.name} with k={k}, max_errors={self.max_errors}, {len(whitelist)} barcodes"
         )
 
     def build_kmer_index(self) -> dict[str, list[tuple[str, int]]]:
@@ -121,30 +139,35 @@ class KmerMatcher(MatcherBase):
 
         return (False, -1, -1, best_dist)
 
-    def match(self, read: str, start_idx: int = 0) -> list[BarcodeMatchAttempt]:
+    def collect_candidates(self, read: str, start_idx: int = 0) -> list[KmerCandidate]:
         """
-        Attempt to match barcodes in the given read based on kmer matching.
+        Find every whitelist entry that verifies somewhere in the read.
+
+        This is the collection half of ``match``: it scans the read for seed k-mers, extends each
+        distinct seed and keeps the ones that verify. It deliberately does not choose between
+        them — no best-score filter is applied here — so the near misses that resolution is about
+        to discard remain visible to a caller that wants them.
 
         Args:
-            read: The sequencing read to match against.
-            start_idx: The index in the read to start matching from (default is 0).
-        """
-        # Intit a match attempt with method KMER
-        result = BarcodeMatchAttempt(method=MatchMethod.KMERMATCH)
+            read: The sequencing read to search.
+            start_idx: A floor on where a seed k-mer may begin, not on where a candidate may
+                begin. The read is never trimmed, so a candidate seeded at or after the floor can
+                still span back before it. Defaults to 0, which imposes no bound.
 
+        Returns:
+            Every verified candidate, in the order it was verified. Empty if nothing verified.
+
+        Raises:
+            ValueError: If the read is shorter than the seed k-mer length.
+        """
         if len(read) < self.k:
             raise ValueError(
                 f"Read segment too short for k-mer matching: read length {len(read)}, k={self.k}"
             )
 
-        # Track best match and all candidates
-        best_score = self.max_errors + 1
-        candidates: list[tuple[str, int, int, int]] = (
-            []
-        )  # (barcode, start_pos, end_pos, edit_distance)
-        candidates_seen: set[tuple[str, int]] = (
-            set()
-        )  # To avoid redundant verification of same (barcode, position)
+        candidates: list[KmerCandidate] = []
+        # To avoid redundant verification of same (barcode, position)
+        candidates_seen: set[tuple[str, int]] = set()
 
         # Scan read for seed k-mers
         for i in range(start_idx, len(read) - self.k + 1):
@@ -166,10 +189,40 @@ class KmerMatcher(MatcherBase):
                     if is_valid:
                         candidates.append((bc, start, end, edit_dist))
 
-                        if edit_dist < best_score:
-                            best_score = edit_dist
+        return candidates
 
-        # Filter candidates to those with best score
+    def resolve_candidates(
+        self, read: str, candidates: list[KmerCandidate]
+    ) -> list[BarcodeMatchAttempt]:
+        """
+        Choose between collected candidates and report the outcome as match attempts.
+
+        This is the resolution half of ``match``. Candidates are first filtered to the best edit
+        distance, since choosing between them is what resolution is for. A lone survivor is
+        reported directly with no spacer validation at all, because spacers serve only as a
+        tie-break and there is no tie to break. A tie is broken first by requiring at least one
+        adjacent spacer, and then, if several candidates still stand, by preferring the single
+        candidate flanked by two. If neither rung separates them the matcher declines to guess.
+
+        Args:
+            read: The sequencing read the candidates were collected from, used both to slice out
+                each candidate sequence and to inspect the flanking spacers.
+            candidates: Verified candidates, as returned by ``collect_candidates``. They are
+                assumed to already be within the matcher's error budget, as
+                ``collect_candidates`` guarantees; a candidate outside that budget would be
+                resolved rather than rejected here.
+
+        Returns:
+            List of BarcodeMatchAttempt objects representing the match results. A single attempt
+            when a match is called or when nothing resolves, and one attempt per validated
+            candidate, each with no match assigned, when the result is ambiguous.
+        """
+        # Intit a match attempt with method KMER
+        result = BarcodeMatchAttempt(method=MatchMethod.KMERMATCH)
+
+        # Filter candidates to those with best score. Seeding the minimum one past the error
+        # budget keeps a candidate outside the budget from becoming the best score on its own.
+        best_score = min([c[3] for c in candidates] + [self.max_errors + 1])
         best_candidates = [c for c in candidates if c[3] == best_score]
 
         if len(best_candidates) == 0:
@@ -205,9 +258,9 @@ class KmerMatcher(MatcherBase):
                 # If still ambiguous, check if only one of the validated candidate has two spacers present, which would make it more likely to be correct
                 # If more than one candidate has two adjacent spacers, then we have to consider it ambiguous and cannot confidently call a single best match
                 best_candidates_with_two_spacers = [
-                    c
-                    for c in validated_candidates
-                    if sum(v is not None for v in c[4].values()) == 2
+                    vc
+                    for vc in validated_candidates
+                    if sum(v is not None for v in vc[4].values()) == 2
                 ]
 
                 if len(best_candidates_with_two_spacers) == 1:
@@ -218,20 +271,20 @@ class KmerMatcher(MatcherBase):
                     log.debug(
                         f"Ambiguous kmer matches found: {validated_candidates}. Multiple candidates with two adjacent spacers."
                     )
-                    result = []
-                    for c in validated_candidates:
-                        result.append(
+                    ambiguous_attempts: list[BarcodeMatchAttempt] = []
+                    for vc in validated_candidates:
+                        ambiguous_attempts.append(
                             BarcodeMatchAttempt(
                                 method=MatchMethod.KMERMATCH,
-                                candidate=read[c[1] : c[2]],
+                                candidate=read[vc[1] : vc[2]],
                                 match=None,
-                                read_idx=(c[1], c[2]),
-                                edit_distance=c[3],
-                                spacer_upstream=c[4].get("upstream"),
-                                spacer_downstream=c[4].get("downstream"),
+                                read_idx=(vc[1], vc[2]),
+                                edit_distance=vc[3],
+                                spacer_upstream=vc[4].get("upstream"),
+                                spacer_downstream=vc[4].get("downstream"),
                             )
                         )
-                    return result
+                    return ambiguous_attempts
 
             result.match = best_bc
             result.candidate = read[start:end]
@@ -244,3 +297,25 @@ class KmerMatcher(MatcherBase):
             )
 
         return [result]
+
+    def match(self, read: str, start_idx: int = 0) -> list[BarcodeMatchAttempt]:
+        """
+        Attempt to match barcodes in the given read based on kmer matching.
+
+        Args:
+            read: The sequencing read to match against.
+            start_idx: A floor on where a seed k-mer may begin, not on where a match may begin.
+                The read is never trimmed. Seeds are scanned from ``start_idx`` onwards and each
+                seed is then extended in both directions from its implied start, clamped only at
+                0, so a match seeded at or after ``start_idx`` can begin before it — as early as
+                ``max(0, start_idx - (len(entry) - k) - max_errors)``. Returned ``read_idx``
+                values are already in original-read coordinates because no trimming occurred.
+
+        Returns:
+            List of BarcodeMatchAttempt objects representing the match results.
+
+        Raises:
+            ValueError: If the read is shorter than the seed k-mer length.
+        """
+        candidates = self.collect_candidates(read, start_idx)
+        return self.resolve_candidates(read, candidates)

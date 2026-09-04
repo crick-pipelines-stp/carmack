@@ -1,0 +1,84 @@
+
+# Overall Barcode Extraction Stats
+Total reads: 200
+Perfect matches: 159 (79.50%)
+Corrected matches: 34 (17.00%)
+Failed matches: 7 (3.50%)
+Top 10 barcode fractions:
+	TGACCGTACTTTAGTTGGACTGTAGCAAGT	0.95
+	TGACCGTACTACCGTACTATTACCTAGATC	0.01
+	TGACCGTACTTTAGTTGGACTACCTAGATC	0.005
+
+# Per-Barcode Component Stats
+
+## BC3
+
+Matching method: EXACTMATCH
+Reads checked: 200
+Successful matches: 171 (85.50%)
+Failed matches: 29 (14.50%)
+Ambiguous matches (reads): 0 (0.00%)
+
+Matching method: KMERMATCH
+Reads checked: 29
+Successful matches: 23 (79.31%)
+Failed matches: 6 (20.69%)
+Edit distance distribution (distance - count):
+	0	23 (100.00%)
+Ambiguous matches (reads): 0 (0.00%)
+
+Matching method: ALIGNMATCH
+Reads checked: 6
+Successful matches: 0 (0.00%)
+Failed matches: 6 (100.00%)
+Ambiguous matches (reads): 2 (33.33%)
+
+## BC2
+
+Matching method: EXACTMATCH
+Reads checked: 200
+Successful matches: 186 (93.00%)
+Failed matches: 14 (7.00%)
+Ambiguous matches (reads): 0 (0.00%)
+
+Matching method: KMERMATCH
+Reads checked: 14
+Successful matches: 9 (64.29%)
+Failed matches: 5 (35.71%)
+Edit distance distribution (distance - count):
+	0	3 (33.33%)
+	1	6 (66.67%)
+Ambiguous matches (reads): 0 (0.00%)
+
+Matching method: ALIGNMATCH
+Reads checked: 5
+Successful matches: 1 (20.00%)
+Failed matches: 4 (80.00%)
+Edit distance distribution (distance - count):
+	1	1 (100.00%)
+Ambiguous matches (reads): 0 (0.00%)
+
+## BC1
+
+Matching method: EXACTMATCH
+Reads checked: 200
+Successful matches: 183 (91.50%)
+Failed matches: 17 (8.50%)
+Ambiguous matches (reads): 0 (0.00%)
+
+Matching method: KMERMATCH
+Reads checked: 17
+Successful matches: 10 (58.82%)
+Failed matches: 7 (41.18%)
+Edit distance distribution (distance - count):
+	0	5 (50.00%)
+	1	5 (50.00%)
+Ambiguous matches (reads): 0 (0.00%)
+
+Matching method: ALIGNMATCH
+Reads checked: 7
+Successful matches: 3 (42.86%)
+Failed matches: 4 (57.14%)
+Edit distance distribution (distance - count):
+	1	3 (100.00%)
+Ambiguous matches (reads): 0 (0.00%)

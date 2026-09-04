@@ -42,11 +42,10 @@ class HybridExtractor:
         )
 
         search_start_idx_tracker: dict[str, int] = {
-            barcode_component.name: 0 for barcode_component in barcode_components
+            component.name: 0 for component in barcode_components
         }
         barcode_match_tracker: dict[str, BarcodeMatchHistory] = {
-            barcode_component.name: BarcodeMatchHistory(barcode_component.name)
-            for barcode_component in barcode_components
+            component.name: BarcodeMatchHistory(component.name) for component in barcode_components
         }
 
         for matcher_method, matcher in self.matchers.items():
@@ -55,23 +54,21 @@ class HybridExtractor:
                 raise ValueError(f"Unknown matcher method '{matcher_method}'")
 
             # Iterate through barcode components in the order defined by the read structure
-            for barcode_component in barcode_components:
-                bc_name: str = barcode_component.name
+            for component in barcode_components:
+                bc_name: str = component.name
 
                 # Determine the end of the previous matched barcode
                 # This will be used to trim the read to reduce search space
-                prev_bc = self.chemistry.read_structure.get_previous(
-                    barcode_component, bc_only=True
-                )
+                prev_bc = self.chemistry.read_structure.get_previous(component, bc_only=True)
                 prev_bc_name = prev_bc.name if prev_bc else None
                 search_start_idx = search_start_idx_tracker[prev_bc_name] if prev_bc_name else 0
 
-                if search_start_idx >= len(read) - barcode_component.length:
+                if search_start_idx >= len(read) - component.length:
                     search_start_idx = 0  # Reset to start if we've gone beyond the read length
 
                 if bc_name not in matcher:
                     raise ValueError(
-                        f"Matcher '{matcher_method}' does not have a matcher for barcode component '{barcode_component.name}'"
+                        f"Matcher '{matcher_method}' does not have a matcher for barcode component '{component.name}'"
                     )
 
                 # Start matching

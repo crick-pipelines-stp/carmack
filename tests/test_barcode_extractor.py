@@ -59,7 +59,7 @@ class TestBarcodeExtractor:
         ):
             fixed_matchers[comp.name] = FixedPositionMatcher(
                 whitelist=whitelists[comp.name],
-                barcode_component=comp,
+                component=comp,
                 chemistry=hydrop_chemistry,
             )
         return {MatchMethod.EXACTMATCH: fixed_matchers}
@@ -1281,7 +1281,7 @@ class TestHybridExtractor:
         ):
             fixed_matchers[comp.name] = FixedPositionMatcher(
                 whitelist=whitelists[comp.name],
-                barcode_component=comp,
+                component=comp,
                 chemistry=hydrop_chemistry,
             )
         return {MatchMethod.EXACTMATCH: fixed_matchers}
@@ -1426,7 +1426,7 @@ class TestHybridExtractor:
             if comp.type is ReadComponentType.BARCODE and comp.name != "BC3":
                 incomplete_matchers[comp.name] = FixedPositionMatcher(
                     whitelist=whitelists[comp.name],
-                    barcode_component=comp,
+                    component=comp,
                     chemistry=hydrop_chemistry,
                 )
 

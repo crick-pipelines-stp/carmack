@@ -2,10 +2,13 @@
 Tests for barcode matcher classes: MatcherBase, FixedPositionMatcher, KmerMatcher, and AlignmentMatcher.
 """
 
-from typing import Literal
+import logging
+from collections.abc import Callable
+from typing import Any, Literal
 
 import pytest
 from assertpy import assert_that
+from Bio.Align import PairwiseAligner, PairwiseAlignments
 
 from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
@@ -19,17 +22,23 @@ from carmack.barcode.matchers.alignment_matcher import (
 )
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
-from carmack.barcode.matchers.matcher_base import MatcherBase
+from carmack.barcode.matchers.matcher_base import MatcherBase, UnresolvedComponentStartError
+from carmack.chemistry.chemistry_base import ChemistryBase
+from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import PRIMER_A, PRIMER_C
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from tests.test_chemistry import ChemistryCarmackCustomSeq10
+
+# Matcher classes whose constructor takes an explicit error budget rather than reading one
+# from the chemistry.
+MATCHERS_REQUIRING_MAX_ERRORS = (KmerMatcher, AlignmentMatcher)
 
 
 class TestBarcodeMatcherBase:
     """Tests for MatcherBase abstract class functionality, exercised via FixedPositionMatcher."""
 
     @pytest.fixture
-    def barcode_component(self) -> ReadComponent:
+    def component(self) -> ReadComponent:
         """Provide a barcode ReadComponent with start position set."""
         comp = ReadComponent(name="BC_TEST", type=ReadComponentType.BARCODE, length=10)
         comp.start = 5
@@ -39,39 +48,128 @@ class TestBarcodeMatcherBase:
     def whitelist(self) -> tuple[str, ...]:
         """Provide a small test whitelist."""
         chemistry = ChemistryHydrop()
-        barcode_component = chemistry.read_structure.get_component_by_name("BC3")
-        return chemistry.barcode_whitelists[barcode_component.name]
+        component = chemistry.read_structure.get_component_by_name("BC3")
+        return chemistry.barcode_whitelists[component.name]
 
     @pytest.fixture
     def matcher(self, whitelist: tuple[str, ...]) -> MatcherBase:
         """Provide a MatcherBase instance using FixedPositionMatcher for testing."""
         chemistry = ChemistryHydrop()
-        barcode_component = chemistry.read_structure.get_component_by_name("BC3")
-        return FixedPositionMatcher(
-            whitelist=whitelist, barcode_component=barcode_component, chemistry=chemistry
-        )
+        component = chemistry.read_structure.get_component_by_name("BC3")
+        return FixedPositionMatcher(whitelist=whitelist, component=component, chemistry=chemistry)
 
-    def test_init_with_valid_barcode_component(
-        self, barcode_component: ReadComponent, whitelist: tuple[str, ...], matcher: MatcherBase
+    def test_init_with_valid_component(
+        self, component: ReadComponent, whitelist: tuple[str, ...], matcher: MatcherBase
     ) -> None:
         """Test that FixedPositionMatcher initializes successfully with a valid barcode component."""
         matcher = FixedPositionMatcher(
-            whitelist=whitelist, barcode_component=barcode_component, chemistry=ChemistryHydrop()
+            whitelist=whitelist, component=component, chemistry=ChemistryHydrop()
         )
-        assert_that(matcher.barcode_component).is_equal_to(barcode_component)
+        assert_that(matcher.component).is_equal_to(component)
 
-    def test_init_rejects_non_barcode_component(self, whitelist: tuple[str, ...]) -> None:
-        """Test that initializing with a non-barcode component raises ValueError."""
-        non_barcode = ReadComponent(
+    @pytest.fixture
+    def component_cases(self) -> dict[str, tuple[ReadComponent, tuple[str, ...], ChemistryBase]]:
+        """Provide the component, whitelist and chemistry triples used for allowed-type checks.
+
+        Returns:
+            Mapping of case key to the component under test, a whitelist appropriate for it,
+            and the chemistry that component belongs to.
+        """
+        spacer_component = ReadComponent(
             name="SPACER",
             type=ReadComponentType.OTHER,
             length=10,
             sequence="AGGGTACTCG",
         )
-        with pytest.raises(ValueError):
-            FixedPositionMatcher(
-                whitelist=whitelist, barcode_component=non_barcode, chemistry=ChemistryHydrop()
+        custom_chemistry = ChemistryCarmackCustomSeq10()
+        return {
+            "spacer": (spacer_component, ("AAAAAAAAAA",), ChemistryHydrop()),
+            "tgidx": (
+                custom_chemistry.tgidx_component(),
+                custom_chemistry.tgidx_whitelist(),
+                custom_chemistry,
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        "component_key, matcher_class, expects_raise",
+        [
+            ("spacer", FixedPositionMatcher, True),
+            ("spacer", KmerMatcher, True),
+            ("spacer", AlignmentMatcher, True),
+            ("tgidx", FixedPositionMatcher, True),
+            ("tgidx", KmerMatcher, False),
+            ("tgidx", AlignmentMatcher, True),
+        ],
+    )
+    def test_init_enforces_allowed_component_types(
+        self,
+        component_key: str,
+        matcher_class: type[MatcherBase],
+        expects_raise: bool,
+        component_cases: dict[str, tuple[ReadComponent, tuple[str, ...], ChemistryBase]],
+    ) -> None:
+        """Test that construction accepts only components listed in allowed_component_types.
+
+        Every matcher rejects a plain OTHER-typed spacer. Only KmerMatcher declares TGIDX as an
+        allowed type, so the other two must reject a TGIDX component at construction rather than
+        failing later inside match().
+        """
+        component, whitelist, chemistry = component_cases[component_key]
+        kwargs: dict[str, Any] = {}
+        if matcher_class in MATCHERS_REQUIRING_MAX_ERRORS:
+            kwargs["max_errors"] = chemistry.max_errors.barcode
+
+        if expects_raise:
+            with pytest.raises(ValueError):
+                matcher_class(
+                    whitelist=whitelist, component=component, chemistry=chemistry, **kwargs
+                )
+        else:
+            matcher = matcher_class(
+                whitelist=whitelist, component=component, chemistry=chemistry, **kwargs
             )
+            assert_that(matcher.component).is_equal_to(component)
+
+    @pytest.mark.parametrize(
+        "matcher_class, expected_types",
+        [
+            (MatcherBase, frozenset({ReadComponentType.BARCODE})),
+            (FixedPositionMatcher, frozenset({ReadComponentType.BARCODE})),
+            (AlignmentMatcher, frozenset({ReadComponentType.BARCODE})),
+            (KmerMatcher, frozenset({ReadComponentType.BARCODE, ReadComponentType.TGIDX})),
+        ],
+    )
+    def test_allowed_component_types_declared_on_class(
+        self,
+        matcher_class: type[MatcherBase],
+        expected_types: frozenset[ReadComponentType],
+    ) -> None:
+        """Test that allowed_component_types is readable from the class itself, not just instances."""
+        assert_that(hasattr(matcher_class, "allowed_component_types")).is_true()
+        assert_that(matcher_class.allowed_component_types).is_instance_of(frozenset)
+        assert_that(matcher_class.allowed_component_types).is_equal_to(expected_types)
+
+    def test_unresolved_component_start_error_is_value_error(self) -> None:
+        """Test that UnresolvedComponentStartError is a ValueError subclass."""
+        assert_that(issubclass(UnresolvedComponentStartError, ValueError)).is_true()
+
+    def test_check_read_len_unresolved_start_raises(self) -> None:
+        """Test that check_read_len raises a named error when the component start is unresolved."""
+        chemistry = ChemistryCarmackCustomSeq10()
+        component = chemistry.tgidx_component()
+        assert_that(component.start).is_none()
+        matcher = KmerMatcher(
+            whitelist=chemistry.tgidx_whitelist(),
+            component=component,
+            chemistry=chemistry,
+            max_errors=chemistry.max_errors.tgidx,
+        )
+
+        with pytest.raises(UnresolvedComponentStartError) as exc_info:
+            matcher.check_read_len("A" * 100)
+
+        assert_that(str(exc_info.value)).contains("TGIDX")
 
     def test_whitelist_stored_as_frozenset(
         self, whitelist: tuple[str, ...], matcher: MatcherBase
@@ -81,7 +179,7 @@ class TestBarcodeMatcherBase:
         assert_that(matcher.whitelist_set).is_equal_to(frozenset(whitelist))
 
     def test_check_read_len_sufficient(
-        self, barcode_component: ReadComponent, whitelist: tuple[str, ...], matcher: MatcherBase
+        self, component: ReadComponent, whitelist: tuple[str, ...], matcher: MatcherBase
     ) -> None:
         """Test that check_read_len returns True when the read is long enough."""
         # start=5, length=10, so need >= 15
@@ -99,22 +197,6 @@ class TestBarcodeMatcherBase:
         # start=5, length=10, so need >= 15
         read = "A" * 15
         assert_that(matcher.check_read_len(read)).is_true()
-
-    def test_trim_read_basic(self, matcher: MatcherBase) -> None:
-        """Test that trim_read returns the substring from the given start position."""
-        assert_that(matcher.trim_read("ACGTACGT", 4)).is_equal_to("ACGT")
-
-    def test_trim_read_start_zero(self, matcher: MatcherBase) -> None:
-        """Test that trim_read with start=0 returns the full read."""
-        assert_that(matcher.trim_read("ACGTACGT", 0)).is_equal_to("ACGTACGT")
-
-    def test_trim_read_start_beyond_length(self, matcher: MatcherBase) -> None:
-        """Test that trim_read returns empty string when start is beyond read length."""
-        assert_that(matcher.trim_read("ACGT", 10)).is_equal_to("")
-
-    def test_trim_read_start_at_length(self, matcher: MatcherBase) -> None:
-        """Test that trim_read returns empty string when start equals read length."""
-        assert_that(matcher.trim_read("ACGT", 4)).is_equal_to("")
 
     @pytest.mark.parametrize(
         "read_len, start, bc_len, expected",
@@ -136,7 +218,7 @@ class TestBarcodeMatcherBase:
         comp = ReadComponent(name="BC_TEST", type=ReadComponentType.BARCODE, length=bc_len)
         comp.start = start
         matcher = FixedPositionMatcher(
-            whitelist=("AAAAAAAAAA",), barcode_component=comp, chemistry=ChemistryHydrop()
+            whitelist=("AAAAAAAAAA",), component=comp, chemistry=ChemistryHydrop()
         )
         read = "A" * read_len
         assert_that(matcher.check_read_len(read)).is_equal_to(expected)
@@ -179,10 +261,8 @@ class TestBarcodeMatcherBase:
 
         chemistry = ChemistryCarmackCustomSeq10()
         comp = chemistry.read_structure.get_component_by_name(bc)
-        whitelist = chemistry.load_barcode_whitelist(bc)
-        matcher = FixedPositionMatcher(
-            whitelist=whitelist, barcode_component=comp, chemistry=chemistry
-        )
+        whitelist = chemistry.load_whitelist(bc)
+        matcher = FixedPositionMatcher(whitelist=whitelist, component=comp, chemistry=chemistry)
 
         # General carmack_custom_seq_1_0 read structure
         bc_idx_map = {"BC3": (22, 32), "BC2": (54, 64), "BC1": (86, 96)}
@@ -195,48 +275,288 @@ class TestBarcodeMatcherBase:
         assert_that(spacer_results["downstream"]).is_equal_to(downstream_spacer)
 
 
+class TestMatcherStartIdxContract:
+    """Characterisation tests pinning what `start_idx` means to each matcher.
+
+    The parameter deliberately means different things to the two searching matchers, and that
+    divergence is part of the contract rather than an inconsistency waiting to be unified.
+    KmerMatcher treats `start_idx` as a floor on where a *seed k-mer* may begin; AlignmentMatcher
+    treats it as a hard trim point that hides every base before it; FixedPositionMatcher ignores
+    it outright. These tests assert that divergence, so any future attempt to unify the three has
+    to change a test in order to do it.
+    """
+
+    BARCODE = "ACGTACGTAC"
+    WHITELIST = (BARCODE,)
+
+    # HyDrop's barcode error budget, passed explicitly because both searching matchers take
+    # their budget as a constructor argument rather than reading it from the chemistry.
+    MAX_ERRORS = 2
+    K = 4
+
+    # The barcode occupies read positions 0-10; the poly-T tail seeds no whitelist k-mer.
+    READ_BARCODE_AT_START = BARCODE + "T" * 20
+
+    # The barcode occupies read positions 4-14, behind four bases of filler.
+    READ_BARCODE_AT_FOUR = "TTTT" + BARCODE + "T" * 8
+
+    @pytest.fixture
+    def chemistry(self) -> ChemistryHydrop:
+        """Provide the HyDrop chemistry supplying the surrounding read structure.
+
+        Returns:
+            A freshly constructed ChemistryHydrop.
+        """
+        return ChemistryHydrop()
+
+    @pytest.fixture
+    def component(self, chemistry: ChemistryHydrop) -> ReadComponent:
+        """Provide the HyDrop BC3 component (start=0, length=10).
+
+        Args:
+            chemistry: The chemistry supplying the read structure.
+
+        Returns:
+            The BC3 ReadComponent.
+        """
+        return chemistry.read_structure.get_component_by_name("BC3")
+
+    @pytest.fixture
+    def kmer_matcher(self, chemistry: ChemistryHydrop, component: ReadComponent) -> KmerMatcher:
+        """Provide a KmerMatcher over the single-entry whitelist.
+
+        Args:
+            chemistry: The chemistry supplying the read structure.
+            component: The BC3 component being matched.
+
+        Returns:
+            The configured KmerMatcher.
+        """
+        return KmerMatcher(
+            whitelist=self.WHITELIST,
+            component=component,
+            chemistry=chemistry,
+            max_errors=self.MAX_ERRORS,
+            k=self.K,
+        )
+
+    @pytest.fixture
+    def alignment_matcher(
+        self, chemistry: ChemistryHydrop, component: ReadComponent
+    ) -> AlignmentMatcher:
+        """Provide an AlignmentMatcher over the same single-entry whitelist.
+
+        Args:
+            chemistry: The chemistry supplying the read structure.
+            component: The BC3 component being matched.
+
+        Returns:
+            The configured AlignmentMatcher.
+        """
+        return AlignmentMatcher(
+            whitelist=self.WHITELIST,
+            component=component,
+            chemistry=chemistry,
+            max_errors=self.MAX_ERRORS,
+        )
+
+    @pytest.fixture
+    def fixed_matcher(
+        self, chemistry: ChemistryHydrop, component: ReadComponent
+    ) -> FixedPositionMatcher:
+        """Provide a FixedPositionMatcher over the same single-entry whitelist.
+
+        Args:
+            chemistry: The chemistry supplying the read structure.
+            component: The BC3 component being matched.
+
+        Returns:
+            The configured FixedPositionMatcher.
+        """
+        return FixedPositionMatcher(
+            whitelist=self.WHITELIST, component=component, chemistry=chemistry
+        )
+
+    # ==========================================
+    # KmerMatcher: start_idx is a seed floor only
+    # ==========================================
+
+    def test_kmer_start_idx_is_a_seed_floor_not_a_match_floor(
+        self, kmer_matcher: KmerMatcher
+    ) -> None:
+        """Test that a KmerMatcher match may begin strictly before `start_idx`.
+
+        `start_idx` bounds only where a *seed k-mer* may begin, never where a match may begin.
+        A seed found at or after `start_idx` is extended in both directions from
+        `expected_start = read_kmer_pos - bc_kmer_pos`, clamped only at 0, so the verified span
+        can reach back in front of `start_idx`. Here it reaches back a full four bases: the caller
+        asks matching to start at index 4 and gets a match spanning 0-10.
+        """
+        result = kmer_matcher.match(self.READ_BARCODE_AT_START, 4)[0]
+
+        assert_that(result.match).is_equal_to(self.BARCODE)
+        assert_that(result.read_idx).is_equal_to((0, 10))
+        assert_that(result.read_idx[0]).is_less_than(4)
+        assert_that(result.edit_distance).is_equal_to(0)
+
+    @pytest.mark.parametrize("start_idx", [0, 1, 2, 3, 4, 5, 6])
+    def test_kmer_match_is_unaffected_by_start_idx_while_a_seed_survives(
+        self, kmer_matcher: KmerMatcher, start_idx: int
+    ) -> None:
+        """Test that every `start_idx` leaving a seed intact yields the identical full-span match.
+
+        Because the seed is extended backwards, raising `start_idx` does not truncate the match:
+        the result is byte-for-byte the same across the whole range that still leaves at least one
+        whitelist k-mer starting at or after `start_idx`.
+        """
+        result = kmer_matcher.match(self.READ_BARCODE_AT_START, start_idx)[0]
+
+        assert_that(result.match).is_equal_to(self.BARCODE)
+        assert_that(result.read_idx).is_equal_to((0, 10))
+        assert_that(result.candidate).is_equal_to(self.BARCODE)
+        assert_that(result.edit_distance).is_equal_to(0)
+
+    def test_kmer_no_match_once_start_idx_passes_the_last_seed(
+        self, kmer_matcher: KmerMatcher
+    ) -> None:
+        """Test that KmerMatcher stops matching only when `start_idx` outruns every seed.
+
+        The last whitelist k-mer in this read begins at index 6, so a `start_idx` of 7 leaves the
+        seed scan with nothing to find and the match fails. This is the sole way `start_idx`
+        suppresses a KmerMatcher match: by starving the seed scan, not by hiding bases.
+        """
+        result = kmer_matcher.match(self.READ_BARCODE_AT_START, 7)[0]
+
+        assert_that(result.match).is_none()
+        assert_that(result.read_idx).is_none()
+
+    # ==========================================
+    # AlignmentMatcher: start_idx is a hard trim
+    # ==========================================
+
+    @pytest.mark.parametrize(
+        "start_idx, expected_read_idx, expected_candidate, expected_edit_distance",
+        [
+            (0, (0, 10), "ACGTACGTAC", 0),
+            (1, (1, 10), "CGTACGTAC", 1),
+            (2, (2, 10), "GTACGTAC", 2),
+        ],
+    )
+    def test_alignment_truncated_match_within_budget_still_resolves(
+        self,
+        alignment_matcher: AlignmentMatcher,
+        start_idx: int,
+        expected_read_idx: tuple[int, int],
+        expected_candidate: str,
+        expected_edit_distance: int,
+    ) -> None:
+        """Test that AlignmentMatcher resolves a barcode it has partly trimmed away.
+
+        This is a genuinely surprising edge. The matcher aligns against `read[start_idx:]`, so a
+        non-zero `start_idx` physically deletes leading barcode bases before alignment begins. The
+        truncated candidate is still assigned the whole whitelist entry as its match, because the
+        bases lost to the trim simply register as edits, and while that loss stays inside
+        `max_errors` the entry survives the edit-distance gate. The reported span therefore starts
+        at `start_idx`, not at the barcode's real start, and the candidate is shorter than the
+        barcode it resolved to.
+        """
+        result = alignment_matcher.match(self.READ_BARCODE_AT_START, start_idx)[0]
+
+        assert_that(result.match).is_equal_to(self.BARCODE)
+        assert_that(result.read_idx).is_equal_to(expected_read_idx)
+        assert_that(result.candidate).is_equal_to(expected_candidate)
+        assert_that(result.edit_distance).is_equal_to(expected_edit_distance)
+        assert_that(len(result.candidate)).is_less_than_or_equal_to(len(self.BARCODE))
+
+    @pytest.mark.parametrize("start_idx", [3, 4, 5, 6, 7])
+    def test_alignment_truncation_beyond_budget_returns_no_match(
+        self, alignment_matcher: AlignmentMatcher, start_idx: int
+    ) -> None:
+        """Test that AlignmentMatcher fails once the trim costs more than `max_errors`.
+
+        From `start_idx` of 3 onwards the trim removes three or more of the ten barcode bases,
+        which exceeds the two-error budget, so no alignment clears the score threshold and the
+        matcher reports nothing at all.
+        """
+        result = alignment_matcher.match(self.READ_BARCODE_AT_START, start_idx)[0]
+
+        assert_that(result.match).is_none()
+        assert_that(result.read_idx).is_none()
+        assert_that(result.candidate).is_none()
+
+    def test_alignment_is_blind_to_bases_before_start_idx_where_kmer_is_not(
+        self, kmer_matcher: KmerMatcher, alignment_matcher: AlignmentMatcher
+    ) -> None:
+        """Test the two searching matchers diverging on the same read and the same `start_idx`.
+
+        At `start_idx` of 4 over a barcode sitting at 0-10, KmerMatcher extends its seed backwards
+        and returns the full 0-10 span, while AlignmentMatcher has trimmed those four bases away
+        and can no longer see them, so it returns no match at all. Both behaviours are intended;
+        neither matcher should be changed to imitate the other.
+        """
+        kmer_result = kmer_matcher.match(self.READ_BARCODE_AT_START, 4)[0]
+        alignment_result = alignment_matcher.match(self.READ_BARCODE_AT_START, 4)[0]
+
+        assert_that(kmer_result.match).is_equal_to(self.BARCODE)
+        assert_that(kmer_result.read_idx).is_equal_to((0, 10))
+        assert_that(alignment_result.match).is_none()
+        assert_that(alignment_result.read_idx).is_none()
+
+    # ==========================================
+    # The one shared guarantee: original-read coordinates
+    # ==========================================
+
+    @pytest.mark.parametrize("matcher_fixture", ["kmer_matcher", "alignment_matcher"])
+    def test_read_idx_is_reported_in_original_read_coordinates(
+        self, request: pytest.FixtureRequest, matcher_fixture: str
+    ) -> None:
+        """Test the one part of the `start_idx` contract both searching matchers do share.
+
+        Whatever `start_idx` meant on the way in, `read_idx` comes back in coordinates of the
+        original untrimmed read. AlignmentMatcher adds `start_idx` back onto its trimmed-read
+        coordinates before reporting, and KmerMatcher never trimmed in the first place, so the
+        caller never has to add `start_idx` back itself and `read[read_idx[0]:read_idx[1]]` always
+        reproduces the reported candidate.
+        """
+        matcher: MatcherBase = request.getfixturevalue(matcher_fixture)
+        result = matcher.match(self.READ_BARCODE_AT_FOUR, 4)[0]
+
+        assert_that(result.match).is_equal_to(self.BARCODE)
+        assert_that(result.read_idx).is_equal_to((4, 14))
+        assert_that(
+            self.READ_BARCODE_AT_FOUR[result.read_idx[0] : result.read_idx[1]]
+        ).is_equal_to(result.candidate)
+
+    # ==========================================
+    # FixedPositionMatcher: start_idx is ignored
+    # ==========================================
+
+    @pytest.mark.parametrize("start_idx", [0, 1, 4, 7, 25, 500])
+    def test_fixed_position_matcher_ignores_start_idx(
+        self, fixed_matcher: FixedPositionMatcher, start_idx: int
+    ) -> None:
+        """Test that FixedPositionMatcher returns the same result for every `start_idx`.
+
+        It does not search, so it has nowhere to start from: it slices the component's fixed start
+        out of the read structure and reads that window directly. `start_idx` is accepted only to
+        keep the matcher signature uniform, and a value far past the end of the read changes
+        nothing.
+        """
+        baseline = fixed_matcher.match(self.READ_BARCODE_AT_START, 0)[0]
+        result = fixed_matcher.match(self.READ_BARCODE_AT_START, start_idx)[0]
+
+        assert_that(result).is_equal_to(baseline)
+        assert_that(result.match).is_equal_to(self.BARCODE)
+        assert_that(result.read_idx).is_equal_to((0, 10))
+
+
 class TestFixedPositionMatcher:
     """Tests for FixedPositionMatcher barcode matching logic."""
 
     @pytest.fixture
-    def hydrop_chemistry(self) -> ChemistryHydrop:
-        """Provide a HyDrop chemistry instance."""
-        return ChemistryHydrop()
-
-    @pytest.fixture
-    def hydrop_whitelists(self, hydrop_chemistry: ChemistryHydrop) -> dict[str, tuple[str, ...]]:
-        """Provide stripped HyDrop whitelists (10bp variable regions)."""
-        return hydrop_chemistry.barcode_whitelists
-
-    @pytest.fixture
-    def bc3_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> FixedPositionMatcher:
-        """Provide a FixedPositionMatcher for HyDrop BC3 (start=0, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC3")
-        return FixedPositionMatcher(
-            whitelist=hydrop_whitelists["BC3"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc2_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> FixedPositionMatcher:
-        """Provide a FixedPositionMatcher for HyDrop BC2 (start=20, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
-        return FixedPositionMatcher(
-            whitelist=hydrop_whitelists["BC2"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc1_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> FixedPositionMatcher:
-        """Provide a FixedPositionMatcher for HyDrop BC1 (start=40, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC1")
-        return FixedPositionMatcher(
-            whitelist=hydrop_whitelists["BC1"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
+    def matcher_class(self) -> type[MatcherBase]:
+        """Build HyDrop matcher fixtures as FixedPositionMatcher instances."""
+        return FixedPositionMatcher
 
     def test_match_returns_barcode_match_attempt(self, bc3_matcher: FixedPositionMatcher) -> None:
         """Test that match() returns a BarcodeMatchAttempt instance."""
@@ -326,7 +646,7 @@ class TestFixedPositionMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
         matcher = FixedPositionMatcher(
             whitelist=hydrop_whitelists[bc_name],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
         )
         result = matcher.match(seq)[0]
@@ -349,56 +669,14 @@ class TestKmerMatcher:
     # --- Fixtures ---
 
     @pytest.fixture
-    def hydrop_chemistry(self) -> ChemistryHydrop:
-        """Provide a HyDrop chemistry instance."""
-        return ChemistryHydrop()
+    def matcher_class(self) -> type[MatcherBase]:
+        """Build HyDrop matcher fixtures as KmerMatcher instances."""
+        return KmerMatcher
 
     @pytest.fixture
-    def hydrop_whitelists(self, hydrop_chemistry: ChemistryHydrop) -> dict[str, tuple[str, ...]]:
-        """Provide stripped HyDrop whitelists (10bp variable regions)."""
-        return hydrop_chemistry.barcode_whitelists
-
-    @pytest.fixture
-    def bc3_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> KmerMatcher:
-        """Provide a KmerMatcher for HyDrop BC3 (start=0, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC3")
-        return KmerMatcher(
-            whitelist=hydrop_whitelists["BC3"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc2_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> KmerMatcher:
-        """Provide a KmerMatcher for HyDrop BC2 (start=20, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
-        return KmerMatcher(
-            whitelist=hydrop_whitelists["BC2"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc1_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> KmerMatcher:
-        """Provide a KmerMatcher for HyDrop BC1 (start=40, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC1")
-        return KmerMatcher(
-            whitelist=hydrop_whitelists["BC1"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def small_whitelist(self) -> tuple[str, ...]:
-        """Provide a small, deterministic whitelist for isolated tests."""
-        return ("ACGTACGTAC", "TGCATGCATG", "GGGGGGGGGG", "CCCCCCCCCC")
-
-    @pytest.fixture
-    def small_matcher(self, small_whitelist: tuple[str, ...]) -> KmerMatcher:
-        """Provide a KmerMatcher with a small whitelist and simple chemistry (HyDrop BC3)."""
-        chemistry = ChemistryHydrop()
-        comp = chemistry.read_structure.get_component_by_name("BC3")
-        return KmerMatcher(whitelist=small_whitelist, barcode_component=comp, chemistry=chemistry)
+    def matcher_kwargs(self, hydrop_chemistry: ChemistryHydrop) -> dict[str, Any]:
+        """Give the shared matcher fixtures the HyDrop barcode error budget."""
+        return {"max_errors": hydrop_chemistry.max_errors.barcode}
 
     # --- Helper to build a full HyDrop read ---
 
@@ -422,7 +700,7 @@ class TestKmerMatcher:
         hydrop_whitelists: dict[str, tuple[str, ...]],
     ) -> None:
         """Test that KmerMatcher initializes correctly with given whitelist and chemistry."""
-        assert_that(bc3_matcher.barcode_component.name).is_equal_to("BC3")
+        assert_that(bc3_matcher.component.name).is_equal_to("BC3")
         assert_that(bc3_matcher.k).is_equal_to(4)
         assert_that(bc3_matcher.max_errors).is_equal_to(hydrop_chemistry.max_errors.barcode)
         assert_that(bc3_matcher.whitelist_set).is_instance_of(frozenset)
@@ -439,27 +717,13 @@ class TestKmerMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name("BC3")
         matcher = KmerMatcher(
             whitelist=hydrop_whitelists["BC3"],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
             k=k,
         )
         assert_that(matcher.k).is_equal_to(k)
         assert_that(matcher.kmer_index).is_not_empty()
-
-    def test_initialization_rejects_non_barcode_component(self) -> None:
-        """Test that initializing with a non-barcode component raises ValueError."""
-        non_barcode = ReadComponent(
-            name="SPACER",
-            type=ReadComponentType.OTHER,
-            length=10,
-            sequence="AGGGTACTCG",
-        )
-        with pytest.raises(ValueError):
-            KmerMatcher(
-                whitelist=("AAAAAAAAAA",),
-                barcode_component=non_barcode,
-                chemistry=ChemistryHydrop(),
-            )
 
     def test_kmer_index_contains_all_expected_kmers(
         self, small_matcher: KmerMatcher, small_whitelist: tuple[str, ...]
@@ -504,7 +768,11 @@ class TestKmerMatcher:
         chemistry = ChemistryHydrop()
         comp = chemistry.read_structure.get_component_by_name("BC3")
         matcher = KmerMatcher(
-            whitelist=(barcode,), barcode_component=comp, chemistry=chemistry, k=k
+            whitelist=(barcode,),
+            component=comp,
+            chemistry=chemistry,
+            max_errors=chemistry.max_errors.barcode,
+            k=k,
         )
 
         # Count entries pointing back to our barcode
@@ -1015,8 +1283,9 @@ class TestKmerMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
         matcher = KmerMatcher(
             whitelist=hydrop_whitelists["BC2"],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         result = matcher.match(read)
 
@@ -1038,7 +1307,12 @@ class TestKmerMatcher:
         bc_b = "ACGTACGTCA"  # differs at positions 8,9 from bc_a
         ambiguous_read = "ACGTACGTCC"  # distance 1 from both
 
-        matcher = KmerMatcher(whitelist=(bc_a, bc_b), barcode_component=comp, chemistry=chemistry)
+        matcher = KmerMatcher(
+            whitelist=(bc_a, bc_b),
+            component=comp,
+            chemistry=chemistry,
+            max_errors=chemistry.max_errors.barcode,
+        )
         # Pad read with non-spacer filler to avoid spacer resolution
         read = ambiguous_read + "TTTTTTTTTT" * 4
         result = matcher.match(read)
@@ -1089,8 +1363,9 @@ class TestKmerMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
         matcher = KmerMatcher(
             whitelist=hydrop_whitelists[bc_name],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         result = matcher.match(seq)
 
@@ -1123,8 +1398,9 @@ class TestKmerMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
         matcher = KmerMatcher(
             whitelist=hydrop_whitelists[bc_name],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         result = matcher.match(seq)
 
@@ -1158,8 +1434,9 @@ class TestKmerMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
         matcher = KmerMatcher(
             whitelist=hydrop_whitelists[bc_name],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         result = matcher.match(seq)
 
@@ -1211,7 +1488,10 @@ class TestKmerMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
         whitelist = hydrop_whitelists[bc_name]
         matcher = KmerMatcher(
-            whitelist=whitelist, barcode_component=comp, chemistry=hydrop_chemistry
+            whitelist=whitelist,
+            component=comp,
+            chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
 
         bc3 = hydrop_whitelists["BC3"][0]
@@ -1258,8 +1538,9 @@ class TestKmerMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
         matcher = KmerMatcher(
             whitelist=hydrop_whitelists["BC2"],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         result = matcher.match(read)
         # If spacer validation was triggered, spacer fields may be set
@@ -1278,7 +1559,10 @@ class TestKmerMatcher:
         chemistry = ChemistryHydrop()
         comp = chemistry.read_structure.get_component_by_name("BC3")
         matcher = KmerMatcher(
-            whitelist=("ACGTACGTAC",), barcode_component=comp, chemistry=chemistry
+            whitelist=("ACGTACGTAC",),
+            component=comp,
+            chemistry=chemistry,
+            max_errors=chemistry.max_errors.barcode,
         )
 
         # 10bp barcode with k=4: 7 positions, but some kmers may repeat
@@ -1294,7 +1578,12 @@ class TestKmerMatcher:
         """Test that kmer index is empty when whitelist is empty."""
         chemistry = ChemistryHydrop()
         comp = chemistry.read_structure.get_component_by_name("BC3")
-        matcher = KmerMatcher(whitelist=(), barcode_component=comp, chemistry=chemistry)
+        matcher = KmerMatcher(
+            whitelist=(),
+            component=comp,
+            chemistry=chemistry,
+            max_errors=chemistry.max_errors.barcode,
+        )
         assert_that(matcher.kmer_index).is_empty()
 
     def test_build_kmer_index_duplicate_barcodes_deduplicated(self) -> None:
@@ -1303,8 +1592,9 @@ class TestKmerMatcher:
         comp = chemistry.read_structure.get_component_by_name("BC3")
         matcher = KmerMatcher(
             whitelist=("ACGTACGTAC", "ACGTACGTAC", "ACGTACGTAC"),
-            barcode_component=comp,
+            component=comp,
             chemistry=chemistry,
+            max_errors=chemistry.max_errors.barcode,
         )
 
         # whitelist_set should have only 1 unique barcode
@@ -1322,7 +1612,11 @@ class TestKmerMatcher:
         comp = chemistry.read_structure.get_component_by_name("BC3")
         barcode = "ACGTACGTAC"
         matcher = KmerMatcher(
-            whitelist=(barcode,), barcode_component=comp, chemistry=chemistry, k=k
+            whitelist=(barcode,),
+            component=comp,
+            chemistry=chemistry,
+            max_errors=chemistry.max_errors.barcode,
+            k=k,
         )
 
         for kmer in matcher.kmer_index:
@@ -1347,8 +1641,9 @@ class TestKmerMatcher:
             comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
             matcher = KmerMatcher(
                 whitelist=hydrop_whitelists[bc_name],
-                barcode_component=comp,
+                component=comp,
                 chemistry=hydrop_chemistry,
+                max_errors=hydrop_chemistry.max_errors.barcode,
             )
             result = matcher.match(read)
             matched = [r for r in result if r.match is not None]
@@ -1370,8 +1665,9 @@ class TestKmerMatcher:
             comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
             matcher = KmerMatcher(
                 whitelist=hydrop_whitelists[bc_name],
-                barcode_component=comp,
+                component=comp,
                 chemistry=hydrop_chemistry,
+                max_errors=hydrop_chemistry.max_errors.barcode,
             )
             result = matcher.match(read)
             matched = [r for r in result if r.match is not None]
@@ -1433,6 +1729,608 @@ class TestKmerMatcher:
         assert_that(result.edit_distance).is_equal_to(0)
 
 
+class TestKmerMatcherCandidateSplit:
+    """Tests for KmerMatcher.collect_candidates and KmerMatcher.resolve_candidates.
+
+    `match` is split into a collection half and a resolution half with no change in behaviour:
+    `collect_candidates` performs the short-read guard, the seed scan and verification and returns
+    every verified candidate, while `resolve_candidates` applies the best-score filter and the
+    spacer-driven tie-break ladder. Testing them directly makes the tie-break ladder reachable
+    from hand-built candidate lists, rather than only through reads contrived to produce them.
+    """
+
+    # --- HyDrop spacer constants for read construction ---
+    SPACER_1 = "AGGGTACTCG"
+    SPACER_2 = "GCAGTAGCTG"
+
+    MAX_ERRORS = 2
+    K = 4
+
+    # Two whitelist entries one edit apart, so a read matching the first exactly also verifies
+    # the second at a worse-but-legal score.
+    NEAR_NEIGHBOUR_WHITELIST = ("ACGTACGTAC", "ACGTACGTCA")
+    SINGLE_WHITELIST = ("ACGTACGTAC",)
+
+    # The first whitelist entry at read positions 0-10, followed by filler that seeds nothing.
+    READ_BARCODE_AT_START = "ACGTACGTAC" + "T" * 20
+    READ_NO_SEEDS = "T" * 20
+
+    # A HyDrop-shaped read whose BC2 window at 20-30 is flanked by both spacers.
+    HYDROP_READ = "A" * 10 + SPACER_1 + "C" * 10 + SPACER_2 + "G" * 10
+
+    # A read carrying two separate windows, each flanked by both spacers, so two candidates can
+    # be equally well validated and neither can win the two-spacer tie-break.
+    TWO_WINDOW_READ = SPACER_1 + "A" * 10 + SPACER_2 + SPACER_1 + "C" * 10 + SPACER_2
+
+    @pytest.fixture
+    def chemistry(self) -> ChemistryHydrop:
+        """Provide the HyDrop chemistry supplying the read structure.
+
+        Returns:
+            A freshly constructed ChemistryHydrop.
+        """
+        return ChemistryHydrop()
+
+    @pytest.fixture
+    def collecting_matcher(self, chemistry: ChemistryHydrop) -> KmerMatcher:
+        """Provide a BC3 matcher over the near-neighbour whitelist, for collection tests.
+
+        Args:
+            chemistry: The chemistry supplying the read structure.
+
+        Returns:
+            The configured KmerMatcher.
+        """
+        return KmerMatcher(
+            whitelist=self.NEAR_NEIGHBOUR_WHITELIST,
+            component=chemistry.read_structure.get_component_by_name("BC3"),
+            chemistry=chemistry,
+            max_errors=self.MAX_ERRORS,
+            k=self.K,
+        )
+
+    @pytest.fixture
+    def single_entry_matcher(self, chemistry: ChemistryHydrop) -> KmerMatcher:
+        """Provide a BC3 matcher over a single-entry whitelist, for seed-floor tests.
+
+        Args:
+            chemistry: The chemistry supplying the read structure.
+
+        Returns:
+            The configured KmerMatcher.
+        """
+        return KmerMatcher(
+            whitelist=self.SINGLE_WHITELIST,
+            component=chemistry.read_structure.get_component_by_name("BC3"),
+            chemistry=chemistry,
+            max_errors=self.MAX_ERRORS,
+            k=self.K,
+        )
+
+    @pytest.fixture
+    def resolving_matcher(self, chemistry: ChemistryHydrop) -> KmerMatcher:
+        """Provide a BC2 matcher, whose neighbours in the read structure are the two spacers.
+
+        BC2 is used because it is the only HyDrop barcode with a defined spacer on both sides, so
+        `check_spacers` can return two names and the two-spacer tie-break becomes reachable.
+
+        Args:
+            chemistry: The chemistry supplying the read structure.
+
+        Returns:
+            The configured KmerMatcher.
+        """
+        return KmerMatcher(
+            whitelist=("AAAAAAAAAA", "CCCCCCCCCC", "CCCCCCCCC"),
+            component=chemistry.read_structure.get_component_by_name("BC2"),
+            chemistry=chemistry,
+            max_errors=self.MAX_ERRORS,
+            k=self.K,
+        )
+
+    # ==========================================
+    # collect_candidates()
+    # ==========================================
+
+    def test_collect_candidates_returns_suboptimal_candidates_too(
+        self, collecting_matcher: KmerMatcher
+    ) -> None:
+        """Test that collection returns every verified candidate, not only the best-scoring ones.
+
+        Filtering by best score belongs to resolution, so a read matching one whitelist entry
+        exactly must still surface the near neighbour that verifies at a worse edit distance, and
+        the second alignment of the exact entry that verifies at the very edge of the budget.
+        """
+        candidates = collecting_matcher.collect_candidates(self.READ_BARCODE_AT_START, 0)
+
+        assert_that(sorted(candidates)).is_equal_to(
+            [
+                ("ACGTACGTAC", 0, 10, 0),
+                ("ACGTACGTAC", 2, 10, 2),
+                ("ACGTACGTCA", 0, 9, 1),
+            ]
+        )
+        assert_that(sorted({c[3] for c in candidates})).is_equal_to([0, 1, 2])
+
+    def test_collect_candidates_keeps_candidates_match_would_discard(
+        self, collecting_matcher: KmerMatcher
+    ) -> None:
+        """Test that collection is strictly wider than what `match` ends up reporting.
+
+        `match` reports the single best-scoring candidate; collection hands back that candidate
+        alongside the ones the best-score filter is about to drop.
+        """
+        candidates = collecting_matcher.collect_candidates(self.READ_BARCODE_AT_START, 0)
+        result = collecting_matcher.match(self.READ_BARCODE_AT_START)
+
+        assert_that(len(candidates)).is_greater_than(len(result))
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to("ACGTACGTAC")
+        assert_that(result[0].edit_distance).is_equal_to(0)
+
+    @pytest.mark.parametrize(
+        "start_idx, expected_candidates",
+        [
+            (0, [("ACGTACGTAC", 0, 10, 0), ("ACGTACGTAC", 2, 10, 2)]),
+            (4, [("ACGTACGTAC", 0, 10, 0), ("ACGTACGTAC", 2, 10, 2)]),
+            (7, []),
+        ],
+    )
+    def test_collect_candidates_respects_the_start_idx_seed_floor(
+        self,
+        single_entry_matcher: KmerMatcher,
+        start_idx: int,
+        expected_candidates: list[tuple[str, int, int, int]],
+    ) -> None:
+        """Test that `start_idx` bounds the seed scan in collection, not the spans it returns.
+
+        At a `start_idx` of 4 the collected spans still begin at 0, because seeds found at or
+        after the floor are extended backwards. Only once the floor outruns the last whitelist
+        k-mer in the read, at 7, does collection come back empty.
+        """
+        candidates = single_entry_matcher.collect_candidates(self.READ_BARCODE_AT_START, start_idx)
+
+        assert_that(sorted(candidates)).is_equal_to(expected_candidates)
+
+    def test_collect_candidates_read_shorter_than_k_raises_value_error(
+        self, single_entry_matcher: KmerMatcher
+    ) -> None:
+        """Test that the short-read guard lives in collection and raises the same ValueError.
+
+        The guard is the first thing `match` does today, so it must move wholesale into the
+        collection half and keep raising for the same input with the same message.
+        """
+        with pytest.raises(ValueError, match="Read segment too short for k-mer matching"):
+            single_entry_matcher.collect_candidates("ACG", 0)
+
+    def test_collect_candidates_returns_empty_list_when_nothing_verifies(
+        self, single_entry_matcher: KmerMatcher
+    ) -> None:
+        """Test that a read seeding nothing collects an empty list rather than failing."""
+        candidates = single_entry_matcher.collect_candidates(self.READ_NO_SEEDS, 0)
+
+        assert_that(candidates).is_equal_to([])
+
+    def test_match_is_collect_then_resolve(self, collecting_matcher: KmerMatcher) -> None:
+        """Test that `match` is exactly the composition of the two halves.
+
+        This is the guarantee that the split carries no behaviour change: running the halves by
+        hand must reproduce what `match` returns for the same read.
+        """
+        candidates = collecting_matcher.collect_candidates(self.READ_BARCODE_AT_START, 0)
+        composed = collecting_matcher.resolve_candidates(self.READ_BARCODE_AT_START, candidates)
+
+        assert_that(composed).is_equal_to(collecting_matcher.match(self.READ_BARCODE_AT_START))
+
+    # ==========================================
+    # resolve_candidates()
+    # ==========================================
+
+    def test_resolve_candidates_with_no_candidates_returns_a_single_matchless_attempt(
+        self, resolving_matcher: KmerMatcher
+    ) -> None:
+        """Test that an empty candidate list resolves to one attempt carrying only a method."""
+        result = resolving_matcher.resolve_candidates(self.HYDROP_READ, [])
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].method).is_equal_to(MatchMethod.KMERMATCH)
+        assert_that(result[0].match).is_none()
+        assert_that(result[0].candidate).is_none()
+        assert_that(result[0].read_idx).is_none()
+        assert_that(result[0].edit_distance).is_none()
+
+    def test_resolve_candidates_with_one_candidate_resolves_without_checking_spacers(
+        self, resolving_matcher: KmerMatcher
+    ) -> None:
+        """Test that a lone best-scoring candidate is accepted with no spacer validation at all.
+
+        Spacers are a tie-break, so with nothing to break there is no tie: the candidate is
+        reported as the match and both spacer fields stay unset even though this candidate's
+        window is in fact flanked by both HyDrop spacers.
+        """
+        result = resolving_matcher.resolve_candidates(
+            self.HYDROP_READ, [("CCCCCCCCCC", 20, 30, 1)]
+        )
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to("CCCCCCCCCC")
+        assert_that(result[0].candidate).is_equal_to("CCCCCCCCCC")
+        assert_that(result[0].read_idx).is_equal_to((20, 30))
+        assert_that(result[0].edit_distance).is_equal_to(1)
+        assert_that(result[0].spacer_upstream).is_none()
+        assert_that(result[0].spacer_downstream).is_none()
+
+    def test_resolve_candidates_filters_to_the_best_score_before_anything_else(
+        self, resolving_matcher: KmerMatcher
+    ) -> None:
+        """Test that a worse-scoring candidate is dropped before the tie-break ladder is reached.
+
+        Two candidates go in, but only one has the best edit distance, so the ladder never runs
+        and the survivor is reported unvalidated.
+        """
+        result = resolving_matcher.resolve_candidates(
+            self.HYDROP_READ, [("CCCCCCCCCC", 20, 30, 0), ("AAAAAAAAAA", 0, 10, 2)]
+        )
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to("CCCCCCCCCC")
+        assert_that(result[0].edit_distance).is_equal_to(0)
+
+    def test_resolve_candidates_tie_broken_by_the_only_candidate_with_a_spacer(
+        self, resolving_matcher: KmerMatcher
+    ) -> None:
+        """Test that a score tie is broken by the single candidate with any adjacent spacer.
+
+        Both candidates share the best score, but only the window at 20-29 has a recognised
+        spacer beside it, so it is the only one validated and it wins outright. Its spacer fields
+        are then reported, unlike in the single-candidate path.
+        """
+        result = resolving_matcher.resolve_candidates(
+            self.HYDROP_READ, [("CCCCCCCCC", 20, 29, 1), ("AAAAAAAAAA", 0, 10, 1)]
+        )
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to("CCCCCCCCC")
+        assert_that(result[0].candidate).is_equal_to("CCCCCCCCC")
+        assert_that(result[0].read_idx).is_equal_to((20, 29))
+        assert_that(result[0].spacer_upstream).is_equal_to("SPACER_1")
+        assert_that(result[0].spacer_downstream).is_none()
+
+    def test_resolve_candidates_tie_broken_by_the_only_candidate_with_two_spacers(
+        self, resolving_matcher: KmerMatcher
+    ) -> None:
+        """Test the second rung of the ladder: two validated candidates, one with both spacers.
+
+        Both candidates carry an upstream spacer and so both are validated, which leaves the
+        first rung undecided. The candidate flanked on both sides is then preferred, on the
+        reasoning that two intact spacers is the stronger positional evidence.
+        """
+        result = resolving_matcher.resolve_candidates(
+            self.HYDROP_READ, [("CCCCCCCCCC", 20, 30, 1), ("CCCCCCCCC", 20, 29, 1)]
+        )
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to("CCCCCCCCCC")
+        assert_that(result[0].read_idx).is_equal_to((20, 30))
+        assert_that(result[0].spacer_upstream).is_equal_to("SPACER_1")
+        assert_that(result[0].spacer_downstream).is_equal_to("SPACER_2")
+
+    def test_resolve_candidates_full_ambiguity_returns_one_matchless_attempt_per_candidate(
+        self, resolving_matcher: KmerMatcher
+    ) -> None:
+        """Test the fallthrough when the ladder cannot separate two equally evidenced candidates.
+
+        Both windows are flanked by both spacers, so neither rung of the ladder can choose
+        between them. The matcher then declines to guess and reports every validated candidate as
+        its own attempt with `match` left as None, preserving the spans and spacer evidence so a
+        caller can see exactly what was ambiguous.
+        """
+        result = resolving_matcher.resolve_candidates(
+            self.TWO_WINDOW_READ, [("AAAAAAAAAA", 10, 20, 1), ("CCCCCCCCCC", 40, 50, 1)]
+        )
+
+        assert_that(result).is_length(2)
+        for attempt in result:
+            assert_that(attempt.match).is_none()
+            assert_that(attempt.method).is_equal_to(MatchMethod.KMERMATCH)
+            assert_that(attempt.edit_distance).is_equal_to(1)
+            assert_that(attempt.spacer_upstream).is_equal_to("SPACER_1")
+            assert_that(attempt.spacer_downstream).is_equal_to("SPACER_2")
+        assert_that([a.read_idx for a in result]).is_equal_to([(10, 20), (40, 50)])
+        assert_that([a.candidate for a in result]).is_equal_to(["AAAAAAAAAA", "CCCCCCCCCC"])
+
+
+class TestKmerMatcherTargetIndex:
+    """Tests for KmerMatcher over a TGIDX component, whose start position is unresolved."""
+
+    UMI = "ACGTACGT"
+    POLYG = "GGGG"
+    TRAILING = "CTGTCTCTTATACACATCT"
+
+    EXACT_INDEX = "TATAGCCT"
+    ONE_ERROR_INDEX = "TATAGGCT"
+    TWO_ERROR_INDEX = "TAGAGGCT"
+
+    @pytest.fixture
+    def chemistry(self) -> ChemistryCarmackCustomSeq10:
+        """Provide the Carmack custom sequencing chemistry, which carries a TGIDX component."""
+        return ChemistryCarmackCustomSeq10()
+
+    @pytest.fixture
+    def tgidx_matcher(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ) -> Callable[[int], KmerMatcher]:
+        """Provide a factory building a TGIDX KmerMatcher for a given error budget.
+
+        Args:
+            chemistry: The chemistry supplying the TGIDX component and whitelist.
+
+        Returns:
+            Callable taking the error budget and returning the configured matcher.
+        """
+
+        def build(max_errors: int) -> KmerMatcher:
+            return KmerMatcher(
+                whitelist=chemistry.tgidx_whitelist(),
+                component=chemistry.tgidx_component(),
+                chemistry=chemistry,
+                max_errors=max_errors,
+            )
+
+        return build
+
+    def build_read(self, chemistry: ChemistryCarmackCustomSeq10, index: str) -> str:
+        """Construct a full read carrying the three barcodes, the UMI, a poly-G run and an index.
+
+        Args:
+            chemistry: The chemistry supplying the barcode whitelists.
+            index: The target index sequence to place after the poly-G run.
+
+        Returns:
+            The assembled read sequence.
+        """
+        bc3 = chemistry.load_whitelist("BC3")[0]
+        bc2 = chemistry.load_whitelist("BC2")[0]
+        bc1 = chemistry.load_whitelist("BC1")[0]
+        return (
+            bc3 + PRIMER_C + bc2 + PRIMER_A + bc1 + self.UMI + self.POLYG + index + self.TRAILING
+        )
+
+    def test_tgidx_whitelist_is_the_single_packaged_index(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ) -> None:
+        """Test that the fixture data is the real single-entry target index whitelist."""
+        assert_that(chemistry.tgidx_whitelist()).is_equal_to((self.EXACT_INDEX,))
+
+    def test_match_exact_index_returns_zero_edit_distance(
+        self,
+        chemistry: ChemistryCarmackCustomSeq10,
+        tgidx_matcher: Callable[[int], KmerMatcher],
+    ) -> None:
+        """Test that an exact target index occurrence is matched with edit distance zero."""
+        matcher = tgidx_matcher(chemistry.max_errors.tgidx)
+        result = matcher.match(self.build_read(chemistry, self.EXACT_INDEX))[0]
+
+        assert_that(result.match).is_equal_to(self.EXACT_INDEX)
+        assert_that(result.edit_distance).is_equal_to(0)
+
+    def test_match_one_error_index_returns_edit_distance_one(
+        self,
+        chemistry: ChemistryCarmackCustomSeq10,
+        tgidx_matcher: Callable[[int], KmerMatcher],
+    ) -> None:
+        """Test that a target index carrying a single substitution is still matched."""
+        matcher = tgidx_matcher(chemistry.max_errors.tgidx)
+        result = matcher.match(self.build_read(chemistry, self.ONE_ERROR_INDEX))[0]
+
+        assert_that(result.match).is_equal_to(self.EXACT_INDEX)
+        assert_that(result.edit_distance).is_equal_to(1)
+
+    def test_match_two_error_index_returns_no_match(
+        self,
+        chemistry: ChemistryCarmackCustomSeq10,
+        tgidx_matcher: Callable[[int], KmerMatcher],
+    ) -> None:
+        """Test that a target index carrying two substitutions exceeds the budget and fails."""
+        matcher = tgidx_matcher(chemistry.max_errors.tgidx)
+        result = matcher.match(self.build_read(chemistry, self.TWO_ERROR_INDEX))[0]
+
+        assert_that(result.match).is_none()
+
+    def test_match_budget_comes_from_the_max_errors_argument_not_the_chemistry(
+        self,
+        chemistry: ChemistryCarmackCustomSeq10,
+        tgidx_matcher: Callable[[int], KmerMatcher],
+    ) -> None:
+        """Test that the error budget is driven by the constructor argument alone.
+
+        Two matchers over the same component and whitelist differ only in the max_errors they
+        were given, so the same one-error read must match under a budget of one and fail under a
+        budget of zero. Neither outcome can come from the chemistry, which both matchers share.
+        """
+        read = self.build_read(chemistry, self.ONE_ERROR_INDEX)
+
+        permissive = tgidx_matcher(1)
+        strict = tgidx_matcher(0)
+
+        assert_that(permissive.max_errors).is_equal_to(1)
+        assert_that(strict.max_errors).is_equal_to(0)
+        assert_that(permissive.match(read)[0].match).is_equal_to(self.EXACT_INDEX)
+        assert_that(strict.match(read)[0].match).is_none()
+
+
+class TestKmerMatcherTargetIndexAmbiguity:
+    """Characterisation tests for how KmerMatcher resolves ambiguity over a TGIDX component.
+
+    The packaged target-index whitelist holds a single sequence, so it cannot produce genuine
+    multi-target ambiguity and the policy that governs it is never exercised by the shipped data.
+    These tests close that gap with a synthetic two-entry whitelist, pinning the policy that
+    downstream target-index work depends on.
+    """
+
+    UMI = "ACGTACGT"
+    POLYG = "GGGG"
+    TRAILING = "CTGTCTCTTATACACATCT"
+
+    # Two synthetic target indexes one edit apart from each other, and an observed window one
+    # edit from both, so neither entry can win on score.
+    INDEX_A = "TATAGCCT"
+    INDEX_B = "TATTGCCT"
+    AMBIGUOUS_WINDOW = "TATCGCCT"
+
+    AMBIGUOUS_WHITELIST = (INDEX_A, INDEX_B)
+
+    @pytest.fixture
+    def chemistry(self) -> ChemistryCarmackCustomSeq10:
+        """Provide the Carmack custom sequencing chemistry, which carries a TGIDX component.
+
+        Returns:
+            A freshly constructed ChemistryCarmackCustomSeq10.
+        """
+        return ChemistryCarmackCustomSeq10()
+
+    @pytest.fixture
+    def matcher(self, chemistry: ChemistryCarmackCustomSeq10) -> KmerMatcher:
+        """Provide a TGIDX matcher over the synthetic two-entry whitelist.
+
+        Args:
+            chemistry: The chemistry supplying the TGIDX component and read structure.
+
+        Returns:
+            The configured KmerMatcher, with a one-error budget matching the chemistry's own.
+        """
+        return KmerMatcher(
+            whitelist=self.AMBIGUOUS_WHITELIST,
+            component=chemistry.tgidx_component(),
+            chemistry=chemistry,
+            max_errors=1,
+            k=4,
+        )
+
+    def read_prefix(self, chemistry: ChemistryCarmackCustomSeq10) -> str:
+        """Build everything preceding the target index in the read.
+
+        Args:
+            chemistry: The chemistry supplying the barcode whitelists.
+
+        Returns:
+            The assembled prefix: the three barcodes, both primers, the UMI and the poly-G run.
+        """
+        bc3 = chemistry.load_whitelist("BC3")[0]
+        bc2 = chemistry.load_whitelist("BC2")[0]
+        bc1 = chemistry.load_whitelist("BC1")[0]
+        return bc3 + PRIMER_C + bc2 + PRIMER_A + bc1 + self.UMI + self.POLYG
+
+    def build_read(self, chemistry: ChemistryCarmackCustomSeq10, index: str) -> str:
+        """Build a full read carrying the given target index after the poly-G run.
+
+        Args:
+            chemistry: The chemistry supplying the barcode whitelists.
+            index: The target index window to place after the poly-G run.
+
+        Returns:
+            The assembled read sequence.
+        """
+        return self.read_prefix(chemistry) + index + self.TRAILING
+
+    def index_span(self, chemistry: ChemistryCarmackCustomSeq10, index: str) -> tuple[int, int]:
+        """Return the read coordinates the given target index window occupies.
+
+        Args:
+            chemistry: The chemistry supplying the barcode whitelists.
+            index: The target index window placed after the poly-G run.
+
+        Returns:
+            The (start, end) coordinates of the window in the assembled read.
+        """
+        start = len(self.read_prefix(chemistry))
+        return (start, start + len(index))
+
+    def test_synthetic_whitelist_is_equidistant_from_the_observed_window(self) -> None:
+        """Test the premise the ambiguity test rests on: neither entry is closer than the other.
+
+        The observed window is one edit from both whitelist entries, which are themselves one
+        edit apart, so the best-score filter cannot separate them and the tie-break ladder is
+        genuinely reached.
+        """
+        assert_that(edit_distance(self.AMBIGUOUS_WINDOW, self.INDEX_A)).is_equal_to(1)
+        assert_that(edit_distance(self.AMBIGUOUS_WINDOW, self.INDEX_B)).is_equal_to(1)
+        assert_that(edit_distance(self.INDEX_A, self.INDEX_B)).is_equal_to(1)
+
+    def test_packaged_whitelist_cannot_produce_this_ambiguity(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ) -> None:
+        """Test why the two-entry whitelist has to be synthetic.
+
+        The chemistry ships exactly one confirmed target index, so no read can ever be equidistant
+        from two of them and the ambiguity policy would otherwise go untested.
+        """
+        assert_that(chemistry.tgidx_whitelist()).is_equal_to((self.INDEX_A,))
+
+    def test_ambiguous_target_index_returns_a_single_matchless_attempt(
+        self, chemistry: ChemistryCarmackCustomSeq10, matcher: KmerMatcher
+    ) -> None:
+        """Test that a target index equidistant from two whitelist entries resolves to no match.
+
+        The policy arrives by structure rather than by any explicit branch, which is why it is
+        worth pinning:
+
+        - the target index's previous component is the POLYG homopolymer, which carries no
+          `sequence`, so it is rejected by the `match_seq` guard inside `check_spacers` (the
+          `spacer_component.type in (PRIMER, OTHER) and spacer_component.sequence` condition in
+          `matcher_base.py`);
+        - `ReadStructure.get_next(TGIDX)` returns None because TGIDX is the last component in the
+          read structure, so there is nothing downstream to check either;
+        - `check_spacers` therefore returns None on both sides for every candidate, no candidate
+          is ever validated, and every tie over a target index falls through to a single attempt
+          with no match.
+
+        The structural assertions below are part of the test on purpose: if the read structure
+        ever gains a sequence-bearing neighbour on either side of TGIDX, this test must fail
+        loudly rather than quietly start exercising a different policy.
+        """
+        read = self.build_read(chemistry, self.AMBIGUOUS_WINDOW)
+        span = self.index_span(chemistry, self.AMBIGUOUS_WINDOW)
+        tgidx = chemistry.tgidx_component()
+        previous = chemistry.read_structure.get_previous(tgidx)
+
+        result = matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].method).is_equal_to(MatchMethod.KMERMATCH)
+        assert_that(result[0].match).is_none()
+
+        # The structure that produces the policy, asserted so a change to it breaks this test.
+        assert_that(read[span[0] : span[1]]).is_equal_to(self.AMBIGUOUS_WINDOW)
+        assert_that(matcher.check_spacers(read, span)).is_equal_to(
+            {"upstream": None, "downstream": None}
+        )
+        assert_that(previous.type).is_equal_to(ReadComponentType.HOMOPOLYMER)
+        assert_that(previous.sequence).is_none()
+        assert_that(chemistry.read_structure.get_next(tgidx)).is_none()
+
+    @pytest.mark.parametrize("index", [INDEX_A, INDEX_B])
+    def test_same_matcher_resolves_an_unambiguous_exact_hit(
+        self,
+        chemistry: ChemistryCarmackCustomSeq10,
+        matcher: KmerMatcher,
+        index: str,
+    ) -> None:
+        """Test that the ambiguity result is not simply this matcher failing to match anything.
+
+        The same matcher over the same two-entry whitelist resolves either entry cleanly when the
+        observed window is an exact hit, so the match-less attempt above is the ambiguity policy
+        firing rather than a vacuous pass.
+        """
+        read = self.build_read(chemistry, index)
+        result = matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to(index)
+        assert_that(result[0].edit_distance).is_equal_to(0)
+        assert_that(result[0].read_idx).is_equal_to(self.index_span(chemistry, index))
+
+
 class TestAlignmentMatcher:
     """Tests for AlignmentMatcher barcode matching logic."""
 
@@ -1449,58 +2347,14 @@ class TestAlignmentMatcher:
     # --- Fixtures ---
 
     @pytest.fixture
-    def hydrop_chemistry(self) -> ChemistryHydrop:
-        """Provide a HyDrop chemistry instance."""
-        return ChemistryHydrop()
+    def matcher_class(self) -> type[MatcherBase]:
+        """Build HyDrop matcher fixtures as AlignmentMatcher instances."""
+        return AlignmentMatcher
 
     @pytest.fixture
-    def hydrop_whitelists(self, hydrop_chemistry: ChemistryHydrop) -> dict[str, tuple[str, ...]]:
-        """Provide stripped HyDrop whitelists (10bp variable regions)."""
-        return hydrop_chemistry.barcode_whitelists
-
-    @pytest.fixture
-    def bc3_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> AlignmentMatcher:
-        """Provide an AlignmentMatcher for HyDrop BC3 (start=0, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC3")
-        return AlignmentMatcher(
-            whitelist=hydrop_whitelists["BC3"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc2_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> AlignmentMatcher:
-        """Provide an AlignmentMatcher for HyDrop BC2 (start=20, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
-        return AlignmentMatcher(
-            whitelist=hydrop_whitelists["BC2"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def bc1_matcher(
-        self, hydrop_chemistry: ChemistryHydrop, hydrop_whitelists: dict[str, tuple[str, ...]]
-    ) -> AlignmentMatcher:
-        """Provide an AlignmentMatcher for HyDrop BC1 (start=40, length=10)."""
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC1")
-        return AlignmentMatcher(
-            whitelist=hydrop_whitelists["BC1"], barcode_component=comp, chemistry=hydrop_chemistry
-        )
-
-    @pytest.fixture
-    def small_whitelist(self) -> tuple[str, ...]:
-        """Provide a small, deterministic whitelist for isolated tests."""
-        return ("ACGTACGTAC", "TGCATGCATG", "GGGGGGGGGG", "CCCCCCCCCC")
-
-    @pytest.fixture
-    def small_matcher(self, small_whitelist: tuple[str, ...]) -> AlignmentMatcher:
-        """Provide an AlignmentMatcher with a small whitelist and simple chemistry (HyDrop BC3)."""
-        chemistry = ChemistryHydrop()
-        comp = chemistry.read_structure.get_component_by_name("BC3")
-        return AlignmentMatcher(
-            whitelist=small_whitelist, barcode_component=comp, chemistry=chemistry
-        )
+    def matcher_kwargs(self, hydrop_chemistry: ChemistryHydrop) -> dict[str, Any]:
+        """Give the shared matcher fixtures the HyDrop barcode error budget."""
+        return {"max_errors": hydrop_chemistry.max_errors.barcode}
 
     # --- Helper to build a full HyDrop read ---
 
@@ -1519,7 +2373,7 @@ class TestAlignmentMatcher:
         hydrop_whitelists: dict[str, tuple[str, ...]],
     ) -> None:
         """Test that AlignmentMatcher initializes correctly with given whitelist and chemistry."""
-        assert_that(bc3_matcher.barcode_component.name).is_equal_to("BC3")
+        assert_that(bc3_matcher.component.name).is_equal_to("BC3")
         assert_that(bc3_matcher.whitelist_set).is_instance_of(frozenset)
         assert_that(bc3_matcher.whitelist_set).is_equal_to(frozenset(hydrop_whitelists["BC3"]))
 
@@ -1527,21 +2381,6 @@ class TestAlignmentMatcher:
         """Test that AlignmentMatcher sets score_threshold during initialization."""
         assert_that(bc3_matcher.score_threshold).is_not_none()
         assert_that(bc3_matcher.score_threshold).is_instance_of(float)
-
-    def test_initialization_rejects_non_barcode_component(self) -> None:
-        """Test that initializing with a non-barcode component raises ValueError."""
-        non_barcode = ReadComponent(
-            name="SPACER",
-            type=ReadComponentType.OTHER,
-            length=10,
-            sequence="AGGGTACTCG",
-        )
-        with pytest.raises(ValueError):
-            AlignmentMatcher(
-                whitelist=("AAAAAAAAAA",),
-                barcode_component=non_barcode,
-                chemistry=ChemistryHydrop(),
-            )
 
     # ==========================================
     # compute_score_threshold() Tests
@@ -1555,8 +2394,8 @@ class TestAlignmentMatcher:
         For local alignment, each error costs the lost match score (1 for substitution,
         1.5 for indel). threshold = 10 - 2 * 1.5 = 7.0.
         """
-        bc_len = bc3_matcher.barcode_component.length
-        max_errors = bc3_matcher.chemistry.max_errors.barcode
+        bc_len = bc3_matcher.component.length
+        max_errors = bc3_matcher.max_errors
         perfect_score = bc_len * MATCH_SCORE
         max_penalty_per_error = max(
             MATCH_SCORE,  # substitution: lose 1 match
@@ -1665,6 +2504,26 @@ class TestAlignmentMatcher:
             assert_that(mat[base, "N"]).is_equal_to(MATCH_SCORE)
 
     # ==========================================
+    # trim_read() Tests
+    # ==========================================
+
+    def test_trim_read_basic(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that trim_read returns the substring from the given start position."""
+        assert_that(bc3_matcher.trim_read("ACGTACGT", 4)).is_equal_to("ACGT")
+
+    def test_trim_read_start_zero(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that trim_read with start=0 returns the full read."""
+        assert_that(bc3_matcher.trim_read("ACGTACGT", 0)).is_equal_to("ACGTACGT")
+
+    def test_trim_read_start_beyond_length(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that trim_read returns empty string when start is beyond read length."""
+        assert_that(bc3_matcher.trim_read("ACGT", 10)).is_equal_to("")
+
+    def test_trim_read_start_at_length(self, bc3_matcher: AlignmentMatcher) -> None:
+        """Test that trim_read returns empty string when start equals read length."""
+        assert_that(bc3_matcher.trim_read("ACGT", 4)).is_equal_to("")
+
+    # ==========================================
     # align_seqs() Tests
     # ==========================================
 
@@ -1721,7 +2580,7 @@ class TestAlignmentMatcher:
             mutated[i] = "A" if mutated[i] != "A" else "C"
         mutated_str = "".join(mutated)
 
-        bc_len = bc3_matcher.barcode_component.length
+        bc_len = bc3_matcher.component.length
         # Local alignment clips mismatches, so each sub only costs 1 (the lost match)
         expected_score = float(bc_len * MATCH_SCORE - n_substitutions * MATCH_SCORE)
 
@@ -1734,14 +2593,13 @@ class TestAlignmentMatcher:
         bc3_matcher: AlignmentMatcher,
         hydrop_whitelists: dict[str, tuple[str, ...]],
     ) -> None:
-        """Test that seq1_coords from align_seqs correctly span the matched region in seq1."""
+        """Test that seq1_span from align_seqs correctly spans the matched region in seq1."""
         bc3 = hydrop_whitelists["BC3"][0]
         result = bc3_matcher.align_seqs(bc3, bc3)
 
         assert_that(result).is_not_none()
         assert result is not None
-        assert_that(result.seq1_coords).is_not_empty()
-        start, end = result.seq1_coords[0]
+        start, end = result.seq1_span
         assert_that(bc3[start:end]).is_equal_to(bc3)
 
     def test_align_seqs_perfect_match_has_full_bc_length_score(
@@ -1751,12 +2609,105 @@ class TestAlignmentMatcher:
     ) -> None:
         """Test that a perfect match scores bc_len * MATCH_SCORE."""
         bc3 = hydrop_whitelists["BC3"][0]
-        bc_len = bc3_matcher.barcode_component.length
+        bc_len = bc3_matcher.component.length
         expected_score = bc_len * MATCH_SCORE
 
         result = bc3_matcher.align_seqs(bc3, bc3)
         assert_that(result).is_not_none()
         assert_that(result.score).is_equal_to(expected_score)  # type: ignore[union-attr]
+
+    # ==========================================
+    # align_seqs() debug logging Tests
+    # ==========================================
+
+    def test_align_seqs_emits_both_debug_lines_when_debug_enabled(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test that align_seqs emits both guarded debug lines when DEBUG is enabled.
+
+        Both log.debug calls sit behind an isEnabledFor guard, so nothing is emitted unless
+        DEBUG is on. The level is set on the alignment_matcher logger specifically rather than
+        on the root, since the guard reads that logger's own effective level.
+        """
+        caplog.set_level(logging.DEBUG, logger="carmack.barcode.matchers.alignment_matcher")
+        bc3 = hydrop_whitelists["BC3"][0]
+
+        bc3_matcher.align_seqs(bc3, bc3)
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "carmack.barcode.matchers.alignment_matcher"
+        ]
+        assert_that(messages).is_length(2)
+        assert_that(messages[0]).contains("Aligning sequences")
+        assert_that(messages[1]).contains("Found", "alignments")
+
+    def test_align_seqs_does_not_evaluate_alignment_count_when_debug_disabled(
+        self,
+        bc3_matcher: AlignmentMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that the debug guard leaves the expensive log arguments unevaluated.
+
+        The second debug line interpolates ``len(alignments)`` and ``{alignments}``, and both
+        make BioPython walk the dynamic programming matrix to count optimal paths. align_seqs
+        runs once per whitelist entry per read, so that work must not happen with DEBUG off.
+        The stand-in aligner hands back a proxy that flags any call to its length or text
+        conversion, and that flag must stay unset while the call still yields a normal
+        AlignmentContainer.
+        """
+        caplog.set_level(logging.INFO, logger="carmack.barcode.matchers.alignment_matcher")
+        bc3 = hydrop_whitelists["BC3"][0]
+
+        class CountingAlignments:
+            """Delegating proxy recording whether its length or text was ever taken."""
+
+            def __init__(self, alignments: PairwiseAlignments) -> None:
+                self.alignments = alignments
+                self.counted = False
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self.alignments, name)
+
+            def __getitem__(self, index: int) -> Any:
+                return self.alignments[index]
+
+            def __len__(self) -> int:
+                self.counted = True
+                return len(self.alignments)
+
+            def __str__(self) -> str:
+                self.counted = True
+                return str(self.alignments)
+
+        class RecordingAligner:
+            """Aligner stand-in handing back the real alignments inside a counting proxy."""
+
+            def __init__(self, aligner: PairwiseAligner) -> None:
+                self.aligner = aligner
+                self.proxies: list[CountingAlignments] = []
+
+            def align(self, seq1: str, seq2: str) -> CountingAlignments:
+                proxy = CountingAlignments(self.aligner.align(seq1, seq2))
+                self.proxies.append(proxy)
+                return proxy
+
+        recorder = RecordingAligner(bc3_matcher.aligner)
+        monkeypatch.setattr(bc3_matcher, "aligner", recorder)
+
+        result = bc3_matcher.align_seqs(bc3, bc3)
+
+        expected_score = float(bc3_matcher.component.length * MATCH_SCORE)
+        assert_that(result).is_instance_of(AlignmentContainer)
+        assert_that(result.score).is_equal_to(expected_score)  # type: ignore[union-attr]
+        assert_that(recorder.proxies).is_length(1)
+        assert_that(recorder.proxies[0].counted).is_false()
 
     # ==========================================
     # match() - Return Type & Basic Structure
@@ -2002,7 +2953,7 @@ class TestAlignmentMatcher:
         assert_that(result.read_idx).is_not_none()
         assert result.read_idx is not None
         start, end = result.read_idx
-        bc_len = bc3_matcher.barcode_component.length
+        bc_len = bc3_matcher.component.length
         # The aligned span covers the inserted sequence (bc_len + 1 bp)
         assert_that(end - start).is_equal_to(bc_len + 1)
 
@@ -2020,7 +2971,7 @@ class TestAlignmentMatcher:
         assert_that(result.read_idx).is_not_none()
         assert result.read_idx is not None
         start, end = result.read_idx
-        bc_len = bc3_matcher.barcode_component.length
+        bc_len = bc3_matcher.component.length
         # The aligned span covers the deleted sequence (bc_len - 1 bp)
         assert_that(end - start).is_equal_to(bc_len - 1)
 
@@ -2176,7 +3127,10 @@ class TestAlignmentMatcher:
         ambiguous_read = "CCGTACGTAC"
 
         matcher = AlignmentMatcher(
-            whitelist=(bc_a, bc_b), barcode_component=comp, chemistry=chemistry
+            whitelist=(bc_a, bc_b),
+            component=comp,
+            chemistry=chemistry,
+            max_errors=chemistry.max_errors.barcode,
         )
         # Pad with filler that avoids spacer sequences to prevent tiebreaking
         read = ambiguous_read + "TTTTTTTTTT" * 4
@@ -2186,6 +3140,55 @@ class TestAlignmentMatcher:
         for r in result:
             assert_that(r.match).is_none()
             assert_that(r.method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+    def test_match_ambiguous_with_no_spacer_evidence_returns_every_tied_candidate(
+        self,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """Test that a tie with no spacer evidence at all returns every tied candidate.
+
+        Two very distinct barcodes tie at the perfect alignment score and NEITHER sits next to a
+        real spacer, so the spacer-validation pass keeps nothing and the tie-break ladder falls
+        through to its final exit, which returns every tied candidate rather than a
+        spacer-validated subset. What distinguishes this exit from the spacer-validated
+        ambiguity exit above it is that BOTH ``spacer_upstream`` and ``spacer_downstream`` are
+        None on every returned attempt, so those two assertions carry the characterisation.
+
+        BC2 is the component because it is the only HyDrop barcode with a defined spacer on both
+        sides, which is what makes the spacer check meaningful here rather than vacuous.
+
+        The filler is ten T's rather than five deliberately. ``check_spacers`` guards its
+        upstream window with ``match_idx[0] >= spacer_component.length`` and its downstream
+        window with the mirror-image bound, and HyDrop spacers are 10bp; with only five bases of
+        filler those guards short-circuit and this test would pin a bounds check instead of a
+        spacer-sequence comparison. With ten, every spacer window genuinely exists and simply
+        fails to match the expected spacer sequence, which is the condition being pinned.
+        """
+        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        matcher = AlignmentMatcher(
+            whitelist=(self.BC_X, self.BC_Y),
+            component=comp,
+            chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
+        )
+        # Filler is neither spacer sequence, so no spacer window can validate a candidate.
+        filler = "TTTTTTTTTT"
+        read = filler + self.BC_X + filler + self.BC_Y + filler
+        result = matcher.match(read)
+
+        assert_that(result).is_length(2)
+        for attempt in result:
+            assert_that(attempt.match).is_none()
+            assert_that(attempt.edit_distance).is_none()
+            assert_that(attempt.spacer_upstream).is_none()
+            assert_that(attempt.spacer_downstream).is_none()
+            assert_that(attempt.read_idx).is_not_none()
+            assert_that(attempt.method).is_equal_to(MatchMethod.ALIGNMATCH)
+
+        # Returned order derives from frozenset iteration and is hash-seed dependent, so the
+        # candidates are compared as a sorted list rather than positionally.
+        candidates = sorted(attempt.candidate for attempt in result)
+        assert_that(candidates).is_equal_to(sorted([self.BC_X, self.BC_Y]))
 
     def test_match_ambiguous_resolved_by_spacer_returns_single_result(
         self,
@@ -2198,8 +3201,9 @@ class TestAlignmentMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
         matcher = AlignmentMatcher(
             whitelist=hydrop_whitelists["BC2"],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         result = matcher.match(read)
 
@@ -2225,8 +3229,9 @@ class TestAlignmentMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
         matcher = AlignmentMatcher(
             whitelist=(bc_true, bc_other),
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         # bc_true is flanked by both expected spacers; bc_other sits in non-spacer filler.
         read = bc_other + "TTTTT" + self.SPACER_1 + bc_true + self.SPACER_2 + "TTTTT"
@@ -2257,8 +3262,9 @@ class TestAlignmentMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
         matcher = AlignmentMatcher(
             whitelist=(bc_true, bc_other),
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         # bc_other has only an upstream spacer (downstream is filler); bc_true has both spacers.
         read = (
@@ -2294,8 +3300,9 @@ class TestAlignmentMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
         matcher = AlignmentMatcher(
             whitelist=(self.BC_X, self.BC_Y),
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         # Both barcodes are flanked by both spacers -> identical spacer profile -> ambiguous.
         read = (
@@ -2328,7 +3335,10 @@ class TestAlignmentMatcher:
         """
         comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
         matcher = AlignmentMatcher(
-            whitelist=(self.BC_X,), barcode_component=comp, chemistry=hydrop_chemistry
+            whitelist=(self.BC_X,),
+            component=comp,
+            chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         # 3-base insertion inside BC_X -> 13 bp aligned candidate, edit_distance == 3 (> max_errors).
         mutated = self.BC_X[:5] + "AAA" + self.BC_X[5:]
@@ -2354,7 +3364,10 @@ class TestAlignmentMatcher:
         """
         comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
         matcher = AlignmentMatcher(
-            whitelist=(self.BC_X, self.BC_Y), barcode_component=comp, chemistry=hydrop_chemistry
+            whitelist=(self.BC_X, self.BC_Y),
+            component=comp,
+            chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         # Both barcodes carry a 3-base insertion (tie at score 7.5). The survivor (BC_X) is flanked
         # by both spacers; the other (BC_Y) has only an upstream spacer -> Branch B narrows to BC_X.
@@ -2410,8 +3423,9 @@ class TestAlignmentMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
         matcher = AlignmentMatcher(
             whitelist=hydrop_whitelists[bc_name],
-            barcode_component=comp,
+            component=comp,
             chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
         result = matcher.match(seq)
 
@@ -2460,7 +3474,10 @@ class TestAlignmentMatcher:
         comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
         whitelist = hydrop_whitelists[bc_name]
         matcher = AlignmentMatcher(
-            whitelist=whitelist, barcode_component=comp, chemistry=hydrop_chemistry
+            whitelist=whitelist,
+            component=comp,
+            chemistry=hydrop_chemistry,
+            max_errors=hydrop_chemistry.max_errors.barcode,
         )
 
         bc3 = hydrop_whitelists["BC3"][0]
@@ -2511,8 +3528,9 @@ class TestAlignmentMatcher:
             comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
             matcher = AlignmentMatcher(
                 whitelist=hydrop_whitelists[bc_name],
-                barcode_component=comp,
+                component=comp,
                 chemistry=hydrop_chemistry,
+                max_errors=hydrop_chemistry.max_errors.barcode,
             )
             result = matcher.match(read)
             matched = [r for r in result if r.match is not None]
@@ -2534,8 +3552,9 @@ class TestAlignmentMatcher:
             comp = hydrop_chemistry.read_structure.get_component_by_name(bc_name)
             matcher = AlignmentMatcher(
                 whitelist=hydrop_whitelists[bc_name],
-                barcode_component=comp,
+                component=comp,
                 chemistry=hydrop_chemistry,
+                max_errors=hydrop_chemistry.max_errors.barcode,
             )
             result = matcher.match(read)
             matched = [r for r in result if r.match is not None]

@@ -1,6 +1,5 @@
 import logging
 from dataclasses import dataclass
-from typing import Literal
 
 from Bio.Align import PairwiseAligner
 from Bio.Align.substitution_matrices import Array
@@ -21,22 +20,24 @@ GAP_OPEN_SCORE = -0.5
 GAP_EXTEND_SCORE = -1
 
 
-@dataclass
+@dataclass(frozen=True)
 class AlignmentContainer:
     """
-    Container for alignment results from PairwiseAligner.
+    Container for the single alignment a match decision is taken from.
 
     Attributes:
-        score: Alignment score for the best alignment
-        seq1_coords: List of (start, end) tuples for each match in seq1 (sorted)
-        seq2_coords: List of (start, end) tuples for each match in seq2 (sorted)
-        bc: Optional field to store the matched barcode sequence
+        score: Alignment score of the best alignment between the two sequences.
+        seq1_span: (start, end) of the aligned region in seq1, in seq1 coordinates, taken from
+            the first optimal path. Equally-scoring paths do not always agree on this span, so
+            it is the span of one specific alignment rather than a property of the score.
+        bc: The seq2 sequence this alignment was against, carried so that a caller holding
+            several tied containers knows which whitelist entry each one came from. It is the
+            unsanitised argument, since it is what a caller assigns as the matched barcode.
     """
 
     score: float
-    seq1_coords: list[tuple[int, int]]
-    seq2_coords: list[tuple[int, int]]
-    bc: str | None = None
+    seq1_span: tuple[int, int]
+    bc: str
 
 
 class AlignmentMatcher(MatcherBase):
@@ -47,21 +48,39 @@ class AlignmentMatcher(MatcherBase):
     matrix that treats N bases as wildcards matching any nucleotide. Candidate
     selection and ranking are driven entirely by alignment scores rather than
     edit distance computation.
+
+    This matcher keeps the barcode-only allowed_component_types of MatcherBase, and that
+    declaration is the only thing stopping it being pointed at another component type. The
+    narrowness is a deliberate default rather than a structural bar: unlike FixedPositionMatcher
+    it never reads component.start, so widening it would need only the score threshold, which is
+    derived from component.length, re-examined against the new component's length and budget.
     """
 
     def __init__(
         self,
         whitelist: tuple[str, ...],
-        barcode_component: ReadComponent,
+        component: ReadComponent,
         chemistry: ChemistryBase,
+        max_errors: int,
     ) -> None:
-        super().__init__(whitelist, barcode_component, chemistry)
-        self.max_errors = chemistry.max_errors.barcode
+        """
+        Initialize the AlignmentMatcher with the given whitelist and barcode component.
+
+        Args:
+            whitelist: Tuple of valid barcode sequences.
+            component: The ReadComponent defining the barcode's position and length.
+            chemistry: The chemistry defining the surrounding read structure.
+            max_errors: Maximum edit distance allowed against a whitelist entry. Supplied by the
+                caller so the matcher does not reach into the chemistry for a budget that may not
+                be the barcode one.
+        """
+        super().__init__(whitelist, component, chemistry)
+        self.max_errors = max_errors
         self.score_threshold = self.compute_score_threshold()
         self.aligner = self.build_aligner()
 
         log.debug(
-            f"AlignmentMatcher initialized for {self.barcode_component.name} with max_errors_barcode={self.max_errors}, {len(whitelist)} barcodes, score_threshold={self.score_threshold}"
+            f"AlignmentMatcher initialized for {self.component.name} with max_errors={self.max_errors}, {len(whitelist)} barcodes, score_threshold={self.score_threshold}"
         )
 
     def build_substitution_matrix(self) -> Array:
@@ -106,7 +125,7 @@ class AlignmentMatcher(MatcherBase):
         Returns:
             Minimum alignment score to consider (as float)
         """
-        bc_len = self.barcode_component.length
+        bc_len = self.component.length
         max_errors = self.max_errors
 
         perfect_score = bc_len * MATCH_SCORE
@@ -136,6 +155,27 @@ class AlignmentMatcher(MatcherBase):
             return sequence
         return "".join(c if c in VALID_BASES else "N" for c in sequence)
 
+    def trim_read(self, read: str, start_idx: int) -> str:
+        """
+        Trim the read to the expected length for the barcode component.
+
+        This is used to ensure that the read segment being matched is of the correct length, which
+        can help improve matching accuracy and reduce false positives.
+
+        Args:
+            read: The sequencing read to trim.
+            start_idx: Index to trim from.
+
+        Returns:
+            The read from start_idx onwards, or an empty string if start_idx is beyond the read.
+        """
+        if start_idx >= len(read):
+            log.debug(
+                f"Start index {start_idx} is beyond read length {len(read)}. Returning empty string."
+            )
+            return ""
+        return read[start_idx:]
+
     def align_seqs(self, seq1: str, seq2: str) -> AlignmentContainer | None:
         """
         Align two sequences and extract alignment details.
@@ -145,33 +185,56 @@ class AlignmentMatcher(MatcherBase):
             seq2: Second sequence (e.g., barcode)
 
         Returns:
-            AlignmentContainer with score and coordinates if alignment meets threshold, else None
+            AlignmentContainer holding the score, the first optimal path's aligned span in seq1,
+            and the unsanitised seq2, if the alignment meets the threshold, else None
         """
-        log.debug(f"Aligning sequences: '{seq1}' vs '{seq2}'")
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(f"Aligning sequences: '{seq1}' vs '{seq2}'")
         alignments = self.aligner.align(self.sanitise_sequence(seq1), self.sanitise_sequence(seq2))
-        log.debug(f"Found {len(alignments)} alignments, {alignments}")
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(f"Found {len(alignments)} alignments, {alignments}")
 
         if alignments.score < self.score_threshold:
             return None
 
-        seq1_coords: list[tuple[int, int]] = []
-        seq2_coords: list[tuple[int, int]] = []
-
-        for aln in alignments:
-            # Get full span of aligned coordinates (includes gaps/insertions)
-            seq1_start = int(aln.aligned[0][0][0])  # Start of first segment
-            seq1_end = int(aln.aligned[0][-1][1])  # End of last segment
-            seq2_start = int(aln.aligned[1][0][0])  # Start of first segment
-            seq2_end = int(aln.aligned[1][-1][1])  # End of last segment
-
-            seq1_coords.append((seq1_start, seq1_end))
-            seq2_coords.append((seq2_start, seq2_end))
-
+        # Only the first optimal path's span is ever read. Indexing takes one traceback;
+        # iterating would force BioPython to enumerate every optimal path, of which there
+        # can be combinatorially many.
+        alignment = alignments[0]
         return AlignmentContainer(
             score=alignments.score,
-            seq1_coords=seq1_coords,
-            seq2_coords=seq2_coords,
+            seq1_span=(int(alignment.aligned[0][0][0]), int(alignment.aligned[0][-1][1])),
+            bc=seq2,
         )
+
+    def assign_within_budget(
+        self, attempt: BarcodeMatchAttempt, bc: str
+    ) -> list[BarcodeMatchAttempt]:
+        """
+        Assign `bc` to `attempt` if the aligned candidate is within the error budget.
+
+        The alignment score gate is necessary but not sufficient: a candidate can clear
+        score_threshold and still be further than max_errors from the barcode it aligned to,
+        because an indel-bearing local alignment scores better than its edit distance implies.
+        The distance is therefore recomputed against the barcode actually being assigned.
+
+        Args:
+            attempt: The match attempt to assign to, mutated in place on success.
+            bc: The whitelist barcode this attempt's alignment came from.
+
+        Returns:
+            A single-element list holding `attempt` with `match` and `edit_distance` populated,
+            or a single-element list holding a fresh matchless attempt if the budget is exceeded.
+        """
+        ed = edit_distance(attempt.candidate, bc)
+        if ed > self.max_errors:
+            log.debug(
+                f"Best alignment candidate '{attempt.candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
+            )
+            return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
+        attempt.match = bc
+        attempt.edit_distance = ed
+        return [attempt]
 
     def match(self, read: str, start_idx: int = 0) -> list[BarcodeMatchAttempt]:
         """
@@ -182,7 +245,16 @@ class AlignmentMatcher(MatcherBase):
 
         Args:
             read: The sequencing read to match against.
-            start_idx: The index in the read to start matching from (default is 0).
+            start_idx: A hard floor on where a match may begin. The read is trimmed to
+                ``read[start_idx:]`` before alignment, so bases before ``start_idx`` are invisible
+                to this matcher and no match can begin before it. A window that starts before
+                ``start_idx`` is therefore seen only in truncated form, and resolves only while
+                the truncation stays within ``max_errors``. Alignment coordinates are shifted by
+                ``start_idx`` before being returned, so ``read_idx`` is in original-read
+                coordinates.
+
+        Returns:
+            List of BarcodeMatchAttempt objects representing the match results.
         """
         best_alignments = []
 
@@ -191,17 +263,14 @@ class AlignmentMatcher(MatcherBase):
 
         trimmed_read = self.trim_read(read, start_idx)
         for bc in self.whitelist_set:
-            alignments = self.align_seqs(trimmed_read, bc)
+            alignment = self.align_seqs(trimmed_read, bc)
 
-            # Return coords on read seq for first alignments
-            if alignments is not None:
-                alignments.bc = bc  # Store matched barcode in alignment container
-
-                if alignments.score > best_score:
-                    best_alignments = [alignments]
-                    best_score = alignments.score
-                elif alignments.score == best_score:
-                    best_alignments.append(alignments)
+            if alignment is not None:
+                if alignment.score > best_score:
+                    best_alignments = [alignment]
+                    best_score = alignment.score
+                elif alignment.score == best_score:
+                    best_alignments.append(alignment)
 
         # No alignments, return attempt with no match
         if not best_alignments:
@@ -209,19 +278,16 @@ class AlignmentMatcher(MatcherBase):
             return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
 
         # Prepare match attempts for best alignments
-        # Use only the first coordinate pair from each alignment to avoid duplicates
-        # when local alignment finds multiple equivalent paths
         results: list[tuple[BarcodeMatchAttempt, str]] = []
         for aln in best_alignments:
-            # Only use the first coordinate - all coords in an alignment refer to the same region
-            seq1_coord = aln.seq1_coords[0]
+            seq1_span = aln.seq1_span
             read_idx = (
-                seq1_coord[0] + start_idx,
-                seq1_coord[1] + start_idx,
+                seq1_span[0] + start_idx,
+                seq1_span[1] + start_idx,
             )  # Convert to absolute read coordinates
             result = BarcodeMatchAttempt(
                 method=MatchMethod.ALIGNMATCH,
-                candidate=trimmed_read[seq1_coord[0] : seq1_coord[1]],
+                candidate=trimmed_read[seq1_span[0] : seq1_span[1]],
                 match=None,  # We don't assign a single match if multiple barcodes tie
                 read_idx=read_idx,
                 edit_distance=None,
@@ -231,23 +297,11 @@ class AlignmentMatcher(MatcherBase):
         # Single match, assign the matched barcode to the result
         if len(results) == 1:
             result, bc = results[0]
-            log.debug(
-                f"Unique best alignment match found: {bc} with score {best_alignments[0].score}"
-            )
-            ed = edit_distance(result.candidate, bc)
-            if ed > self.max_errors:
-                log.debug(
-                    f"Best alignment candidate '{result.candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
-                )
-                return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
-            result.match = bc
-            result.edit_distance = ed
-            return [result]
+            log.debug(f"Unique best alignment match found: {bc} with score {best_score}")
+            return self.assign_within_budget(result, bc)
 
         # Multiple best alignments - validate with adjacent spacer sequences
-        validated_results: list[
-            tuple[BarcodeMatchAttempt, str, dict[Literal["upstream", "downstream"], str | None]]
-        ] = []
+        validated_results: list[tuple[BarcodeMatchAttempt, str]] = []
         for result, bc in results:
             if result.read_idx is not None:
                 spacers_check = self.check_spacers(read, result.read_idx)
@@ -256,49 +310,38 @@ class AlignmentMatcher(MatcherBase):
 
                 # Validate if at least one adjacent spacer is present
                 if any(spacers_check.values()):
-                    validated_results.append((result, bc, spacers_check))
+                    validated_results.append((result, bc))
 
         # If only one validated result, assign the matched barcode and return
         if len(validated_results) == 1:
-            final_result, bc, _ = validated_results[0]
+            final_result, bc = validated_results[0]
             log.debug(
-                f"Unique best alignment match validated by spacers: {bc} with score {best_alignments[0].score}"
+                f"Unique best alignment match validated by spacers: {bc} with score {best_score}"
             )
-            ed = edit_distance(final_result.candidate, bc)
-            if ed > self.max_errors:
-                log.debug(
-                    f"Best alignment candidate '{final_result.candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
-                )
-                return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
-            final_result.match = bc  # Assign the matched barcode
-            final_result.edit_distance = ed
-            return [final_result]
+            return self.assign_within_budget(final_result, bc)
 
         # If multiple results validate, check if only one has spacers on both sides
-        best_candidates_with_two_spacers = [
-            c for c in validated_results if sum(v is not None for v in c[2].values()) == 2
+        both_spacers = [
+            entry
+            for entry in validated_results
+            if entry[0].spacer_upstream is not None and entry[0].spacer_downstream is not None
         ]
-        if len(validated_results) > 1 and len(best_candidates_with_two_spacers) == 1:
-            final_result, bc, _ = best_candidates_with_two_spacers[0]
+        if len(validated_results) > 1 and len(both_spacers) == 1:
+            final_result, bc = both_spacers[0]
             log.debug(
-                f"Unique best alignment match validated by having both spacers: {bc} with score {best_alignments[0].score}"
+                f"Unique best alignment match validated by having both spacers: {bc} with score {best_score}"
             )
-            ed = edit_distance(final_result.candidate, bc)
-            if ed > self.max_errors:
-                log.debug(
-                    f"Best alignment candidate '{final_result.candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
-                )
-                return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
-            final_result.match = bc  # Assign the matched barcode
-            final_result.edit_distance = ed
-            return [final_result]
+            return self.assign_within_budget(final_result, bc)
 
         # If multiple results still remain, we have ambiguity
         # We return all validated results but mark match as None to indicate ambiguity
-        for r, _, _ in validated_results:
+        if validated_results:
             log.debug(
-                f"Ambiguous alignment match: candidate '{r.candidate}' with score {best_alignments[0].score} has multiple best matches. Will be marked as ambiguous."
+                f"Ambiguous alignment match: candidate '{validated_results[0][0].candidate}' with score {best_score} has multiple best matches. Will be marked as ambiguous."
             )
-            return [r for r, _, _ in validated_results]
+            return [entry[0] for entry in validated_results]
 
-        return [r for r, _ in results]
+        log.debug(
+            f"Ambiguous alignment match with no spacer evidence: {len(results)} candidates tied at score {best_score}. All will be marked as ambiguous."
+        )
+        return [entry[0] for entry in results]

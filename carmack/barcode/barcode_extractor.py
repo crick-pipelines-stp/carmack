@@ -100,7 +100,7 @@ class BarcodeExtractor:
                 continue
 
             common_kwargs = {
-                "barcode_component": component,
+                "component": component,
                 "whitelist": self.whitelists[component.name],
                 "chemistry": self.chemistry,
             }
@@ -109,9 +109,13 @@ class BarcodeExtractor:
             kmer_matchers[component.name] = KmerMatcher(
                 **common_kwargs,
                 k=self.kmer_size,
+                max_errors=self.chemistry.max_errors.barcode,
             )
             if not self.fast:
-                alignment_matchers[component.name] = AlignmentMatcher(**common_kwargs)
+                alignment_matchers[component.name] = AlignmentMatcher(
+                    **common_kwargs,
+                    max_errors=self.chemistry.max_errors.barcode,
+                )
 
         # The order of matchers is important
         # We want to try the fastest methods first to reduce search space for slower methods
