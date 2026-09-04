@@ -126,3 +126,8 @@ dump
 
 # Containers
 .devcontainer/container.env
+
+# Local-only benchmarking harness: a development tool, never part of the
+# distributed package. Kept out of the tree so it cannot be committed or shipped.
+benchmark_pipeline.py
+tests/test_benchmark_pipeline.py

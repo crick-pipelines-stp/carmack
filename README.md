@@ -46,33 +46,12 @@ CARMACK_REGEN_GOLDEN=1 python -m pytest tests/test_golden_outputs.py -k golden
 Run pytest from the repo root, otherwise an installed copy of `carmack` can shadow the
 source tree and produce different files.
 
-### Benchmark harness
-
-`benchmark_pipeline.py` runs the pipeline stages (`extract-barcodes`, `extract-umis`,
-`assign-targets`) over a fixed read slice and records the wall time, %CPU and peak RSS of
-each, so a change can be measured the same way before and after.
-
-```sh
-python benchmark_pipeline.py --fastq path/to/R1.fastq.gz \
-    --chemistry carmack_custom_seq_1_0 --workers 16 \
-    --output-dir results/baseline --label baseline
-```
-
-It writes `benchmark.json`, `benchmark.tsv` and a `<stage>.log` per stage into
-`--output-dir`, next to the stages' own outputs, and nothing anywhere else.
-
-Peak RSS is a maximum over the process tree rather than a sum: the largest single process
-in it, not the total concurrent footprint.
-
-If a `carmack` on `PATH` shadows the source tree a stage dies with click's `No such
-command`, so run from the repo root with `--carmack-command "python -m carmack"`.
-
 ### Compressed output
 
 Writing `.gz` output prefers `pigz`, which compresses in parallel and keeps compression
 off the critical path of every stage that writes gzip. Without it on `PATH` the stages
 still produce identical output, just more slowly, and log a warning saying so. Install
-it from your package manager if throughput matters; benchmark numbers are not comparable
+it from your package manager if throughput matters; timings are not comparable
 between a machine that has it and one that does not.
 
 ### UMI correction temp space
