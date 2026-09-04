@@ -1,0 +1,41 @@
+# Nothing is published. The image is built on the runner, loaded into that runner's
+# daemon, run, and thrown away with it -- no registry, no login, no tags that outlive
+# the job -- which is why `contents: read` is the whole permission set.
+name: Docker tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  container-tests:
+    name: pytest in the test image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # buildx, for the GitHub Actions cache exporter below; the stock docker
+      # driver cannot write type=gha.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the test target
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: test
+          load: true
+          tags: carmack:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run the suite
+        run: docker run --rm carmack:test
