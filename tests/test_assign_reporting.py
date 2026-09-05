@@ -10,16 +10,27 @@ that ``strip_report_run_details`` must keep working against, every section
 heading, the counts and their percentages, the three distributions with their
 stated denominators, and the denominator note that stops the matched fraction
 being read as a modality fraction of the library.
+
+``AssignCounts`` is the mutable accumulator that feeds it: one batch of reads is
+tallied into one of these, batches are folded together as they drain, and the
+run's totals are rendered as a frozen ``AssignStats`` at the end. Its tests pin
+the properties that make batching invisible to the statistics - an additive
+fold, an untouched argument, order independence, and a partition of a read set
+tallying to the same totals as a single pass over it - plus the field mapping and
+plain-dict rendering that ``to_stats`` performs.
 """
 
 import dataclasses
 import re
+from collections import Counter
+from collections.abc import Sequence
+from itertools import permutations
 
 import pytest
 from assertpy import assert_that
 
 from carmack import __version__ as carmack_version
-from carmack.assign_targets.assign_reporting import AssignStats
+from carmack.assign_targets.assign_reporting import AssignCounts, AssignStats
 from tests.utils import strip_report_run_details
 
 # A whitelist entry seen three times, one seen twice, one seen once. They are
@@ -40,6 +51,74 @@ TIMESTAMP_PATTERN = re.compile(r"^# Report generated at: \d{4}-\d{2}-\d{2} \d{2}
 DENIAL_PATTERN = re.compile(r"\bnot\b.*\blibrary\b")
 REPORT_HEADING = "# Target Index Assignment Stats"
 FIRST_COUNT_LINE = "Total reads:"
+
+# The anchor homopolymer base handed to to_stats, matching the base the AssignStats
+# fixtures above render with.
+ANCHOR_BASE = "G"
+
+# The five scalar tallies the fold has to sum termwise.
+SCALAR_FIELD_NAMES = ("total", "matched", "no_umi_pos", "short_window", "no_match")
+
+# One legal key per counter, so a test that writes into a counter writes a key of that
+# counter's own type rather than one key forced to stand for all three.
+COUNTER_KEYS = (
+    ("target_counts", "ACGTACGT"),
+    ("edit_distance_counts", 0),
+    ("run_counts", 3),
+)
+COUNTER_FIELD_NAMES = tuple(field_name for field_name, _ in COUNTER_KEYS)
+
+# How the accumulator's field names map onto AssignStats'. Spelled out here so the
+# rename to_stats performs is pinned by the tests rather than read off the module.
+STATS_FIELD_NAMES = {
+    "total": "total_reads",
+    "matched": "matched",
+    "no_match": "unmatched_no_match",
+    "no_umi_pos": "unmatched_no_umi_pos",
+    "short_window": "unmatched_short_window",
+    "target_counts": "target_counts",
+    "edit_distance_counts": "edit_distance_counts",
+    "run_counts": "homopolymer_run_counts",
+}
+
+# The three AssignStats fields that must arrive as plain dicts. Counter is a dict
+# subclass, so a leaked Counter would satisfy an isinstance check; these are asserted
+# on their exact type instead.
+STATS_DICT_FIELD_NAMES = ("target_counts", "edit_distance_counts", "homopolymer_run_counts")
+
+# One read's contribution to a batch's tallies: its outcome, then the whitelist entry
+# and edit distance a matched read was called at, and the anchor run length measured
+# for any read whose UMI position tag was present.
+type ReadOutcome = tuple[str, str | None, int | None, int | None]
+
+# A read set covering all four outcomes, with every counter key seen more than once and
+# ordered so that reversing the set populates all three counters in a different order.
+READS: list[ReadOutcome] = [
+    ("matched", "ACGTACGT", 0, 3),
+    ("matched", "GGGGCCCC", 1, 4),
+    ("no_umi_pos", None, None, None),
+    ("matched", "ACGTACGT", 1, 3),
+    ("short_window", None, None, 5),
+    ("no_match", None, None, 4),
+    ("matched", "TTTTAAAA", 2, 3),
+    ("no_match", None, None, 3),
+    ("matched", "ACGTACGT", 0, 5),
+]
+
+# Where the read set is cut into the two batches the fold tests use. Cut here, every
+# counter key the second batch touches is also touched by the first, and that overlap
+# is what lets those tests tell an additive fold from a replacing one.
+FOLD_SPLIT = 5
+FIRST_BATCH_READS = READS[:FOLD_SPLIT]
+SECOND_BATCH_READS = READS[FOLD_SPLIT:]
+
+# Partitions of the read set into batches, as batch sizes. The single batch is today's
+# serial loop; the others are batchings a pool could produce, including one read per
+# batch, uneven batches, and an empty batch mid-run.
+READ_PARTITIONS = [(9,), (1,) * 9, (4, 5), (2, 3, 4), (4, 0, 5), (3, 3, 3)]
+
+# The partition whose batches are folded in every possible order.
+PERMUTED_PARTITION = (3, 3, 3)
 
 
 def make_stats(**overrides: object) -> AssignStats:
@@ -82,6 +161,58 @@ def make_empty_stats() -> AssignStats:
         target_counts={},
         edit_distance_counts={},
     )
+
+
+def tally(reads: Sequence[ReadOutcome]) -> AssignCounts:
+    """Tally a sequence of read outcomes the way one worker's batch would.
+
+    Args:
+        reads: Read outcomes making up the batch.
+
+    Returns:
+        The batch's tallies, with each counter populated in the order the reads
+        are given, so insertion order is under the caller's control.
+    """
+    counts = AssignCounts()
+    for outcome, target, edit_distance, run_length in reads:
+        counts.total += 1
+        setattr(counts, outcome, getattr(counts, outcome) + 1)
+        if run_length is not None:
+            counts.run_counts[run_length] += 1
+        if target is not None:
+            counts.target_counts[target] += 1
+            counts.edit_distance_counts[edit_distance] += 1
+    return counts
+
+
+def split(reads: Sequence[ReadOutcome], sizes: Sequence[int]) -> list[list[ReadOutcome]]:
+    """Split reads into consecutive batches of the given sizes.
+
+    Args:
+        reads: Read outcomes to split.
+        sizes: Batch sizes, which must sum to the number of reads.
+
+    Returns:
+        One list of read outcomes per size, in input order.
+    """
+    batches = []
+    start = 0
+    for size in sizes:
+        batches.append(list(reads[start : start + size]))
+        start += size
+    return batches
+
+
+def outcome_sum(counts: AssignCounts) -> int:
+    """Return the four outcome tallies summed, which must equal ``total``.
+
+    Args:
+        counts: Tallies to reconcile.
+
+    Returns:
+        The sum of the matched and the three unmatched tallies.
+    """
+    return counts.matched + counts.no_match + counts.no_umi_pos + counts.short_window
 
 
 class TestAssignStatsValueObject:
@@ -324,3 +455,231 @@ class TestAssignStatsReportDistributions:
 
         assert_that(report).contains("# Anchor homopolymer-run Length Distribution")
         assert_that(report).does_not_contain("None-run")
+
+
+class TestAssignCountsDefaults:
+    """The accumulator's starting state and its mutable-default contract."""
+
+    @pytest.mark.parametrize("field_name", SCALAR_FIELD_NAMES)
+    def test_default_scalar_tallies_start_at_zero(self, field_name: str) -> None:
+        """Test that a fresh accumulator has counted nothing before any batch is folded in."""
+        assert_that(getattr(AssignCounts(), field_name)).is_equal_to(0)
+
+    @pytest.mark.parametrize("field_name", COUNTER_FIELD_NAMES)
+    def test_default_counters_start_empty(self, field_name: str) -> None:
+        """Test that a fresh accumulator's distributions start with no keys at all."""
+        assert_that(getattr(AssignCounts(), field_name)).is_empty()
+
+    @pytest.mark.parametrize("field_name,key", COUNTER_KEYS)
+    def test_default_counters_are_not_shared_between_instances(
+        self, field_name: str, key: object
+    ) -> None:
+        """Test that every accumulator owns its counters, so batches cannot alias.
+
+        A mutable default shared between instances would make every batch's
+        tallies the same object, and one batch's counts would show up in another's
+        before anything had been folded.
+        """
+        first = AssignCounts()
+        second = AssignCounts()
+
+        getattr(first, field_name)[key] += 1
+
+        assert_that(getattr(second, field_name)).is_empty()
+        assert_that(getattr(first, field_name)).is_not_same_as(getattr(second, field_name))
+
+
+class TestAssignCountsFold:
+    """``add``: the once-per-batch fold the parent applies to each batch's tallies."""
+
+    @pytest.mark.parametrize("field_name", SCALAR_FIELD_NAMES)
+    def test_add_sums_each_scalar_tally(self, field_name: str) -> None:
+        """Test that folding adds the batch's scalar tallies onto the running totals."""
+        totals = tally(FIRST_BATCH_READS)
+        batch = tally(SECOND_BATCH_READS)
+        expected = getattr(totals, field_name) + getattr(batch, field_name)
+
+        totals.add(batch)
+
+        assert_that(getattr(totals, field_name)).is_equal_to(expected)
+
+    @pytest.mark.parametrize("field_name", COUNTER_FIELD_NAMES)
+    def test_add_is_additive_on_counter_keys_seen_in_both_batches(self, field_name: str) -> None:
+        """Test that folding adds counter values for a shared key rather than replacing them.
+
+        This is the whole difference between ``Counter.update`` and
+        ``dict.update``: replacing would silently discard every count an earlier
+        batch recorded for a key a later batch also saw. The two batches
+        deliberately overlap on every counter, so no replacing fold can satisfy
+        this, which a partition into disjoint keys would let pass.
+        """
+        totals = tally(FIRST_BATCH_READS)
+        batch = tally(SECOND_BATCH_READS)
+        before = dict(getattr(totals, field_name))
+        folded_in = dict(getattr(batch, field_name))
+        shared = set(before) & set(folded_in)
+        assert_that(shared).is_not_empty()
+
+        totals.add(batch)
+
+        assert_that(getattr(totals, field_name)).is_equal_to(Counter(before) + Counter(folded_in))
+        for key in shared:
+            assert_that(getattr(totals, field_name)[key]).is_greater_than(
+                max(before[key], folded_in[key])
+            )
+
+    def test_add_leaves_the_folded_batch_untouched(self) -> None:
+        """Test that folding does not corrupt the batch it read its tallies from."""
+        batch = tally(SECOND_BATCH_READS)
+
+        tally(FIRST_BATCH_READS).add(batch)
+
+        assert_that(batch).is_equal_to(tally(SECOND_BATCH_READS))
+
+    def test_add_folds_in_place_and_returns_nothing(self) -> None:
+        """Test that the fold mutates the receiver itself rather than returning a new total."""
+        totals = tally(FIRST_BATCH_READS)
+        held_elsewhere = totals
+        before = totals.total
+
+        result = totals.add(tally(SECOND_BATCH_READS))
+
+        assert_that(result).is_none()
+        assert_that(held_elsewhere).is_same_as(totals)
+        assert_that(held_elsewhere.total).is_greater_than(before)
+
+    def test_folding_an_empty_batch_changes_nothing(self) -> None:
+        """Test that an empty batch is the identity of the fold, as a drained pool yields."""
+        totals = tally(READS)
+
+        totals.add(AssignCounts())
+
+        assert_that(totals).is_equal_to(tally(READS))
+
+    def test_folding_into_a_fresh_accumulator_yields_the_batch(self) -> None:
+        """Test that the first fold of a run reproduces that batch's tallies exactly."""
+        totals = AssignCounts()
+
+        totals.add(tally(READS))
+
+        assert_that(totals).is_equal_to(tally(READS))
+
+    @pytest.mark.parametrize("order", list(permutations(range(len(PERMUTED_PARTITION)))))
+    def test_fold_order_does_not_change_the_totals(self, order: tuple[int, ...]) -> None:
+        """Test that the totals do not depend on which batch was folded first.
+
+        This is what keeps the statistics independent of which worker happened to
+        finish first.
+        """
+        batches = split(READS, PERMUTED_PARTITION)
+        totals = AssignCounts()
+
+        for index in order:
+            totals.add(tally(batches[index]))
+
+        assert_that(totals).is_equal_to(tally(READS))
+
+    @pytest.mark.parametrize("sizes", READ_PARTITIONS)
+    def test_outcome_invariant_holds_on_every_batch(self, sizes: tuple[int, ...]) -> None:
+        """Test that each batch's own tallies reconcile, so a batch-local slip is visible here."""
+        for batch in split(READS, sizes):
+            counts = tally(batch)
+
+            assert_that(outcome_sum(counts)).is_equal_to(counts.total)
+
+    @pytest.mark.parametrize("sizes", READ_PARTITIONS)
+    def test_outcome_invariant_holds_on_the_fold(self, sizes: tuple[int, ...]) -> None:
+        """Test that the folded totals reconcile, so a fold-local slip is visible separately."""
+        totals = AssignCounts()
+
+        for batch in split(READS, sizes):
+            totals.add(tally(batch))
+
+        assert_that(outcome_sum(totals)).is_equal_to(totals.total)
+        assert_that(totals.total).is_equal_to(len(READS))
+
+    @pytest.mark.parametrize("sizes", READ_PARTITIONS)
+    def test_folding_any_partition_equals_the_single_pass_tally(
+        self, sizes: tuple[int, ...]
+    ) -> None:
+        """Test that how the reads were batched cannot be seen in the totals.
+
+        Every partition of one read set has to fold to what a single pass over
+        the whole set tallies, which is what makes batching invisible to the
+        statistics.
+        """
+        assert_that(sum(sizes)).is_equal_to(len(READS))
+        totals = AssignCounts()
+
+        for batch in split(READS, sizes):
+            totals.add(tally(batch))
+
+        assert_that(totals).is_equal_to(tally(READS))
+
+
+class TestAssignCountsToStats:
+    """``to_stats``: handing the accumulated tallies off as the run's frozen value object."""
+
+    @pytest.mark.parametrize("counts_field,stats_field", list(STATS_FIELD_NAMES.items()))
+    def test_to_stats_maps_every_tally_onto_its_stats_field(
+        self, counts_field: str, stats_field: str
+    ) -> None:
+        """Test that each tally arrives in the AssignStats field it is named for."""
+        counts = tally(READS)
+
+        stats = counts.to_stats(ANCHOR_BASE)
+
+        assert_that(getattr(stats, stats_field)).is_equal_to(getattr(counts, counts_field))
+
+    @pytest.mark.parametrize("base", [ANCHOR_BASE, None])
+    def test_to_stats_carries_the_homopolymer_base_through(self, base: str | None) -> None:
+        """Test that the chemistry's anchor base is passed to the stats unchanged."""
+        stats = tally(READS).to_stats(base)
+
+        assert_that(stats.homopolymer_base).is_equal_to(base)
+
+    @pytest.mark.parametrize("stats_field", STATS_DICT_FIELD_NAMES)
+    def test_to_stats_returns_plain_dicts_not_counters(self, stats_field: str) -> None:
+        """Test that no Counter leaks into the frozen value object.
+
+        Asserted on the exact type, because Counter is a dict subclass and an
+        isinstance check would not catch the leak.
+        """
+        stats = tally(READS).to_stats(ANCHOR_BASE)
+
+        assert_that(type(getattr(stats, stats_field)) is dict).is_true()
+
+    @pytest.mark.parametrize("field_name", COUNTER_FIELD_NAMES)
+    def test_reversing_the_reads_populates_the_counters_in_a_different_order(
+        self, field_name: str
+    ) -> None:
+        """Test the premise of the order-independence test: the insertion orders do differ."""
+        forward = getattr(tally(READS), field_name)
+        reverse = getattr(tally(list(reversed(READS))), field_name)
+
+        assert_that(list(reverse)).is_not_equal_to(list(forward))
+        assert_that(reverse).is_equal_to(forward)
+
+    def test_to_stats_report_is_insertion_order_independent(self) -> None:
+        """Test that the order keys were first counted in cannot reach the report.
+
+        Two accumulators holding equal counts, populated in different orders,
+        must render the same report. This is what proves the worker count cannot
+        leak into the stats output.
+        """
+        forward = tally(READS).to_stats(ANCHOR_BASE).get_report()
+        reverse = tally(list(reversed(READS))).to_stats(ANCHOR_BASE).get_report()
+
+        assert_that(strip_report_run_details(reverse)).is_equal_to(
+            strip_report_run_details(forward)
+        )
+
+    def test_to_stats_on_a_fresh_accumulator_renders_the_zero_report(self) -> None:
+        """Test that a run that processed no reads renders the empty report, not an error."""
+        report = AssignCounts().to_stats(None).get_report()
+
+        assert_that(strip_report_run_details(report)).is_equal_to(
+            strip_report_run_details(make_empty_stats().get_report())
+        )
+        assert_that(report).contains("Total reads: 0")
+        assert_that(report).does_not_contain("-run Length Distribution")

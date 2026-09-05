@@ -31,6 +31,14 @@ byte-stable at any worker count. Every fixture here runs at ``n_workers=4`` prec
 that the goldens cover a multi-batch, multi-worker configuration rather than the degenerate
 single-batch one a single worker would produce.
 
+``TargetAssigner.assign_targets`` drains that same bounded in-flight window in submission
+order, so ``r1_tgidx`` is written in input order too, and ``tgidx_stats.txt`` folds the
+per-batch tallies in that order, which leaves the report unaffected by how the reads were
+batched at all. It runs at the same ``n_workers=4``, but its batch size comes from the
+fixture rather than from the stage default: at the default every golden input would fit in
+one batch, and the in-order fold this baseline is meant to cover would never be reached.
+``GOLDEN_ASSIGN_BATCH_SIZE`` is chosen to put each of them over several batches instead.
+
 ``fast=True`` is deliberately not used: it drops the AlignmentMatcher, which is exactly the
 tier this baseline exists to protect.
 
@@ -88,6 +96,13 @@ HYDROP_CHEMISTRY = "hydrop"
 # multi-batch shape is the property worth protecting, because a single worker would leave
 # every fixture on one batch and so could not detect a reordering regression at all.
 GOLDEN_WORKERS = 4
+
+# Batch size target assignment runs at, small enough to split every input it is given. The
+# stage consumes the UMI-annotated R1 rather than the raw input, and that file is shorter:
+# the 200-read input leaves 190 reads and the 2000-read input leaves 1890. At 50 reads a
+# batch the first splits 50/50/50/40 and the second into 38 batches, where the stage default
+# of 2500 would leave both on a single batch and cover the in-order fold not at all.
+GOLDEN_ASSIGN_BATCH_SIZE = 50
 
 
 @dataclass(frozen=True)
@@ -162,7 +177,13 @@ def execute_golden_run(
 
     if assign_targets:
         umi_fastq = output_dir / f"{prefix}.r1_umi.fastq.gz"
-        TargetAssigner(str(umi_fastq), chemistry_name).assign_targets(str(output_dir), prefix)
+        assigner = TargetAssigner(
+            str(umi_fastq),
+            chemistry_name,
+            n_workers=GOLDEN_WORKERS,
+            batch_size=GOLDEN_ASSIGN_BATCH_SIZE,
+        )
+        assigner.assign_targets(str(output_dir), prefix)
 
     return GoldenRun(output_dir=output_dir, prefix=prefix)
 
