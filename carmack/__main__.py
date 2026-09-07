@@ -13,7 +13,7 @@ import rich.traceback
 import rich_click as click
 
 import carmack
-from carmack.assign_targets.target_assigner import TargetAssigner
+from carmack.assign_targets.target_assigner import DEFAULT_MAX_WORKERS, TargetAssigner
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.cell_caller.cell_caller import CellCaller
 from carmack.fastq_tools.fastq_filter import FastqFilter
@@ -185,7 +185,8 @@ def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix, raw, temp_di
 @click.option("-c", "--chemistry", required=True, type=str, help="Chemistry name for target index layout")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-def assign_targets(r1_umi_fastq, chemistry, output_dir, prefix):
+@click.option("-n", "--cpu_count", required=False, type=int, default=min(DEFAULT_MAX_WORKERS, get_cpu_count()), show_default=True, help="Number of CPU workers to use. Throughput saturates at about 16 workers: past that this stage's own single-threaded parse-and-write loop is the bound and more workers measure no faster, so the default is capped there rather than at every available CPU.")
+def assign_targets(r1_umi_fastq, chemistry, output_dir, prefix, cpu_count):
     """
     Assign target indices from a UMI-annotated R1 FASTQ.
 
@@ -197,7 +198,7 @@ def assign_targets(r1_umi_fastq, chemistry, output_dir, prefix):
     """
 
     log.info("Assigning target indices from UMI-annotated FASTQ file...")
-    assigner = TargetAssigner(r1_umi_fastq, chemistry)
+    assigner = TargetAssigner(r1_umi_fastq, chemistry, n_workers=cpu_count)
     assigner.assign_targets(output_dir, prefix)
 
 

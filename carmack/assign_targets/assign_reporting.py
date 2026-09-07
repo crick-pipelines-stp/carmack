@@ -6,8 +6,13 @@ plain-text ``tgidx_stats.txt`` report, mirroring the UMI module's
 read is re-emitted carrying either a whitelist entry or ``TGIDX=NONE``, so the
 counts here account for reads written as well as reads read, and the report's
 wording deliberately never calls an unmatched read rejected or dropped.
+
+``AssignCounts`` is the mutable accumulator those tallies are gathered in while
+a run streams, and ``AssignStats`` is the frozen value object it becomes once
+the run is over.
 """
 
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -179,3 +184,81 @@ class AssignStats:
             count = self.homopolymer_run_counts[run_length]
             section += f"\t{run_length}\t{count} ({self.fraction(count, measured):.2%})\n"
         return section
+
+
+@dataclass
+class AssignCounts:
+    """Mutable accumulator for the tallies of a target-index assignment run.
+
+    Deliberately not frozen, unlike the :class:`AssignStats` it hands off to: it
+    is an accumulator, bumped read by read as a batch is tallied and folded once
+    per batch into the run's running totals, and it doubles as the payload a
+    worker returns for the batch it tallied, so the parent and the worker share
+    one type. ``AssignStats`` stays the frozen value object the finished totals
+    become, once nothing more will be added to them.
+
+    Attributes:
+        total: Reads tallied.
+        matched: Reads whose window resolved to a single whitelist entry.
+        no_umi_pos: Reads whose header carried no UMI position tag, so no window
+            could be derived.
+        short_window: Reads whose window was shorter than the floor the matcher
+            needs.
+        no_match: Reads whose window was searched and yielded no usable answer.
+        target_counts: Matched reads per whitelist entry.
+        edit_distance_counts: Matched reads per edit distance.
+        run_counts: Reads per observed anchor homopolymer run length.
+    """
+
+    total: int = 0
+    matched: int = 0
+    no_umi_pos: int = 0
+    short_window: int = 0
+    no_match: int = 0
+    target_counts: Counter[str] = field(default_factory=Counter)
+    edit_distance_counts: Counter[int] = field(default_factory=Counter)
+    run_counts: Counter[int] = field(default_factory=Counter)
+
+    def add(self, other: "AssignCounts") -> None:
+        """Fold another batch's tallies into these, in place.
+
+        Args:
+            other: Tallies to add in. Left untouched, so the batch it came from
+                stays readable after the fold.
+        """
+        self.total += other.total
+        self.matched += other.matched
+        self.no_umi_pos += other.no_umi_pos
+        self.short_window += other.short_window
+        self.no_match += other.no_match
+        # Counter.update ADDS counts, where dict.update would overwrite them.
+        # Overwriting would silently lose every count an earlier batch recorded
+        # for a key a later batch also saw, leaving only the last batch's.
+        self.target_counts.update(other.target_counts)
+        self.edit_distance_counts.update(other.edit_distance_counts)
+        self.run_counts.update(other.run_counts)
+
+    def to_stats(self, homopolymer_base: str | None) -> AssignStats:
+        """Hand the accumulated tallies off as the run's frozen value object.
+
+        Each counter is converted to a plain ``dict``, so nothing downstream can
+        keep counting into what is meant to be a finished tally.
+
+        Args:
+            homopolymer_base: The anchor homopolymer base of the chemistry, or
+                ``None`` when that anchor is not a homopolymer.
+
+        Returns:
+            The reconciling :class:`AssignStats` for the tallies held here.
+        """
+        return AssignStats(
+            total_reads=self.total,
+            matched=self.matched,
+            unmatched_no_match=self.no_match,
+            unmatched_no_umi_pos=self.no_umi_pos,
+            unmatched_short_window=self.short_window,
+            target_counts=dict(self.target_counts),
+            edit_distance_counts=dict(self.edit_distance_counts),
+            homopolymer_base=homopolymer_base,
+            homopolymer_run_counts=dict(self.run_counts),
+        )

@@ -25,6 +25,7 @@ from carmack.barcode.hybrid_extractor import HybridExtractor
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.read_component import ReadComponentType
+from tests.utils import read_gzip_text
 
 R1_PATH = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
 
@@ -415,7 +416,7 @@ class TestBarcodeExtractor:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def submit(self, func, batch, hybrid_extractor=None):
+            def submit(self, func, batch):
                 return DummyFuture()
 
         class DummyProgress:
@@ -445,9 +446,6 @@ class TestBarcodeExtractor:
         )
         monkeypatch.setattr(
             barcode_extractor_module, "ProcessPoolExecutor", lambda max_workers: DummyExecutor()
-        )
-        monkeypatch.setattr(
-            barcode_extractor_module, "wait", lambda fs, return_when: (set(fs), set())
         )
         monkeypatch.setattr(
             barcode_extractor_module, "progress_bar", lambda unit: next(progress_bars)
@@ -555,7 +553,7 @@ class TestBarcodeExtractor:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def submit(self, func, batch, hybrid_extractor=None):
+            def submit(self, func, batch):
                 return DummyFuture()
 
         class DummyProgress:
@@ -578,9 +576,6 @@ class TestBarcodeExtractor:
         )
         monkeypatch.setattr(
             barcode_extractor_module, "ProcessPoolExecutor", lambda max_workers: DummyExecutor()
-        )
-        monkeypatch.setattr(
-            barcode_extractor_module, "wait", lambda fs, return_when: (set(fs), set())
         )
         monkeypatch.setattr(
             barcode_extractor_module, "progress_bar", lambda unit: next(progress_bars)
@@ -1438,8 +1433,10 @@ class TestHybridExtractor:
             extractor.process_read("test", "A" * 52, "I" * 52)
 
 
+# Shared by every extraction driven through run_extraction_in_process_group.
+EXTRACTION_DEADLINE_S = 180
+
 REAL_POOL_READS = 24
-REAL_POOL_TIMEOUT_S = 180
 REAL_POOL_PREFIX = "real_pool"
 REAL_POOL_OUTPUTS = (
     f"{REAL_POOL_PREFIX}.bc_all.txt.gz",
@@ -1459,30 +1456,49 @@ def write_fastq_head(source_path: str, dest_path: Path, n_reads: int) -> None:
             dst.write(line)
 
 
-def run_extraction_in_process_group(fastq_path: str, output_dir: Path, prefix: str) -> None:
+def run_extraction_in_process_group(
+    fastq_path: str,
+    output_dir: Path,
+    prefix: str,
+    chemistry_name: str,
+    n_workers: int,
+    fast: bool,
+) -> None:
     """
     Run a real extraction in a forked child that leads its own process group.
 
-    A teardown-order regression deadlocks rather than fails, so the run is given a
-    deadline. The child leads its own process group so that killing it takes the pool
-    workers with it -- that releases the inherited pipe write ends, letting the stranded
-    gzip writers see EOF and exit instead of lingering for the rest of the session.
+    A teardown-order or drain-order regression deadlocks rather than fails, so the run is
+    given a deadline. The child leads its own process group so that killing it takes the
+    pool workers with it -- that releases the inherited pipe write ends, letting the
+    stranded gzip writers see EOF and exit instead of lingering for the rest of the
+    session.
+
+    Args:
+        fastq_path: Input FASTQ to extract barcodes from.
+        output_dir: Directory the extraction writes its output files into.
+        prefix: Prefix for the output file names.
+        chemistry_name: Chemistry supplying the read structure and the barcode whitelists.
+        n_workers: Pool width, which also sets the batch size and so the batch count.
+        fast: Whether to drop the alignment matcher tier.
+
+    Raises:
+        AssertionError: If the child misses its deadline, or exits non-zero.
     """
 
     def target() -> None:
         os.setsid()
-        extractor = BarcodeExtractor(fastq_path, "hydrop", n_workers=2)
+        extractor = BarcodeExtractor(fastq_path, chemistry_name, n_workers=n_workers, fast=fast)
         extractor.extract_barcodes(str(output_dir), prefix)
 
     proc = multiprocessing.get_context("fork").Process(target=target)
     proc.start()
-    proc.join(REAL_POOL_TIMEOUT_S)
+    proc.join(EXTRACTION_DEADLINE_S)
 
     if proc.is_alive():
         os.killpg(proc.pid, signal.SIGKILL)
-        proc.join(REAL_POOL_TIMEOUT_S)
+        proc.join(EXTRACTION_DEADLINE_S)
         pytest.fail(
-            f"extract_barcodes did not finish within {REAL_POOL_TIMEOUT_S}s - the gzip "
+            f"extract_barcodes did not finish within {EXTRACTION_DEADLINE_S}s - the gzip "
             "writers are most likely blocked waiting on EOF for pipes still held open "
             "by pool workers"
         )
@@ -1509,7 +1525,14 @@ class TestBarcodeExtractorRealProcessPool:
 
         output_dir = work_dir / "out"
         output_dir.mkdir()
-        run_extraction_in_process_group(str(fastq_path), output_dir, REAL_POOL_PREFIX)
+        run_extraction_in_process_group(
+            str(fastq_path),
+            output_dir,
+            REAL_POOL_PREFIX,
+            chemistry_name="hydrop",
+            n_workers=2,
+            fast=False,
+        )
 
         return output_dir
 
@@ -1527,3 +1550,130 @@ class TestBarcodeExtractorRealProcessPool:
 
         assert_that(bc_all_lines).is_length(REAL_POOL_READS)
         assert_that(len(bc_valid_lines)).is_less_than_or_equal_to(REAL_POOL_READS)
+
+
+EQUIVALENCE_INPUT = Path(__file__).parent / "data" / "golden" / "custom_seq_1_0_small_R1.fastq.gz"
+EQUIVALENCE_CHEMISTRY = "carmack_custom_seq_1_0"
+EQUIVALENCE_PREFIX = "equivalence"
+EQUIVALENCE_WORKER_COUNTS = (1, 4, 16)
+EQUIVALENCE_GZIP_OUTPUTS = ("bc_all.txt.gz", "bc_valid.txt.gz", "r1_annotated.fastq.gz")
+
+
+def find_first_difference(produced: str, reference: str) -> str | None:
+    """
+    Describe the first line at which two extraction outputs diverge.
+
+    An equality dump of two whole 200-read outputs runs to tens of kilobytes and buries
+    the only fact worth reporting: the line at which the order first diverges. Naming that
+    line and both of its values keeps a failure readable.
+
+    Args:
+        produced: Text produced by the run under test.
+        reference: Text produced by the single-batch reference run.
+
+    Returns:
+        A one-line description of the first divergence, or None when the two texts hold
+        exactly the same lines in exactly the same order.
+    """
+
+    produced_lines = produced.splitlines()
+    reference_lines = reference.splitlines()
+
+    for index, (produced_line, reference_line) in enumerate(
+        zip(produced_lines, reference_lines), start=1
+    ):
+        if produced_line != reference_line:
+            return (
+                f"first differs at line {index}: produced {produced_line!r}, "
+                f"reference {reference_line!r}"
+            )
+
+    if len(produced_lines) != len(reference_lines):
+        return (
+            f"line counts differ: produced {len(produced_lines)}, "
+            f"reference {len(reference_lines)}"
+        )
+
+    return None
+
+
+class TestBarcodeExtractorWorkerCountEquivalence:
+    """
+    Extraction output is identical whatever the worker count.
+
+    Batch size is min(max(10, ceil(total / n_workers)), 2500), so over the same 200-read
+    input one worker gives a single batch, four give four and sixteen give sixteen. The
+    single-batch run is a reference no scheduling can perturb, and the two multi-batch
+    runs have to reproduce it exactly. Nothing here is compared against a stored golden --
+    the three runs are compared against each other, so the assertions hold whatever the
+    goldens happen to contain.
+
+    fast=True drops the alignment matcher tier, which is the tier that makes the stage
+    slow. This class asserts the order results are folded in rather than matcher
+    sensitivity, so dropping that tier costs it no coverage.
+
+    Each run is driven through run_extraction_in_process_group, so a drain that reorders
+    output and also deadlocks fails on the deadline instead of hanging the session.
+    """
+
+    @pytest.fixture(scope="class")
+    def outputs_by_worker_count(self, tmp_path_factory: pytest.TempPathFactory) -> dict[int, Path]:
+        """Extract barcodes once per worker count, mapping each count to its output dir."""
+        work_dir = tmp_path_factory.mktemp("worker_count_equivalence")
+        output_dirs: dict[int, Path] = {}
+
+        for n_workers in EQUIVALENCE_WORKER_COUNTS:
+            output_dir = work_dir / f"workers_{n_workers}"
+            output_dir.mkdir()
+            run_extraction_in_process_group(
+                str(EQUIVALENCE_INPUT),
+                output_dir,
+                EQUIVALENCE_PREFIX,
+                chemistry_name=EQUIVALENCE_CHEMISTRY,
+                n_workers=n_workers,
+                fast=True,
+            )
+            output_dirs[n_workers] = output_dir
+
+        return output_dirs
+
+    @pytest.mark.parametrize("output_name", EQUIVALENCE_GZIP_OUTPUTS)
+    def test_gzip_output_identical_across_worker_counts(
+        self, outputs_by_worker_count: dict[int, Path], output_name: str
+    ) -> None:
+        """Each streamed gzip output decompresses to the same text at 1, 4 and 16 workers."""
+        reference_workers, *other_worker_counts = EQUIVALENCE_WORKER_COUNTS
+        reference = read_gzip_text(
+            outputs_by_worker_count[reference_workers] / f"{EQUIVALENCE_PREFIX}.{output_name}"
+        )
+
+        for n_workers in other_worker_counts:
+            produced = read_gzip_text(
+                outputs_by_worker_count[n_workers] / f"{EQUIVALENCE_PREFIX}.{output_name}"
+            )
+            assert_that(find_first_difference(produced, reference)).described_as(
+                f"{output_name} at {n_workers} workers "
+                f"against the {reference_workers}-worker run"
+            ).is_none()
+
+    def test_bc_counts_identical_across_worker_counts(
+        self, outputs_by_worker_count: dict[int, Path]
+    ) -> None:
+        """bc_counts.csv holds the same barcodes with the same counts at 1, 4 and 16 workers.
+
+        Tie ordering is not what this pins. The only tie this input produces is its two
+        singleton barcodes, and they fall in the same batch at every worker count used
+        here, so no reordering of batches could separate them. Cross-batch tie order is
+        covered by the hydrop goldens instead: their counts are almost entirely tied and
+        their tie members first appear in different batches.
+        """
+        reference_workers, *other_worker_counts = EQUIVALENCE_WORKER_COUNTS
+        counts_name = f"{EQUIVALENCE_PREFIX}.bc_counts.csv"
+        reference = (outputs_by_worker_count[reference_workers] / counts_name).read_text()
+
+        for n_workers in other_worker_counts:
+            produced = (outputs_by_worker_count[n_workers] / counts_name).read_text()
+            assert_that(produced).described_as(
+                f"bc_counts.csv at {n_workers} workers "
+                f"against the {reference_workers}-worker run"
+            ).is_equal_to(reference)

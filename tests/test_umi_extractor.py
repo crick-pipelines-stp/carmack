@@ -3,9 +3,10 @@
 The extractor reads an annotated R1 FASTQ, extracts the raw UMI lying between
 its left anchor (BC1, read from the header ``BC1_POS`` tag) and the downstream
 poly-G run, annotates the read with ``UMI`` / ``UMI_POS`` and reports the length
-distribution. These tests build synthetic annotated reads and exercise the
-greedy poly-G anchoring, the two-sided length window, the reconciling stats and
-the CLI wiring.
+distribution. Most of these tests build synthetic annotated reads and exercise
+the greedy poly-G anchoring, the two-sided length window, the reconciling stats
+and the CLI wiring; the closing class drives real barcode extraction twice over
+to pin the map's row order down across repeat runs.
 """
 
 import gzip
@@ -25,6 +26,7 @@ from carmack.umi.umi_corrector import CorrectedUmi, UmiCorrector, UmiRecord
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.umi.umi_reporting import CorrectionStats, UmiExtractionStats
 from carmack.umi.umi_shards import UmiShardStore, shard_index
+from tests.test_barcode_extractor import run_extraction_in_process_group
 
 CHEMISTRY = "carmack_custom_seq_1_0"
 DUMMY_FASTQ = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
@@ -1040,3 +1042,104 @@ class TestExtractUmisCliShardOptions:
         assert_that(result.exit_code).is_not_equal_to(0)
         assert_that(result.output).contains("not in the range")
         mock_extractor.return_value.extract_umis.assert_not_called()
+
+
+UMI_MAP_DETERMINISM_INPUT = (
+    Path(__file__).parent / "data" / "golden" / "custom_seq_1_0_small_R1.fastq.gz"
+)
+UMI_MAP_DETERMINISM_PREFIX = "determinism"
+UMI_MAP_DETERMINISM_WORKERS = 16
+UMI_MAP_DETERMINISM_RUNS = 2
+# Barcode extraction sizes its batches as min(max(10, ceil(200 / 16)), 2500) = 13, so the
+# 200-read input becomes 16 batches spread over 16 workers. That the batches genuinely run
+# concurrently is what gives a completion-order fold the chance to reorder the annotated
+# FASTQ, and so the map, in the first place.
+UMI_MAP_DETERMINISM_BATCH_SIZE = 13
+# Four shards keep the spilled records spread over several shard files while costing four
+# open file descriptors rather than the production default's 256, which is worth avoiding
+# for a 200-read run sharing a session with the rest of the suite.
+UMI_MAP_DETERMINISM_SHARD_COUNT = 4
+
+
+class TestUmiMapRepeatRunDeterminism:
+    """The umi_map.tsv is byte-stable over repeat runs at a high worker count.
+
+    Every accepted read is stamped with its ordinal in annotated-FASTQ order and
+    the shard merge sorts the map on that ordinal, so the map's row order is
+    exactly the annotated FASTQ's read order. While barcode extraction folded its
+    worker results as they completed, that read order followed however the pool
+    happened to schedule its batches rather than the input, so two runs of the
+    same input at the same worker count could write the same rows in a different
+    order. Folding in submission order is what removes that variation, and this
+    is what keeps it removed.
+
+    The two runs are compared against each other rather than against a stored
+    golden, so the assertion holds whatever the goldens happen to contain.
+
+    ``fast=True`` drops the alignment matcher tier, which is the tier that makes
+    barcode extraction slow. Row order is what is asserted here, not matcher
+    sensitivity, so dropping that tier costs no coverage.
+
+    Barcode extraction is driven through a deadline-guarded process group: it is
+    the stage that forks a worker pool while gzip writer subprocesses are open, so
+    a teardown regression there hangs the session rather than failing it. UMI
+    extraction opens no pool, so it runs in-process.
+    """
+
+    @pytest.fixture(scope="class")
+    def umi_maps(self, tmp_path_factory: pytest.TempPathFactory) -> list[bytes]:
+        """Run barcode then UMI extraction twice over, returning each run's map bytes.
+
+        Each run gets its own output directory and its own spill directory under
+        the session's temporary tree, so neither run can observe the other's
+        files and the spill never reaches a possibly RAM-backed system default.
+
+        Args:
+            tmp_path_factory: Factory supplying the class-scoped working tree.
+
+        Returns:
+            The raw bytes of each run's ``umi_map.tsv``, in run order.
+        """
+        work_dir = tmp_path_factory.mktemp("umi_map_determinism")
+        maps: list[bytes] = []
+
+        for run in range(UMI_MAP_DETERMINISM_RUNS):
+            run_dir = work_dir / f"run{run}"
+            run_dir.mkdir()
+            spill_dir = run_dir / "spill"
+            spill_dir.mkdir()
+
+            run_extraction_in_process_group(
+                str(UMI_MAP_DETERMINISM_INPUT),
+                run_dir,
+                UMI_MAP_DETERMINISM_PREFIX,
+                chemistry_name=CHEMISTRY,
+                n_workers=UMI_MAP_DETERMINISM_WORKERS,
+                fast=True,
+            )
+
+            annotated = run_dir / f"{UMI_MAP_DETERMINISM_PREFIX}.r1_annotated.fastq.gz"
+            extractor = UmiExtractor(str(annotated), CHEMISTRY)
+            extractor.extract_umis(
+                output_dir=str(run_dir),
+                prefix=UMI_MAP_DETERMINISM_PREFIX,
+                temp_dir=str(spill_dir),
+                shard_count=UMI_MAP_DETERMINISM_SHARD_COUNT,
+            )
+            maps.append((run_dir / f"{UMI_MAP_DETERMINISM_PREFIX}.umi_map.tsv").read_bytes())
+
+        return maps
+
+    def test_umi_map_is_byte_identical_across_repeat_runs(self, umi_maps: list[bytes]) -> None:
+        first, second = umi_maps
+
+        # Two empty maps compare equal for the wrong reason, and rows drawn from a single
+        # batch could not have been reordered at all, so both are ruled out up front.
+        assert_that(first).is_not_empty()
+        assert_that(len(first.decode().splitlines())).is_greater_than(
+            UMI_MAP_DETERMINISM_BATCH_SIZE
+        )
+
+        assert_that(second).described_as(
+            f"umi_map.tsv over two independent {UMI_MAP_DETERMINISM_WORKERS}-worker runs"
+        ).is_equal_to(first)
