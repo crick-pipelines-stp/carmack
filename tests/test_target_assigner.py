@@ -39,6 +39,7 @@ import importlib.util
 import multiprocessing
 import os
 import pickle
+import re
 import signal
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import fields
@@ -2767,6 +2768,9 @@ def cli_group_with_core_count(core_count: int) -> click.Group:
     return module.carmack_cli
 
 
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def flatten_help(output: str) -> str:
     """Collapse a rendered help screen into one lowercase line.
 
@@ -2775,13 +2779,21 @@ def flatten_help(output: str) -> str:
     Dropping the rules and collapsing the whitespace puts the string back
     together as the user reads it, which is what an assertion on a phrase needs.
 
+    Colour codes are stripped first, and that is not cosmetic. rich_click styles
+    the help whenever the terminal accepts colour, which puts escape sequences
+    between the words of a wrapped phrase and inside a metavar's angle brackets.
+    Collapsing whitespace alone leaves those sequences behind as tokens, so an
+    assertion on a phrase passes only on a terminal that refused colour -- the
+    tests would pass in CI and fail for anyone running them locally.
+
     Args:
         output: The help screen as the runner captured it.
 
     Returns:
         The same text as a single lowercase line of space-separated words.
     """
-    return " ".join(output.replace("│", " ").split()).lower()
+    plain = ANSI_ESCAPE.sub("", output)
+    return " ".join(plain.replace("│", " ").split()).lower()
 
 
 class TestAssignTargetsCli:
@@ -2853,11 +2865,12 @@ class TestAssignTargetsCli:
         runner = CliRunner()
 
         result = runner.invoke(carmack.__main__.carmack_cli, [COMMAND_NAME, "--help"])
+        rendered = flatten_help(result.output)
 
         assert_that(result.exit_code).is_equal_to(0)
-        assert_that(result.output).contains(COMMAND_NAME)
-        assert_that(result.output).contains(FASTQ_METAVAR)
-        assert_that(result.output).contains("--chemistry")
+        assert_that(rendered).contains(COMMAND_NAME)
+        assert_that(rendered).contains(FASTQ_METAVAR)
+        assert_that(rendered).contains("--chemistry")
 
 
 class TestAssignTargetsCliWorkerCount:
