@@ -24,7 +24,7 @@ from carmack.io.read_annotation import ReadAnnotation
 from carmack.umi.umi_corrector import CorrectedUmi, UmiCorrector, UmiRecord
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.umi.umi_reporting import CorrectionStats, UmiExtractionStats
-from carmack.umi.umi_shards import shard_index
+from carmack.umi.umi_shards import UmiShardStore, shard_index
 
 CHEMISTRY = "carmack_custom_seq_1_0"
 DUMMY_FASTQ = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
@@ -848,6 +848,68 @@ class TestExtractUmisSharding:
 
         with pytest.raises(ValueError, match="shard_count"):
             extractor.extract_umis(output_dir=str(tmp_path), prefix="out", shard_count=shard_count)
+
+
+def make_spilled_records(extractor: UmiExtractor, replicates: int) -> list[UmiRecord]:
+    """Build the records extraction would spill for the synthetic barcode panel.
+
+    Each record is shaped the way ``extract_umis`` shapes it: a full cell barcode
+    assembled by the chemistry from the panel's BC1/BC2/BC3 tags, and one record
+    per accepted read. Every UMI is in-window and sentinel-free, so correction
+    assigns all of them and the merged map carries one row per record.
+
+    Args:
+        extractor: The extractor whose chemistry assembles the full barcode.
+        replicates: Number of times the panel's reads are repeated, which sets
+            how much text each shard's write handle has to hold.
+
+    Returns:
+        The records in extraction order, so their ordinals ascend from zero.
+    """
+    barcodes = [
+        extractor.chemistry.construct_full_barcode(
+            {"BC1": make_cell_barcode(index), "BC2": BC2_SEQ, "BC3": BC3_SEQ}
+        )
+        for index in range(SHARDED_BARCODE_COUNT)
+    ]
+    records: list[UmiRecord] = []
+    for _ in range(replicates):
+        for barcode in barcodes:
+            for umi_seq in SHARDED_UMIS:
+                records.append(
+                    UmiRecord(read_id=f"read{len(records):05d}", barcode=barcode, raw_umi=umi_seq)
+                )
+    return records
+
+
+class TestCorrectShards:
+    """Correction driven straight against a shard store the caller populated."""
+
+    # Enough replicates of the panel that every shard holds several times the
+    # text one write handle buffers, so a shard read that missed the buffered
+    # tail would drop rows from the middle of the map and not only its end.
+    REPLICATES = 40
+
+    def test_correct_shards_maps_every_record_without_a_caller_side_close(
+        self, build_extractor, tmp_path
+    ) -> None:
+        extractor = build_extractor([make_read("a", "ACTACTAC", 4)])
+        records = make_spilled_records(extractor, self.REPLICATES)
+        umi_map_path = tmp_path / "out.umi_map.tsv"
+
+        with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
+            for ordinal, record in enumerate(records):
+                store.write(ordinal, record)
+            stats = extractor.correct_shards(store, umi_map_path)
+
+        # The panel has to straddle several shards, or one readable shard could
+        # carry the whole map and a lost shard would go unnoticed.
+        spread = {shard_index(record.barcode, 4) for record in records}
+        assert_that(len(spread)).is_greater_than(1)
+        read_ids = [line.split("\t")[0] for line in umi_map_path.read_text().splitlines()]
+        assert_that(read_ids).is_length(len(records))
+        assert_that(read_ids).is_equal_to([record.read_id for record in records])
+        assert_that(stats.assigned_reads).is_equal_to(len(records))
 
 
 class TestExtractUmisTempDir:

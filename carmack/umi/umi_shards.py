@@ -50,6 +50,10 @@ class UmiShardStore:
     The store is a context manager: leaving the block closes every write handle
     and removes the whole temporary tree, on the normal path and when an
     exception escapes alike, so a failed correction never strands spill files.
+
+    A shard is written to first and read from second. Reading one closes that
+    shard's own write handle, so a write to an already-read shard raises
+    ``ValueError`` instead of landing in a file nothing opens again.
     """
 
     def __init__(
@@ -138,13 +142,18 @@ class UmiShardStore:
         handle = self.handles[shard_index(record.barcode, self.shard_count)]
         handle.write(f"{ordinal}\t{record.read_id}\t{record.barcode}\t{record.raw_umi}\n")
 
-    def close(self) -> None:
-        """Flush and close every shard write handle, making the spill readable."""
-        for handle in self.handles:
-            handle.close()
-
     def read_shard(self, index: int) -> list[tuple[int, UmiRecord]]:
         """Read one shard's spilled records back in extraction order.
+
+        The shard's own write handle is closed first, so the rows it is still
+        holding in its text buffer reach the file: without that, the read
+        returns a plausible prefix of the shard rather than nothing at all, and
+        the loss goes unnoticed. Closing rather than merely flushing is
+        deliberate. It hands a descriptor back as correction walks every shard
+        in turn, and it turns a write to an already-read shard -- a record that
+        would otherwise land in a file nothing opens again -- into a raised
+        ``ValueError``. Reading the same shard twice still works, because
+        closing an already-closed file does nothing.
 
         Args:
             index: The shard to read.
@@ -152,6 +161,7 @@ class UmiShardStore:
         Returns:
             The shard's ``(ordinal, record)`` pairs, ascending by ordinal.
         """
+        self.handles[index].close()
         records: list[tuple[int, UmiRecord]] = []
         with self.data_path(index).open() as handle:
             for line in handle:

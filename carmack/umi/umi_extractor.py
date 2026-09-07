@@ -270,12 +270,14 @@ class UmiExtractor:
     def correct_shards(self, store: UmiShardStore, umi_map_path: Path) -> CorrectionStats:
         """Correct every spilled shard in turn and merge their map rows into order.
 
-        The store is closed first so the whole spill is readable, then each shard
-        is read, corrected, written out as map rows and discarded, holding one
-        shard at a time. Correcting a shard in isolation is exact because the
-        shard is a function of the cell barcode alone, so a barcode's reads are
-        never split across two shards. One corrector serves every shard: it is
-        stateless between calls and building its clusterer is not free.
+        Each shard is read, corrected, written out as map rows and discarded,
+        holding one shard at a time. Reading a shard closes that shard's own
+        write handle, so the spill needs nothing flushed beforehand. Correcting
+        a shard in isolation is exact because the shard is a function of the
+        cell barcode alone, so a barcode's reads are never split across two
+        shards.
+        One corrector serves every shard: it is stateless between calls and
+        building its clusterer is not free.
 
         Args:
             store: The shard store holding the run's spilled records.
@@ -284,7 +286,6 @@ class UmiExtractor:
         Returns:
             The run-level :class:`CorrectionStats`, summed over the shards.
         """
-        store.close()
         corrector = UmiCorrector(self.umi_length, self.umi_length_tolerance)
         parts: list[CorrectionStats] = []
         for index in store.indexes:
