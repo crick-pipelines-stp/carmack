@@ -387,6 +387,51 @@ class TestResolveAnchorOffset:
         assert_that(located.position_key).is_equal_to("BC1_POS")
 
 
+class TestUmiRightAnchor:
+    """The diagnostic-only lookup of the component 3' of the UMI.
+
+    Nothing about extracting the UMI consults it -- the slice is taken off the
+    left anchor -- so every way it comes back empty has to leave extraction
+    working and merely drop the anchor-run section from the report. Built over
+    synthetic structures because no shipped chemistry has a UMI whose right
+    neighbour cannot anchor it.
+    """
+
+    build = staticmethod(TestResolveAnchorOffset.build)
+
+    @staticmethod
+    def umi() -> ReadComponent:
+        """Return a fixed-length UMI component."""
+        return ReadComponent(name="UMI", type=ReadComponentType.UMI, length=UMI_LENGTH)
+
+    def test_non_anchor_neighbour_is_not_returned(self) -> None:
+        """A UMI followed by something that cannot anchor it has no right anchor."""
+        chemistry = self.build(
+            [
+                ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                self.umi(),
+                ReadComponent(name="LINKER", type=ReadComponentType.OTHER, length=10),
+            ]
+        )
+        assert_that(chemistry.umi_right_anchor()).is_none()
+        assert_that(chemistry.supports_umi_extraction()).is_true()
+
+    def test_umi_at_the_end_of_the_read_has_no_right_anchor(self) -> None:
+        """With nothing 3' of the UMI at all there is no neighbour to inspect."""
+        chemistry = self.build(
+            [
+                ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                self.umi(),
+            ]
+        )
+        assert_that(chemistry.umi_right_anchor()).is_none()
+        assert_that(chemistry.supports_umi_extraction()).is_true()
+
+    def test_chemistry_with_no_umi_has_no_right_anchor(self) -> None:
+        """The lookup short-circuits rather than asking for a neighbour of nothing."""
+        assert_that(ChemistryHydrop().umi_right_anchor()).is_none()
+
+
 class TestReadStructure:
     """Test suite for ReadStructure."""
 

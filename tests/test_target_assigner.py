@@ -461,7 +461,7 @@ class TestTargetAssignerConstruction:
 
 
 class TestTargetAssignerHeaderValidation:
-    """The annotated header must carry the UMI position tag the stage reads."""
+    """The annotated header must carry the barcode position tag the stage reads."""
 
     @pytest.fixture
     def assigner(self) -> TargetAssigner:
@@ -484,7 +484,7 @@ class TestTargetAssignerHeaderValidation:
         ],
         ids=["no_tags", "other_tags_only"],
     )
-    def test_missing_umi_position_tag_raises(
+    def test_missing_anchor_position_tag_raises(
         self, assigner: TargetAssigner, tags: dict[str, str]
     ) -> None:
         with pytest.raises(ValueError) as excinfo:
@@ -492,7 +492,7 @@ class TestTargetAssignerHeaderValidation:
 
         assert_that(str(excinfo.value)).contains(ANCHOR_POS_KEY, "extract-barcodes")
 
-    def test_present_umi_position_tag_returns_none(self, assigner: TargetAssigner) -> None:
+    def test_present_anchor_position_tag_returns_none(self, assigner: TargetAssigner) -> None:
         ann = self.make_annotation({ANCHOR_POS_KEY: format_span(20, 28)})
 
         assert_that(assigner.validate_header(ann)).is_none()
@@ -990,7 +990,7 @@ class TestAssignTargetsOutcomes:
         assert_that(ann.get(TGIDX_NAME)).is_equal_to(target_assigner.NO_TARGET)
         assert_that(ann.get(position_key(TGIDX_NAME))).is_none()
 
-    def test_mid_stream_read_without_umi_position_is_counted_and_emitted(
+    def test_mid_stream_read_without_anchor_position_is_counted_and_emitted(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
     ) -> None:
         """Pin that only the first read's header is fatal, and the rest are counted.
@@ -1119,7 +1119,7 @@ class TestAssignTargetsOutputs:
         assert_that(read_fastq(tgidx_fastq(tmp_path))).is_empty()
         assert_that(tgidx_stats(tmp_path).read_text()).contains("Total reads: 0")
 
-    def test_first_read_without_umi_position_raises_before_any_output_is_written(
+    def test_first_read_without_anchor_position_raises_before_any_output_is_written(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
     ) -> None:
         records = [
@@ -1179,7 +1179,7 @@ UNASSIGNED_READS = {
 }
 
 # All four mutually exclusive outcomes, matched first so the reads double as a
-# whole-stage input whose first read carries the UMI position tag the header
+# whole-stage input whose first read carries the anchor position tag the header
 # check demands of it.
 OUTCOME_READS = {"matched": MATCHED_READ, **UNASSIGNED_READS}
 OUTCOME_TALLIES = tuple(OUTCOME_READS)
@@ -1377,7 +1377,7 @@ class TestAssignReadCounts:
     ) -> None:
         """Pin the denominator of the anchor run-length distribution.
 
-        A read whose header carries no UMI position tag never reaches the
+        A read whose header carries no anchor position tag never reaches the
         forward scan, so it has no run length to place in any bin. Recording one
         for it would mean counting a run from a coordinate the read does not
         carry, and ``reads_with_measured_run`` would stop being the number of
@@ -2324,7 +2324,7 @@ class TestAssignTargetsPoolWiring:
 
         assert_that(stats).is_equal_to(expected.to_stats(assigner.anchor_base))
 
-    def test_first_read_without_umi_position_raises_before_the_pool_is_created(
+    def test_first_read_without_anchor_position_raises_before_the_pool_is_created(
         self,
         build_assigner: Callable[..., TargetAssigner],
         pool_harness: PoolHarness,
@@ -2402,7 +2402,7 @@ STATS_PICKLE_NAME = "assign_stats.pickle"
 
 # Read shapes the real-pool input cycles through, so every outcome, both edit
 # distances and two anchor run lengths are represented. The first shape carries
-# the UMI position tag, since the first read of the file is the one the header
+# the anchor position tag, since the first read of the file is the one the header
 # check is made against.
 REAL_POOL_READ_SHAPES = (
     {},

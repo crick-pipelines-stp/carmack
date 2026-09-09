@@ -88,7 +88,7 @@ STATS_DICT_FIELD_NAMES = ("target_counts", "edit_distance_counts", "homopolymer_
 
 # One read's contribution to a batch's tallies: its outcome, then the whitelist entry
 # and edit distance a matched read was called at, and the anchor run length measured
-# for any read whose UMI position tag was present.
+# for any read whose anchor position tag was present.
 type ReadOutcome = tuple[str, str | None, int | None, int | None]
 
 # A read set covering all four outcomes, with every counter key seen more than once and
