@@ -18,6 +18,8 @@ from click.testing import CliRunner
 
 import carmack.__main__
 from carmack.chemistry.annotation import format_span, parse_span, position_key
+from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ChemistryCarmackCustomSeq10
+from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.io.read_annotation import ReadAnnotation
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.umi.umi_reporting import UmiExtractionStats
@@ -192,6 +194,71 @@ class TestExtractUmis:
             {"nog": "AAAAAAAA"}
         )
         assert_that(stats.homopolymer_run_counts).is_equal_to({0: 1})
+
+    def test_a_fixed_linker_before_the_umi_shifts_the_slice_by_its_length(self, tmp_path) -> None:
+        """The resolved offset is added to the anchor's end, not assumed to be zero.
+
+        Every shipped chemistry puts the UMI directly on BC1, so ``umi_offset``
+        is zero and dropping the term entirely would leave every other test here
+        passing while quietly cutting the UMI from the linker. A layout with a
+        fixed linker in between is the only thing that tells the two apart.
+        """
+        linker = "TTTTTTTTTT"
+
+        class ChemistryLinkerBeforeUmi(ChemistryCarmackCustomSeq10):
+            def _build_components(self):
+                components = super()._build_components()
+                umi_index = next(
+                    index
+                    for index, component in enumerate(components)
+                    if component.type is ReadComponentType.UMI
+                )
+                components.insert(
+                    umi_index,
+                    ReadComponent(
+                        name="LINKER",
+                        type=ReadComponentType.OTHER,
+                        length=len(linker),
+                        sequence=linker,
+                    ),
+                )
+                return components
+
+        umi = "ACTACTAC"
+        seq = "A" * UMI_START + linker + umi + "GGGG" + TAIL
+        fastq_path = tmp_path / "linker.r1_annotated.fastq.gz"
+        write_fastq(fastq_path, [(make_read_header("linker"), seq, "I" * len(seq))])
+
+        with mock.patch(
+            "carmack.umi.umi_extractor.ChemistryFactory.get_chemistry",
+            return_value=ChemistryLinkerBeforeUmi(),
+        ):
+            extractor = UmiExtractor(str(fastq_path), CHEMISTRY)
+        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(extractor.umi_offset).is_equal_to(len(linker))
+        assert_that(stats.accepted).is_equal_to(1)
+        header, _seq, _plus, _qual = read_fastq(tmp_path / "out.r1_umi.fastq.gz")[0]
+        ann = ReadAnnotation.parse(header[1:])
+        assert_that(ann.get("UMI")).is_equal_to(umi)
+        assert_that(parse_span(ann.get(position_key("UMI")))).is_equal_to(
+            (UMI_START + len(linker), UMI_START + len(linker) + UMI_LENGTH)
+        )
+
+    def test_empty_input_writes_an_empty_fastq_and_a_zero_count_report(
+        self, build_extractor, tmp_path
+    ) -> None:
+        """With no reads there is no first header, so validation is skipped entirely.
+
+        The outputs still have to appear: an absent FASTQ is indistinguishable
+        from a stage that never ran.
+        """
+        stats = build_extractor([]).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(stats.total_reads).is_equal_to(0)
+        assert_that(stats.accepted).is_equal_to(0)
+        assert_that(read_fastq(tmp_path / "out.r1_umi.fastq.gz")).is_empty()
+        assert_that((tmp_path / "out.umi_stats.txt").read_text()).contains("Total reads: 0")
 
     def test_umi_containing_n_is_extracted_unfiltered(self, build_extractor, tmp_path) -> None:
         """An ambiguous base in the UMI is carried through untouched.
