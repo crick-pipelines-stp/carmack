@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from assertpy import assert_that
 
+from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors, WhitelistSource
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
     POLYG_BASE,
@@ -814,10 +815,10 @@ class TestChemistryCarmackCustomSeq10:
         assert_that(known_seqs).contains_key("PRIMER_C", "PRIMER_A")
 
     def test_read_structure_appends_umi_polyg_tgidx(self, chemistry: ChemistryCarmackCustomSeq10):
-        """Read structure ends with the UMI, poly-G and TGIDX components after BC1."""
+        """Read structure ends with the UMI, poly-G, TGIDX and Mosaic End components after BC1."""
         actual_order = [comp.name for comp in chemistry.read_structure]
         assert_that(actual_order).is_equal_to(
-            ["BC3", "PRIMER_C", "BC2", "PRIMER_A", "BC1", "UMI", "POLYG", "TGIDX"]
+            ["BC3", "PRIMER_C", "BC2", "PRIMER_A", "BC1", "UMI", "POLYG", "TGIDX", "ME"]
         )
 
     def test_umi_polyg_tgidx_component_parameters(self, chemistry: ChemistryCarmackCustomSeq10):
@@ -897,6 +898,33 @@ class TestChemistryCarmackCustomSeq10:
 
         assert_that(chemistry.supports_target_assignment()).is_true()
 
+    def test_tgidx_right_anchor_is_me(self, chemistry: ChemistryCarmackCustomSeq10):
+        """The TGIDX right anchor is the Mosaic End primer and it is an anchor."""
+        right_anchor = chemistry.tgidx_right_anchor()
+        assert_that(right_anchor).is_not_none()
+        assert_that(right_anchor.name).is_equal_to("ME")
+        assert_that(right_anchor.type).is_equal_to(ReadComponentType.PRIMER)
+        assert_that(right_anchor.is_anchor).is_true()
+        assert_that(right_anchor.length).is_equal_to(19)
+        assert_that(right_anchor.sequence).is_none()
+
+    def test_me_component_cannot_be_matched_by_a_matcher(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ):
+        """No MatcherBase subclass can be constructed over ME: it is a PRIMER, not a BARCODE.
+
+        ME never reaches a matcher in practice, but this proves that claim structurally rather
+        than merely asserting it: MatcherBase.__init__ rejects any component whose type is not in
+        allowed_component_types, and FixedPositionMatcher inherits the BARCODE-only default.
+        """
+        me_component = chemistry.tgidx_right_anchor()
+
+        with pytest.raises(ValueError) as exc_info:
+            FixedPositionMatcher(whitelist=(), component=me_component, chemistry=chemistry)
+
+        assert_that(str(exc_info.value)).contains("FixedPositionMatcher cannot handle component")
+        assert_that(str(exc_info.value)).contains("PRIMER")
+
     def test_start_positions(self, chemistry: ChemistryCarmackCustomSeq10):
         """Test that the start positions of read components are computed correctly."""
         read_structure = chemistry.read_structure
@@ -909,7 +937,10 @@ class TestChemistryCarmackCustomSeq10:
             "UMI": 74,
             "POLYG": None,
             "TGIDX": None,
+            "ME": None,
         }
+        actual_names = {component.name for component in read_structure}
+        assert_that(actual_names).is_equal_to(set(expected_starts.keys()))
         for component in read_structure:
             assert_that(component.start).is_equal_to(expected_starts[component.name])
 
@@ -983,7 +1014,18 @@ class TestChemistryCarmackCustomSeq10PrimD:
         read_structure = chemistry.read_structure
         actual_order = [comp.name for comp in read_structure]
         assert_that(actual_order).is_equal_to(
-            ["PRIMER_D", "BC3", "PRIMER_C", "BC2", "PRIMER_A", "BC1", "UMI", "POLYG", "TGIDX"]
+            [
+                "PRIMER_D",
+                "BC3",
+                "PRIMER_C",
+                "BC2",
+                "PRIMER_A",
+                "BC1",
+                "UMI",
+                "POLYG",
+                "TGIDX",
+                "ME",
+            ]
         )
 
         primer_d = read_structure.get_component_by_name("PRIMER_D")
@@ -1019,6 +1061,16 @@ class TestChemistryCarmackCustomSeq10PrimD:
         assert_that(chemistry.tgidx_component().name).is_equal_to("TGIDX")
         assert_that(chemistry.tgidx_anchor().name).is_equal_to("POLYG")
 
+    def test_tgidx_right_anchor_is_me(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
+        """The PRIMER_D variant inherits the Mosaic End right anchor for TGIDX."""
+        right_anchor = chemistry.tgidx_right_anchor()
+        assert_that(right_anchor).is_not_none()
+        assert_that(right_anchor.name).is_equal_to("ME")
+        assert_that(right_anchor.type).is_equal_to(ReadComponentType.PRIMER)
+        assert_that(right_anchor.is_anchor).is_true()
+        assert_that(right_anchor.length).is_equal_to(19)
+        assert_that(right_anchor.sequence).is_none()
+
     def test_start_positions(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
         """Start positions account for the prepended PRIMER_D."""
         read_structure = chemistry.read_structure
@@ -1032,7 +1084,10 @@ class TestChemistryCarmackCustomSeq10PrimD:
             "UMI": 96,
             "POLYG": None,
             "TGIDX": None,
+            "ME": None,
         }
+        actual_names = {component.name for component in read_structure}
+        assert_that(actual_names).is_equal_to(set(expected_starts.keys()))
         for component in read_structure:
             assert_that(component.start).is_equal_to(expected_starts[component.name])
 
@@ -1159,6 +1214,10 @@ class TestChemistryHydrop:
         assert_that(chemistry.tgidx_component()).is_none()
         assert_that(chemistry.tgidx_anchor()).is_none()
         assert_that(chemistry.supports_target_assignment()).is_false()
+
+    def test_tgidx_right_anchor_is_none(self, chemistry: ChemistryHydrop):
+        """A chemistry with no TGIDX component has no Mosaic End right anchor either."""
+        assert_that(chemistry.tgidx_right_anchor()).is_none()
 
     def test_construct_full_barcode_hydrop(self, chemistry: ChemistryHydrop):
         """Test full barcode construction for hydrop chemistry."""
@@ -1722,3 +1781,54 @@ class TestTargetIndexValidation:
         warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
         assert_that(warnings).is_empty()
         assert_that(chemistry.tgidx_whitelist()).is_length(4)
+
+
+class TestTgidxRightAnchor:
+    """Tests for tgidx_right_anchor() on constructed edge cases no real chemistry exercises."""
+
+    def test_tgidx_as_the_last_component_has_no_right_anchor(
+        self, whitelist_file: Callable[[str, list[str]], Path]
+    ):
+        """A target index with nothing declared after it has no right anchor."""
+        tgidx_path = whitelist_file("tgidx.tsv", [TGIDX_ENTRIES[0]])
+
+        chemistry = StubChemistry(
+            sources={"TGIDX": WhitelistSource(path=tgidx_path)},
+            components=(
+                ReadComponent(
+                    name="POLYG",
+                    type=ReadComponentType.HOMOPOLYMER,
+                    homopolymer_base="G",
+                    min_run=3,
+                ),
+                ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),
+            ),
+        )
+
+        assert_that(chemistry.tgidx_right_anchor()).is_none()
+
+    def test_non_anchoring_component_after_tgidx_has_no_right_anchor(
+        self, whitelist_file: Callable[[str, list[str]], Path]
+    ):
+        """A component that follows TGIDX but cannot anchor (UMI) yields no right anchor.
+
+        This distinguishes "nothing follows" from "something non-anchoring follows":
+        is_anchor is only True for BARCODE/PRIMER/HOMOPOLYMER.
+        """
+        tgidx_path = whitelist_file("tgidx.tsv", [TGIDX_ENTRIES[0]])
+
+        chemistry = StubChemistry(
+            sources={"TGIDX": WhitelistSource(path=tgidx_path)},
+            components=(
+                ReadComponent(
+                    name="POLYG",
+                    type=ReadComponentType.HOMOPOLYMER,
+                    homopolymer_base="G",
+                    min_run=3,
+                ),
+                ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),
+                ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8),
+            ),
+        )
+
+        assert_that(chemistry.tgidx_right_anchor()).is_none()
