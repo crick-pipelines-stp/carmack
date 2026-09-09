@@ -17,6 +17,8 @@ from carmack.assign_targets.target_assigner import DEFAULT_MAX_WORKERS, TargetAs
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.cell_caller.cell_caller import CellCaller
 from carmack.fastq_tools.fastq_filter import FastqFilter
+from carmack.prepare_reads.read_preparer import DEFAULT_MAX_WORKERS as PREPARE_READS_DEFAULT_MAX_WORKERS
+from carmack.prepare_reads.read_preparer import ReadPreparer
 from carmack.split_reads.split_reads import BamSplitter
 from carmack.tag_dedup.tag_dedup import TagDedup
 from carmack.umi.umi_extractor import UmiExtractor
@@ -37,6 +39,7 @@ click.rich_click.COMMAND_GROUPS = {
                 "extract-barcodes",
                 "extract-umis",
                 "assign-targets",
+                "prepare-reads",
                 "fastq-filter",
                 "bam-tag-deduplicate",
                 "call-cells",
@@ -200,6 +203,62 @@ def assign_targets(r1_umi_fastq, chemistry, output_dir, prefix, cpu_count):
     log.info("Assigning target indices from UMI-annotated FASTQ file...")
     assigner = TargetAssigner(r1_umi_fastq, chemistry, n_workers=cpu_count)
     assigner.assign_targets(output_dir, prefix)
+
+
+@carmack_cli.command("prepare-reads")
+@click.argument(
+    "r1_annotated_fastq",
+    required=True,
+    nargs=1,
+    type=click.Path(exists=True),
+    metavar="<r1_annotated_fastq>",
+)
+@click.argument(
+    "r2_fastq", required=True, nargs=1, type=click.Path(exists=True), metavar="<r2_fastq>"
+)
+@click.option("-c", "--chemistry", required=True, type=str, help="Chemistry name for read layout")
+@click.option(
+    "-o",
+    "--output_dir",
+    required=False,
+    type=click.Path(exists=True),
+    default=".",
+    help="Output directory to save generated files",
+)
+@click.option(
+    "-p",
+    "--prefix",
+    required=False,
+    type=str,
+    default=None,
+    show_default=True,
+    help="Prefix for generated files",
+)
+@click.option(
+    "-n",
+    "--cpu_count",
+    required=False,
+    type=int,
+    default=min(PREPARE_READS_DEFAULT_MAX_WORKERS, get_cpu_count()),
+    show_default=True,
+    help="Number of CPU workers to use. This stage's own saturation point has not been independently measured; the default provisionally mirrors assign-targets's measured cap, pending benchmarking.",
+)
+def prepare_reads(r1_annotated_fastq, r2_fastq, chemistry, output_dir, prefix, cpu_count):
+    """
+    Trim and dispatch every read from an annotated R1 FASTQ into its scRNA or scTIP output.
+
+    The R1 FASTQ (paired with its raw R2) is read in lockstep and every read is trimmed
+    down to its genomic/cDNA insert and dispatched to exactly one output. A read carrying
+    no real target index - whether its TGIDX tag is NONE or the chemistry supports no
+    target index at all - goes to the scRNA arm's three fixed output files, untrimmed
+    past its UMI span. A read carrying a real target index is trimmed off the end of its
+    TGIDX_POS span and written to that target's own scTIP (R1, R2) file pair. Every input
+    read is written exactly once, to exactly one of the two arms.
+    """
+
+    log.info("Preparing reads from annotated FASTQ file...")
+    preparer = ReadPreparer(r1_annotated_fastq, r2_fastq, chemistry, n_workers=cpu_count)
+    preparer.prepare_reads(output_dir, prefix)
 
 
 @carmack_cli.command("fastq-filter")
