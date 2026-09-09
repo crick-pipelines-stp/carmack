@@ -764,6 +764,28 @@ class TestPrepareReadMatched:
 
         assert_that(str(excinfo.value)).contains("nospan", "TGIDX_POS")
 
+    def test_matched_read_missing_umi_raises(self) -> None:
+        """A matched read with no UMI tag is a corrupt input, not an outcome.
+
+        Mirrors `test_matched_read_missing_tgidx_pos_raises`: a read carrying a
+        real target value and its `TGIDX_POS` span but no `UMI` tag at all could
+        never have come from a correctly run extract-umis/assign-targets chain,
+        so this has to be fatal rather than silently rendering a `UR=None`
+        header.
+        """
+        tags = {
+            **DEFAULT_BARCODES,
+            "TGIDX": TGIDX_VALUE,
+            "TGIDX_POS": format_span(20, 20 + TGIDX_LENGTH),
+        }
+        name, seq, qual = build_read("noumi", tags, "A" * 40)
+        preparer = build_preparer()
+
+        with pytest.raises(ValueError) as excinfo:
+            preparer.prepare_read(name, seq, qual, PrepareCounts())
+
+        assert_that(str(excinfo.value)).contains("noumi", "UMI")
+
 
 class TestPrepareReadCountsAccumulate:
     """Repeated calls fold into the same accumulator instead of resetting it."""

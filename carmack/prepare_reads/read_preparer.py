@@ -193,8 +193,9 @@ class ReadPreparer:
 
         Raises:
             ValueError: If the read carries a real target index but no ``TGIDX_POS``
-                span for it -- a corrupt input, since a correctly run assign-targets
-                stage always writes a span alongside a real target value.
+                span for it, or no UMI tag at all -- a corrupt input, since a
+                correctly run assign-targets/extract-umis chain always writes both
+                alongside a real target value.
         """
         counts.total += 1
         ann = ReadAnnotation.parse(name)
@@ -216,6 +217,8 @@ class ReadPreparer:
 
         barcodes = {barcode_name: ann.get(barcode_name) for barcode_name in self.barcode_names}
         umi = ann.get(self.umi_name)
+        if umi is None:
+            raise ValueError(f"Read '{ann.read_id}' carries no '{self.umi_name}' tag")
         header = render_sctip_header(self.chemistry, ann.read_id, barcodes, umi)
 
         counts.target_counts[tgidx] += 1

@@ -102,7 +102,7 @@ def write_sctip_read(
         KeyError: If ``tgidx`` has no open bucket in ``writers``, naming ``tgidx``.
     """
     if tgidx not in writers:
-        raise KeyError(tgidx)
+        raise KeyError(f"No open output bucket for target index '{tgidx}'")
 
     bucket = writers[tgidx]
     FastqFile.write_read(bucket.r1, header, r1_seq, r1_qual)
