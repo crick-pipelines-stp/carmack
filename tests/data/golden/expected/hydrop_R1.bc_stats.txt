@@ -2,19 +2,19 @@
 # Overall Barcode Extraction Stats
 Total reads: 2000
 Perfect matches: 0 (0.00%)
-Corrected matches: 175 (8.75%)
-Failed matches: 1825 (91.25%)
+Corrected matches: 109 (5.45%)
+Failed matches: 1891 (94.55%)
 Top 10 barcode fractions:
-	TAGTGTGTTGGACTTGTAACCGATGTAACG	0.002
-	CTCCTATCATCTCCAACTATCTCCTCATCC	0.0015
-	GTATCAGCCGTTGGTATGTAGTCAAGCCAA	0.0015
-	GCCATTGAGGATAGCAGGCATGTGCGATTA	0.0015
-	CTTGAAGAAGAATCGGAGAAAGAACAATCC	0.0015
-	CATTCCAAGACCGGTTACATAATCTGCACA	0.001
-	GTGAGTAGCCTTGCGAATATGTGTTGAAGT	0.001
-	GCTGTCCTAGTCGTGTGATAGGCTTCCAGA	0.001
-	AGCTAACTACACCACACCTTCTATCCGTCA	0.001
-	TGACCGTACTACCGTACTATCTATCCGTCA	0.001
+	TAGTTGGACTACATAGCGAAATGAAGTGCG	0.001
+	CCAGTCAATCATAGCAGGCACTCCTCATCC	0.001
+	CTCCTATCATCCTCAATTACCCTCTATGTA	0.001
+	CTAGAAGGCTTGAAGCGAACTTGCAGTTCT	0.001
+	CTGTAATCCACTTCTGGTATTCTACAGTGC	0.001
+	TAGTGTGTTGACGGTGGACTTTCATGTCCT	0.001
+	TCCTGATAAGGGTAGGTAGGGATTCAGGAG	0.001
+	GCAGACCAGAATCTTGCATCGTATGTGCGA	0.001
+	AGCGGATACATAGGAGTCAAACACACTAGG	0.001
+	GTATCAGCCGGGTTGGAATAAACGCCTGCT	0.0005
 
 # Per-Barcode Component Stats
 
@@ -28,23 +28,22 @@ Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: KMERMATCH
 Reads checked: 1999
-Successful matches: 388 (19.41%)
-Failed matches: 1611 (80.59%)
+Successful matches: 684 (34.22%)
+Failed matches: 1315 (65.78%)
 Edit distance distribution (distance - count):
-	0	12 (3.09%)
-	1	270 (69.59%)
-	2	106 (27.32%)
+	0	1 (0.15%)
+	1	117 (17.11%)
+	2	566 (82.75%)
 Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: ALIGNMATCH
-Reads checked: 1611
-Successful matches: 555 (34.45%)
-Failed matches: 1056 (65.55%)
+Reads checked: 1315
+Successful matches: 22 (1.67%)
+Failed matches: 1293 (98.33%)
 Edit distance distribution (distance - count):
-	0	2 (0.36%)
-	1	105 (18.92%)
-	2	448 (80.72%)
-Ambiguous matches (reads): 651 (40.41%)
+	1	1 (4.55%)
+	2	21 (95.45%)
+Ambiguous matches (reads): 648 (49.28%)
 
 ## BC2
 
@@ -56,22 +55,22 @@ Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: KMERMATCH
 Reads checked: 2000
-Successful matches: 367 (18.35%)
-Failed matches: 1633 (81.65%)
+Successful matches: 666 (33.30%)
+Failed matches: 1334 (66.70%)
 Edit distance distribution (distance - count):
-	0	13 (3.54%)
-	1	229 (62.40%)
-	2	125 (34.06%)
+	0	6 (0.90%)
+	1	154 (23.12%)
+	2	506 (75.98%)
 Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: ALIGNMATCH
-Reads checked: 1633
-Successful matches: 546 (33.44%)
-Failed matches: 1087 (66.56%)
+Reads checked: 1334
+Successful matches: 28 (2.10%)
+Failed matches: 1306 (97.90%)
 Edit distance distribution (distance - count):
-	1	77 (14.10%)
-	2	469 (85.90%)
-Ambiguous matches (reads): 568 (34.78%)
+	1	1 (3.57%)
+	2	27 (96.43%)
+Ambiguous matches (reads): 940 (70.46%)
 
 ## BC1
 
@@ -83,19 +82,18 @@ Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: KMERMATCH
 Reads checked: 2000
-Successful matches: 396 (19.80%)
-Failed matches: 1604 (80.20%)
+Successful matches: 750 (37.50%)
+Failed matches: 1250 (62.50%)
 Edit distance distribution (distance - count):
-	0	5 (1.26%)
-	1	259 (65.40%)
-	2	132 (33.33%)
+	0	1 (0.13%)
+	1	112 (14.93%)
+	2	637 (84.93%)
 Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: ALIGNMATCH
-Reads checked: 1604
-Successful matches: 537 (33.48%)
-Failed matches: 1067 (66.52%)
+Reads checked: 1250
+Successful matches: 45 (3.60%)
+Failed matches: 1205 (96.40%)
 Edit distance distribution (distance - count):
-	1	70 (13.04%)
-	2	467 (86.96%)
-Ambiguous matches (reads): 613 (38.22%)
+	2	45 (100.00%)
+Ambiguous matches (reads): 631 (50.48%)

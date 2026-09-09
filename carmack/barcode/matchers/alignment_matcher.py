@@ -4,9 +4,8 @@ from dataclasses import dataclass
 from Bio.Align import PairwiseAligner
 from Bio.Align.substitution_matrices import Array
 
-from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
-from carmack.barcode.matchers.matcher_base import MatcherBase
+from carmack.barcode.matchers.matcher_base import MatcherBase, best_window
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.read_structure import ReadComponent
 
@@ -40,20 +39,47 @@ class AlignmentContainer:
     bc: str
 
 
+@dataclass
+class AlignmentCandidate:
+    """
+    A whitelist entry that survived every gate, held together with the evidence about it.
+
+    Attributes:
+        attempt: The match attempt for this candidate, in original-read coordinates. Carries
+            no match until resolution picks a winner, so an unresolved candidate reported as
+            part of an ambiguity verdict is matchless by construction rather than by being
+            reset.
+        bc: The whitelist entry this candidate aligned to.
+        edit_distance: The candidate's edit distance to ``bc``, recomputed from the aligned
+            span. This is what resolution ranks on. The alignment score is deliberately not
+            carried: it gates and it does not rank, and a candidate holding its own score is an
+            invitation to order candidates by it.
+    """
+
+    attempt: BarcodeMatchAttempt
+    bc: str
+    edit_distance: int
+
+
 class AlignmentMatcher(MatcherBase):
     """
     Local alignment barcode matching.
 
     Uses BioPython's PairwiseAligner for local alignment with a custom substitution
-    matrix that treats N bases as wildcards matching any nucleotide. Candidate
-    selection and ranking are driven entirely by alignment scores rather than
-    edit distance computation.
+    matrix that treats N bases as wildcards matching any nucleotide. The alignment score
+    *gates* which candidates are considered; it does not rank them. Ranking is by recomputed
+    edit distance, which is the criterion the ambiguity contract is written in and the one
+    KmerMatcher already uses. Score cannot rank because it is not monotone in edit distance:
+    of two candidates the same number of edits from the read, the one whose error sits at an
+    end of the barcode is clipped by local alignment and outscores the one whose error sits in
+    the interior. Ranking on that separates candidates the contract says must not be separated.
 
     This matcher keeps the barcode-only allowed_component_types of MatcherBase, and that
     declaration is the only thing stopping it being pointed at another component type. The
-    narrowness is a deliberate default rather than a structural bar: unlike FixedPositionMatcher
-    it never reads component.start, so widening it would need only the score threshold, which is
-    derived from component.length, re-examined against the new component's length and budget.
+    narrowness is a deliberate default rather than a structural bar: widening it would need the
+    score threshold, which is derived from component.length, re-examined against the new
+    component's length and budget, and would want a component whose start is resolved, since
+    search_bounds falls back to an unbounded search without one.
     """
 
     def __init__(
@@ -117,10 +143,35 @@ class AlignmentMatcher(MatcherBase):
 
     def compute_score_threshold(self) -> float:
         """
-        Compute the minimum alignment score that could correspond to max_errors edits.
+        Compute the lowest alignment score a window within ``max_errors`` edits can score.
 
-        For local alignment, mismatches are clipped rather than penalised, so each
-        substitution effectively costs 1 (the lost match) rather than 2 (lost match + penalty).
+        The threshold is a gate, so it has to be at or below the *worst* score an in-budget
+        window can produce. Anything higher makes a legitimate candidate invisible rather than
+        merely unlikely, and which candidates disappear depends on where in the barcode their
+        errors happen to sit -- so a too-high threshold silently biases the whole match.
+
+        The worst case per error is a substitution that local alignment cannot clip, because
+        it sits in the barcode's interior with matching bases on both sides. Aligning through
+        it forfeits a match and takes the mismatch penalty as well, costing
+        ``MATCH_SCORE - MISMATCH_SCORE``. The alternatives are all cheaper, which is why the
+        cost is a maximum over them:
+
+        =========================  ==========================================  ====
+        Error                      Cost against a perfect score                10bp
+        =========================  ==========================================  ====
+        interior substitution      ``MATCH_SCORE - MISMATCH_SCORE``            2.0
+        deletion                   ``MATCH_SCORE + abs(GAP_OPEN_SCORE)``       1.5
+        insertion                  ``abs(GAP_OPEN_SCORE)``                     0.5
+        terminal substitution      ``MATCH_SCORE`` (clipped, no penalty paid)  1.0
+        =========================  ==========================================  ====
+
+        A 1bp gap pays only ``open_gap_score``; ``extend_gap_score`` starts at the second gap
+        position, so it does not enter a single-error cost at all. The previous formula used
+        ``max(MATCH_SCORE, abs(GAP_OPEN_SCORE) + abs(GAP_EXTEND_SCORE))`` -- 1.5 -- which
+        priced an interior substitution at 1.0 instead of 2.0. At ``max_errors=1`` that put the
+        threshold at 8.5 while an interior substitution scores 8.0, so of two candidates one
+        edit from the read, the one whose mismatch happened to sit at an end scored 9.0 and was
+        declared a unique best match while the other was dropped before the tie was visible.
 
         Returns:
             Minimum alignment score to consider (as float)
@@ -129,12 +180,10 @@ class AlignmentMatcher(MatcherBase):
         max_errors = self.max_errors
 
         perfect_score = bc_len * MATCH_SCORE
-        # For local alignment, substitutions cost MATCH_SCORE (1 point) because
-        # mismatches are clipped. Indels cost GAP_OPEN + GAP_EXTEND.
-        # We use the maximum of these as a conservative penalty per error.
         max_penalty_per_error = max(
-            MATCH_SCORE,  # substitution: lose 1 match
-            abs(GAP_OPEN_SCORE) + abs(GAP_EXTEND_SCORE),  # indel: 0.5 + 1 = 1.5
+            MATCH_SCORE - MISMATCH_SCORE,  # interior substitution: lose a match, pay a mismatch
+            MATCH_SCORE + abs(GAP_OPEN_SCORE),  # deletion: lose a match, pay to open a gap
+            abs(GAP_OPEN_SCORE),  # insertion: keep every match, pay to open a gap
         )
         return float(perfect_score - max_errors * max_penalty_per_error)
 
@@ -155,26 +204,25 @@ class AlignmentMatcher(MatcherBase):
             return sequence
         return "".join(c if c in VALID_BASES else "N" for c in sequence)
 
-    def trim_read(self, read: str, start_idx: int) -> str:
+    def search_bounds(self, read: str, start_idx: int) -> tuple[int, int]:
         """
-        Trim the read to the expected length for the barcode component.
+        Return the half-open slice of the read a match for this component may be found in.
 
-        This is used to ensure that the read segment being matched is of the correct length, which
-        can help improve matching accuracy and reduce false positives.
+        This is the component's structural window from ``component_window``, with the caller's
+        ``start_idx`` applied on top as a floor: this matcher treats ``start_idx`` as a hard
+        bound on where a match may begin, so the two bounds compose rather than replacing one
+        another.
 
         Args:
-            read: The sequencing read to trim.
-            start_idx: Index to trim from.
+            read: The sequencing read being searched.
+            start_idx: A floor on where a match may begin, from the caller.
 
         Returns:
-            The read from start_idx onwards, or an empty string if start_idx is beyond the read.
+            ``(low, high)``, a half-open slice of ``read``. Empty (``low >= high``) when the
+            read is too short to hold the component at all.
         """
-        if start_idx >= len(read):
-            log.debug(
-                f"Start index {start_idx} is beyond read length {len(read)}. Returning empty string."
-            )
-            return ""
-        return read[start_idx:]
+        low, high = self.component_window(read, self.max_errors)
+        return (max(low, min(start_idx, len(read))), high)
 
     def align_seqs(self, seq1: str, seq2: str) -> AlignmentContainer | None:
         """
@@ -207,141 +255,271 @@ class AlignmentMatcher(MatcherBase):
             bc=seq2,
         )
 
-    def assign_within_budget(
-        self, attempt: BarcodeMatchAttempt, bc: str
-    ) -> list[BarcodeMatchAttempt]:
+    def collect_candidates(self, read: str, start_idx: int = 0) -> list[AlignmentCandidate]:
         """
-        Assign `bc` to `attempt` if the aligned candidate is within the error budget.
+        Find every whitelist entry that both aligns and could plausibly be this component.
 
-        The alignment score gate is necessary but not sufficient: a candidate can clear
-        score_threshold and still be further than max_errors from the barcode it aligned to,
-        because an indel-bearing local alignment scores better than its edit distance implies.
-        The distance is therefore recomputed against the barcode actually being assigned.
+        Each entry is aligned once against the bounded search window. The alignment is used to
+        *locate* the entry and nothing more: the span it reports is the span of matching bases,
+        which local alignment clips at a terminal mismatch, so it comes back a base short
+        exactly when the error sits at the component's edge. Reporting that span would sabotage
+        the spacer check and shift the UMI in the same way a first-found k-mer window did, so
+        the located entry is re-measured with ``best_window``, the same span-selection rule
+        ``KmerMatcher`` uses.
+
+        An entry then survives only if it passes both remaining gates. The span-length gate
+        rejects a candidate whose extent in the read differs from the component by more than
+        the error budget, since such a span cannot be this component however well it scores.
+        The edit-distance gate is the one the contract is written in, and it is necessary
+        because the score gate is not sufficient: an indel-bearing local alignment scores
+        better than its edit distance implies, so a candidate can clear the score threshold and
+        still be out of budget.
+
+        No best-of filter is applied, so every in-budget candidate remains visible to
+        resolution. That matters: dropping near misses is precisely how a tie became a "unique
+        best alignment" and got assigned without ever being recognised as a tie.
 
         Args:
-            attempt: The match attempt to assign to, mutated in place on success.
-            bc: The whitelist barcode this attempt's alignment came from.
+            read: The sequencing read to search.
+            start_idx: A floor on where a match may begin, passed on to ``search_bounds``.
 
         Returns:
-            A single-element list holding `attempt` with `match` and `edit_distance` populated,
-            or a single-element list holding a fresh matchless attempt if the budget is exceeded.
+            Every surviving candidate, each carrying its attempt (in original-read
+            coordinates, with no match assigned yet), its whitelist entry and its edit
+            distance. Empty if nothing survived.
         """
-        ed = edit_distance(attempt.candidate, bc)
-        if ed > self.max_errors:
+        lo, hi = self.search_bounds(read, start_idx)
+        window = read[lo:hi]
+
+        if not window:
             log.debug(
-                f"Best alignment candidate '{attempt.candidate}' failed edit distance check with edit distance {ed} exceeding max_errors {self.max_errors}. Marking as no match."
+                f"Search window for {self.component.name} is empty at start_idx {start_idx} "
+                f"on a read of length {len(read)}."
+            )
+            return []
+
+        bc_len = self.component.length
+        candidates: list[AlignmentCandidate] = []
+
+        for bc in self.whitelist_set:
+            alignment = self.align_seqs(window, bc)
+            if alignment is None:
+                continue
+
+            # Re-measure the located entry rather than trusting the aligned span. The band
+            # best_window searches is centred on the alignment, in original-read coordinates,
+            # so a base the aligner clipped is recovered while the search stays local to where
+            # the alignment actually landed. It is floored at the window's own start, so
+            # recovering that base cannot reach back past where the caller said a match may
+            # begin -- this matcher treats start_idx as a hard floor and continues to. There is
+            # no matching ceiling: a span may end up to max_errors past the window's end, which
+            # is the price of recovering a clipped base from an alignment that landed against
+            # that edge, and it is bounded by the span-length and edit-distance gates below.
+            is_valid, start, end, ed = best_window(
+                read, bc, alignment.seq1_span[0] + lo, self.max_errors, lower_bound=lo
+            )
+            if not is_valid:
+                continue
+
+            if abs(end - start - bc_len) > self.max_errors:
+                continue
+
+            candidates.append(
+                AlignmentCandidate(
+                    attempt=BarcodeMatchAttempt(
+                        method=MatchMethod.ALIGNMATCH,
+                        candidate=read[start:end],
+                        match=None,  # Assigned only once resolution picks a winner
+                        read_idx=(start, end),
+                        edit_distance=None,
+                    ),
+                    bc=bc,
+                    edit_distance=ed,
+                )
+            )
+
+        return candidates
+
+    def assign_match(self, candidate: AlignmentCandidate) -> list[BarcodeMatchAttempt]:
+        """
+        Assign a resolved candidate's whitelist entry onto its attempt.
+
+        Args:
+            candidate: The candidate resolution settled on.
+
+        Returns:
+            A single-element list holding the attempt with `match` and `edit_distance` set.
+        """
+        candidate.attempt.match = candidate.bc
+        candidate.attempt.edit_distance = candidate.edit_distance
+        return [candidate.attempt]
+
+    def requires_spacer_evidence(self, read_idx: tuple[int, int]) -> bool:
+        """
+        Whether a candidate that arrived alone has to be corroborated by an adjacent spacer.
+
+        Arriving alone is not itself evidence, so a lone candidate is not simply waved through
+        the way it used to be. But the evidence a lone candidate needs depends on how well it
+        already agrees with the read structure, and two different things can make it the only
+        one standing.
+
+        A candidate sitting where the structure says this component belongs is already
+        corroborated by its position, which is the prediction the read structure makes. Demanding
+        a spacer as well would throw away reads for a reason unrelated to their barcode: the
+        adjacent primer is 22bp and has to match exactly, so a single error anywhere in it
+        removes the evidence, and reads reaching this matcher at all are the error-laden ones.
+        That is the population where the alignment stage earns its place on insertions.
+
+        A candidate found away from that position is a different claim -- that the component is
+        not where the structure predicts -- and needs something beyond itself to support it.
+        Requiring a flanking spacer there is what closes the path that assigned a barcode read
+        off a neighbouring component's sequence.
+
+        Args:
+            read_idx: The candidate's span, in original-read coordinates.
+
+        Returns:
+            True when the candidate must carry at least one adjacent spacer to be assigned.
+        """
+        expected_start = self.component.start
+        if expected_start is None:
+            # Nothing predicts where this component sits, so position corroborates nothing.
+            return True
+        return abs(read_idx[0] - expected_start) > self.max_errors
+
+    def resolve_sole_candidate(self, candidate: AlignmentCandidate) -> list[BarcodeMatchAttempt]:
+        """
+        Decide whether a candidate that arrived alone has shown enough to be assigned.
+
+        There is no tie here, so the spacer rungs have nothing to separate; what is being
+        judged is whether the candidate is corroborated at all. The rule is on
+        ``requires_spacer_evidence``: a candidate where the read structure predicts this
+        component needs nothing further, a candidate somewhere else needs a flanking spacer.
+        Assigning a lone candidate unexamined is what produced barcodes read off unrelated
+        sequence.
+
+        Args:
+            candidate: The only candidate at the minimum edit distance, with its spacer
+                evidence already recorded on its attempt.
+
+        Returns:
+            A single-element list: the assigned attempt, or a fresh matchless one.
+        """
+        read_idx = candidate.attempt.read_idx
+        has_spacer = (
+            candidate.attempt.spacer_upstream is not None
+            or candidate.attempt.spacer_downstream is not None
+        )
+
+        if not has_spacer and read_idx is not None and self.requires_spacer_evidence(read_idx):
+            log.debug(
+                f"Sole alignment candidate {candidate.bc} at {read_idx} is away from the "
+                f"expected start of {self.component.name} and has no adjacent spacer evidence. "
+                "Marking as no match."
             )
             return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
-        attempt.match = bc
-        attempt.edit_distance = ed
-        return [attempt]
+
+        log.debug(
+            f"Unique best alignment match found: {candidate.bc} with edit distance "
+            f"{candidate.edit_distance}"
+        )
+        return self.assign_match(candidate)
 
     def match(self, read: str, start_idx: int = 0) -> list[BarcodeMatchAttempt]:
         """
-        Align each candidate barcode to `read` and return the best match.
+        Find this component's barcode in `read`, or decline to.
 
-        The best match is the barcode alignment with the highest alignment score.
-        If multiple barcodes tie for best score, return all.
+        Candidates are collected by ``collect_candidates`` and then resolved here. Resolution
+        ranks on recomputed edit distance, never on alignment score, so that this matcher and
+        ``KmerMatcher`` agree on what "equidistant" means. Each whitelist entry is aligned once,
+        so two tied candidates are always two different entries, and a tie is therefore always
+        the ambiguity the contract is about. Candidates tied at the minimum distance are
+        separated only by the spacer rungs, in a fixed order: first by requiring at least one
+        adjacent spacer, then by preferring the single candidate flanked by two.
+        A candidate that arrives alone is no longer waved through unexamined; what it has to
+        show is set out on ``requires_spacer_evidence``.
+
+        There are four ways out, and they are the specification: a called match, a matchless
+        attempt when nothing survives the gates, a matchless attempt when a lone candidate is
+        away from its expected position with no spacer to support it, and several matchless
+        attempts when candidates tie and no rung separates them. Only the last is an ambiguity
+        verdict, which the caller reads off the number of attempts returned.
 
         Args:
             read: The sequencing read to match against.
-            start_idx: A hard floor on where a match may begin. The read is trimmed to
-                ``read[start_idx:]`` before alignment, so bases before ``start_idx`` are invisible
-                to this matcher and no match can begin before it. A window that starts before
-                ``start_idx`` is therefore seen only in truncated form, and resolves only while
-                the truncation stays within ``max_errors``. Alignment coordinates are shifted by
-                ``start_idx`` before being returned, so ``read_idx`` is in original-read
-                coordinates.
+            start_idx: A floor on where a match may begin. It is applied on top of the
+                structural bound from ``search_bounds``, so bases before it are invisible to
+                this matcher and no match can begin before it. Alignment coordinates are
+                shifted back into original-read coordinates before being returned, so
+                ``read_idx`` never needs the offset adding back.
 
         Returns:
-            List of BarcodeMatchAttempt objects representing the match results.
+            List of BarcodeMatchAttempt objects representing the match results. A single
+            attempt when a match is called or when nothing resolves, and one attempt per tied
+            candidate, each with no match assigned, when the result is ambiguous.
         """
-        best_alignments = []
+        candidates = self.collect_candidates(read, start_idx)
 
-        # Initialize below threshold to ensure only valid alignments are considered
-        best_score: float = self.score_threshold - 1
-
-        trimmed_read = self.trim_read(read, start_idx)
-        for bc in self.whitelist_set:
-            alignment = self.align_seqs(trimmed_read, bc)
-
-            if alignment is not None:
-                if alignment.score > best_score:
-                    best_alignments = [alignment]
-                    best_score = alignment.score
-                elif alignment.score == best_score:
-                    best_alignments.append(alignment)
-
-        # No alignments, return attempt with no match
-        if not best_alignments:
+        if not candidates:
             log.debug(f"No valid alignment matches found for read starting at index {start_idx}.")
             return [BarcodeMatchAttempt(method=MatchMethod.ALIGNMATCH)]
 
-        # Prepare match attempts for best alignments
-        results: list[tuple[BarcodeMatchAttempt, str]] = []
-        for aln in best_alignments:
-            seq1_span = aln.seq1_span
-            read_idx = (
-                seq1_span[0] + start_idx,
-                seq1_span[1] + start_idx,
-            )  # Convert to absolute read coordinates
-            result = BarcodeMatchAttempt(
-                method=MatchMethod.ALIGNMATCH,
-                candidate=trimmed_read[seq1_span[0] : seq1_span[1]],
-                match=None,  # We don't assign a single match if multiple barcodes tie
-                read_idx=read_idx,
-                edit_distance=None,
-            )
-            results.append((result, aln.bc))
+        # Rank on edit distance, not on score.
+        best_ed = min(candidate.edit_distance for candidate in candidates)
+        best = [candidate for candidate in candidates if candidate.edit_distance == best_ed]
 
-        # Single match, assign the matched barcode to the result
-        if len(results) == 1:
-            result, bc = results[0]
-            log.debug(f"Unique best alignment match found: {bc} with score {best_score}")
-            return self.assign_within_budget(result, bc)
+        # Spacer evidence is recorded for every tied candidate, including a lone one, so the
+        # annotation and the stats show what the decision was taken on.
+        for candidate in best:
+            if candidate.attempt.read_idx is not None:
+                spacers_check = self.check_spacers(read, candidate.attempt.read_idx)
+                candidate.attempt.spacer_upstream = spacers_check["upstream"]
+                candidate.attempt.spacer_downstream = spacers_check["downstream"]
 
-        # Multiple best alignments - validate with adjacent spacer sequences
-        validated_results: list[tuple[BarcodeMatchAttempt, str]] = []
-        for result, bc in results:
-            if result.read_idx is not None:
-                spacers_check = self.check_spacers(read, result.read_idx)
-                result.spacer_upstream = spacers_check["upstream"]
-                result.spacer_downstream = spacers_check["downstream"]
-
-                # Validate if at least one adjacent spacer is present
-                if any(spacers_check.values()):
-                    validated_results.append((result, bc))
-
-        # If only one validated result, assign the matched barcode and return
-        if len(validated_results) == 1:
-            final_result, bc = validated_results[0]
-            log.debug(
-                f"Unique best alignment match validated by spacers: {bc} with score {best_score}"
-            )
-            return self.assign_within_budget(final_result, bc)
-
-        # If multiple results validate, check if only one has spacers on both sides
-        both_spacers = [
-            entry
-            for entry in validated_results
-            if entry[0].spacer_upstream is not None and entry[0].spacer_downstream is not None
+        validated = [
+            candidate
+            for candidate in best
+            if candidate.attempt.spacer_upstream is not None
+            or candidate.attempt.spacer_downstream is not None
         ]
-        if len(validated_results) > 1 and len(both_spacers) == 1:
-            final_result, bc = both_spacers[0]
-            log.debug(
-                f"Unique best alignment match validated by having both spacers: {bc} with score {best_score}"
-            )
-            return self.assign_within_budget(final_result, bc)
 
-        # If multiple results still remain, we have ambiguity
-        # We return all validated results but mark match as None to indicate ambiguity
-        if validated_results:
+        if len(best) == 1:
+            return self.resolve_sole_candidate(best[0])
+
+        # Rung one: at least one adjacent spacer.
+        if len(validated) == 1:
             log.debug(
-                f"Ambiguous alignment match: candidate '{validated_results[0][0].candidate}' with score {best_score} has multiple best matches. Will be marked as ambiguous."
+                f"Unique best alignment match validated by spacers: {validated[0].bc} with edit "
+                f"distance {best_ed}"
             )
-            return [entry[0] for entry in validated_results]
+            return self.assign_match(validated[0])
+
+        # Rung two: exactly one candidate flanked by two spacers.
+        both_spacers = [
+            candidate
+            for candidate in validated
+            if candidate.attempt.spacer_upstream is not None
+            and candidate.attempt.spacer_downstream is not None
+        ]
+        if len(validated) > 1 and len(both_spacers) == 1:
+            log.debug(
+                f"Unique best alignment match validated by having both spacers: "
+                f"{both_spacers[0].bc} with edit distance {best_ed}"
+            )
+            return self.assign_match(both_spacers[0])
+
+        # No rung separated them, so the read's window is genuinely equidistant from several
+        # whitelist entries. Report every tied candidate, all matchless: that shape is what
+        # tells the caller this is an ambiguity verdict rather than an empty search.
+        if validated:
+            log.debug(
+                f"Ambiguous alignment match: candidate '{validated[0].attempt.candidate}' at edit "
+                f"distance {best_ed} has multiple best matches. Will be marked as ambiguous."
+            )
+            return [candidate.attempt for candidate in validated]
 
         log.debug(
-            f"Ambiguous alignment match with no spacer evidence: {len(results)} candidates tied at score {best_score}. All will be marked as ambiguous."
+            f"Ambiguous alignment match with no spacer evidence: {len(best)} candidates tied at "
+            f"edit distance {best_ed}. All will be marked as ambiguous."
         )
-        return [entry[0] for entry in results]
+        return [candidate.attempt for candidate in best]

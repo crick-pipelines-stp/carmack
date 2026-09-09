@@ -2,9 +2,8 @@ import logging
 from collections import defaultdict
 from typing import ClassVar
 
-from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
-from carmack.barcode.matchers.matcher_base import MatcherBase
+from carmack.barcode.matchers.matcher_base import MatcherBase, best_window
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.read_structure import ReadComponent, ReadComponentType
 
@@ -91,6 +90,10 @@ class KmerMatcher(MatcherBase):
         """
         Extend a seed match and verify the full barcode alignment.
 
+        The seed fixes where the barcode is thought to begin; choosing the window to report
+        from there is shared with the other searching matcher via ``best_window``, so the two
+        cannot disagree about a component's extent in the read.
+
         Args:
             read: The read sequence
             read_kmer_pos: Position of k-mer match in read
@@ -98,46 +101,11 @@ class KmerMatcher(MatcherBase):
             bc_kmer_pos: Position of k-mer in barcode
 
         Returns:
-            (is_valid, start_pos, end_pos, edit_distance) tuple
+            (is_valid, start_pos, end_pos, edit_distance) tuple. Among the windows that tie at
+            the minimum edit distance, the one reported is the window whose length equals the
+            barcode's, and then the one whose start is nearest the seed's implied start.
         """
-        bc_len = len(barcode)
-        expected_start = read_kmer_pos - bc_kmer_pos
-
-        # Search within a small band around expected start
-        min_start = max(0, expected_start - self.max_errors)
-        max_start = min(len(read) - 1, expected_start + self.max_errors)
-
-        # Only consider window sizes where |win_len - bc_len| <= max_errors
-        # This is the key pruning: window length alone must allow <= max_errors
-        min_len = max(1, bc_len - self.max_errors)
-        max_len = min(len(read), bc_len + self.max_errors)
-
-        best_dist = self.max_errors + 1
-        best_span = (-1, -1)
-
-        for start in range(min_start, max_start + 1):
-            max_len_at_start = min(max_len, len(read) - start)
-            if max_len_at_start < min_len:
-                continue
-
-            # Only iterate window lengths within feasible range
-            for win_len in range(min_len, max_len_at_start + 1):
-                read_window = read[start : start + win_len]
-
-                dist = edit_distance(read_window, barcode, "N", True)
-
-                if dist < best_dist:
-                    best_dist = dist
-                    best_span = (start, start + win_len)
-
-                    # Early exit: perfect match found
-                    if best_dist == 0:
-                        return (True, best_span[0], best_span[1], best_dist)
-
-        if best_dist <= self.max_errors:
-            return (True, best_span[0], best_span[1], best_dist)
-
-        return (False, -1, -1, best_dist)
+        return best_window(read, barcode, read_kmer_pos - bc_kmer_pos, self.max_errors)
 
     def collect_candidates(self, read: str, start_idx: int = 0) -> list[KmerCandidate]:
         """
@@ -148,6 +116,10 @@ class KmerMatcher(MatcherBase):
         them — no best-score filter is applied here — so the near misses that resolution is about
         to discard remain visible to a caller that wants them.
 
+        Candidates verified outside the component's own region of the read are discarded, so a
+        whitelist entry found where a *neighbouring* barcode belongs is never a candidate for
+        this one. See ``MatcherBase.component_window``.
+
         Args:
             read: The sequencing read to search.
             start_idx: A floor on where a seed k-mer may begin, not on where a candidate may
@@ -155,7 +127,8 @@ class KmerMatcher(MatcherBase):
                 still span back before it. Defaults to 0, which imposes no bound.
 
         Returns:
-            Every verified candidate, in the order it was verified. Empty if nothing verified.
+            Every verified candidate inside the component's window, in the order it was
+            verified. Empty if nothing verified there.
 
         Raises:
             ValueError: If the read is shorter than the seed k-mer length.
@@ -165,9 +138,25 @@ class KmerMatcher(MatcherBase):
                 f"Read segment too short for k-mer matching: read length {len(read)}, k={self.k}"
             )
 
+        # Where a candidate for this component may be located. Seeds are still scanned over the
+        # whole read from start_idx, so the seed floor keeps its documented meaning; what the
+        # window bounds is where a *verified* candidate may sit. Without it a whitelist entry
+        # that is a rotation of a neighbouring component's entry is found in that neighbour's
+        # region, and because a rotation often matches there exactly while this component's own
+        # damaged window is an edit out, it wins on edit distance outright -- no tie to break
+        # and no spacer consulted.
+        window_low, window_high = self.component_window(read, self.max_errors)
+
         candidates: list[KmerCandidate] = []
         # To avoid redundant verification of same (barcode, position)
-        candidates_seen: set[tuple[str, int]] = set()
+        seeds_seen: set[tuple[str, int]] = set()
+        # Distinct verified candidates, by entry and the span it verified at. Two seeds in the
+        # same entry can imply different starts and still converge on one best window, so
+        # skipping repeated seeds is not enough to keep the collection distinct. A duplicate is
+        # not harmless: resolution separates a tie by finding exactly one candidate carrying
+        # spacer evidence, and the same candidate counted twice never is exactly one, so a read
+        # that the spacers do resolve gets reported as unresolvable instead.
+        verified_seen: set[tuple[str, int, int]] = set()
 
         # Scan read for seed k-mers
         for i in range(start_idx, len(read) - self.k + 1):
@@ -176,17 +165,21 @@ class KmerMatcher(MatcherBase):
             if read_kmer in self.kmer_index:
                 for bc, bc_kmer_pos in self.kmer_index[read_kmer]:
                     expected_start = i - bc_kmer_pos
-                    candidate_key = (bc, expected_start)
+                    seed_key = (bc, expected_start)
 
-                    if candidate_key in candidates_seen:
+                    if seed_key in seeds_seen:
                         continue
-                    candidates_seen.add(candidate_key)
+                    seeds_seen.add(seed_key)
 
                     is_valid, start, end, edit_dist = self.extend_and_verify(
                         read, i, bc, bc_kmer_pos
                     )
 
-                    if is_valid:
+                    if not is_valid or start < window_low or end > window_high:
+                        continue
+
+                    if (bc, start, end) not in verified_seen:
+                        verified_seen.add((bc, start, end))
                         candidates.append((bc, start, end, edit_dist))
 
         return candidates
@@ -266,6 +259,16 @@ class KmerMatcher(MatcherBase):
                 if len(best_candidates_with_two_spacers) == 1:
                     best_bc, start, end, edit_dist, spacers_check = (
                         best_candidates_with_two_spacers[0]
+                    )
+                elif len({vc[0] for vc in validated_candidates}) == 1:
+                    # Several spans of one whitelist entry, not several entries. The barcode is
+                    # determined even though its exact extent is not, so this is not the
+                    # ambiguity the contract is about: reporting it as one would throw the read
+                    # away over a boundary that no downstream consumer disagrees about. The
+                    # entry's own best span is taken, ranked as everywhere else.
+                    best_bc, start, end, edit_dist, spacers_check = min(
+                        validated_candidates,
+                        key=lambda vc: (abs(vc[2] - vc[1] - len(vc[0])), vc[1]),
                     )
                 else:
                     log.debug(
