@@ -162,22 +162,20 @@ def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count, fast):
 @click.option("-c", "--chemistry", required=True, type=str, help="Chemistry name for UMI layout")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-@click.option("--raw", is_flag=True, default=False, help="Stop after raw extraction; do not correct UMIs.")
-@click.option("--temp-dir", required=False, type=click.Path(exists=True, file_okay=False, writable=True), default=None, help="Directory UMI correction spills its shard files to (default: system temp, which may be RAM-backed tmpfs). The spill takes roughly 100 bytes per accepted read (~36 GB at 400M reads), so size the volume before the run.")
-@click.option("--shard-count", required=False, type=click.IntRange(1, 1024), default=256, show_default=True, help="Number of shards UMI correction spreads reads over; more shards means lower peak memory, though past about 256 the peak stops improving. Each shard costs an open file descriptor, so a count near the cap needs a raised ulimit.")
-def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix, raw, temp_dir, shard_count):
+def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix):
     """
-    Extract raw UMIs from an annotated R1 FASTQ.
+    Extract fixed-length UMIs from an annotated R1 FASTQ.
 
-    For each annotated read the raw UMI is extracted between its left anchor (BC1, read from the
-    header) and the downstream poly-G run, then annotated onto the read with UMI / UMI_POS tags. The
-    UMI length distribution is written to a stats report. With --raw this is the terminal step; UMI
-    correction is not performed.
+    The UMI is the fixed number of bases the chemistry declares, taken immediately after its left
+    anchor (BC1, whose position is read from the header), and annotated onto the read with a UMI tag.
+    Nothing is searched for and nothing is corrected, so a read is skipped only when its anchor was
+    never recorded or when the read ends before the UMI does. The stats report carries the anchor
+    homopolymer run length observed just after the UMI, as a check that the layout is holding.
     """
 
     log.info("Extracting UMIs from annotated FASTQ file...")
     extractor = UmiExtractor(r1_annotated_fastq, chemistry)
-    extractor.extract_umis(output_dir, prefix, raw=raw, temp_dir=temp_dir, shard_count=shard_count)
+    extractor.extract_umis(output_dir, prefix)
 
 
 @carmack_cli.command("assign-targets")
@@ -190,8 +188,9 @@ def assign_targets(r1_umi_fastq, chemistry, output_dir, prefix, cpu_count):
     """
     Assign target indices from a UMI-annotated R1 FASTQ.
 
-    For each annotated read a bounded window is taken off the end of the poly-G run recorded by UMI
-    extraction, and the target index inside that window is matched against the chemistry whitelist.
+    For each annotated read the poly-G run is located from the chemistry layout and the barcode
+    position tag on the header, a bounded window is taken off the end of that run, and the target
+    index inside the window is matched against the chemistry whitelist.
     Every read is re-emitted carrying a TGIDX tag: either a whitelist entry with its TGIDX_POS span,
     or NONE. An unassigned read is an expected outcome rather than a failure - in a mixed library
     NONE is the correct answer for every scRNA read.

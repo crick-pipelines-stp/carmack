@@ -33,6 +33,16 @@ class ReadStructure:
         component still receives its concrete start. Every component after that
         first variable component is left with ``start = None`` because its
         position can only be resolved per-read.
+
+        A resolved start is the position the component occupies in a read that
+        matched the layout base for base, so it is a layout fact rather than a
+        read coordinate: an indel anywhere upstream shifts everything after it
+        and the resolved start is then wrong. A stage locating a component in a
+        real read wants a recorded anchor span from the read header plus a fixed
+        offset, which is what
+        :meth:`carmack.chemistry.chemistry_base.ChemistryBase.resolve_anchor_offset`
+        computes. Only the matchers that deliberately probe a nominal position
+        read ``start`` directly.
         """
         current_position: int | None = 0
         for comp in self.components:

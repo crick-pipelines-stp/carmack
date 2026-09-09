@@ -2,7 +2,7 @@
 
 ``AssignStats`` is the reconciling value object for a target-index assignment
 run: every input read lands in exactly one of ``matched``,
-``unmatched_no_match``, ``unmatched_no_umi_pos`` or ``unmatched_short_window``,
+``unmatched_no_match``, ``unmatched_no_left_anchor_pos`` or ``unmatched_short_window``,
 and the same object renders the plain-text ``tgidx_stats.txt`` report. These
 tests pin the value object's contract (frozen, safe division, the derived
 run-length denominator) and the report's shape: the volatile run-detail header
@@ -57,7 +57,7 @@ FIRST_COUNT_LINE = "Total reads:"
 ANCHOR_BASE = "G"
 
 # The five scalar tallies the fold has to sum termwise.
-SCALAR_FIELD_NAMES = ("total", "matched", "no_umi_pos", "short_window", "no_match")
+SCALAR_FIELD_NAMES = ("total", "matched", "no_left_anchor_pos", "short_window", "no_match")
 
 # One legal key per counter, so a test that writes into a counter writes a key of that
 # counter's own type rather than one key forced to stand for all three.
@@ -74,7 +74,7 @@ STATS_FIELD_NAMES = {
     "total": "total_reads",
     "matched": "matched",
     "no_match": "unmatched_no_match",
-    "no_umi_pos": "unmatched_no_umi_pos",
+    "no_left_anchor_pos": "unmatched_no_left_anchor_pos",
     "short_window": "unmatched_short_window",
     "target_counts": "target_counts",
     "edit_distance_counts": "edit_distance_counts",
@@ -96,7 +96,7 @@ type ReadOutcome = tuple[str, str | None, int | None, int | None]
 READS: list[ReadOutcome] = [
     ("matched", "ACGTACGT", 0, 3),
     ("matched", "GGGGCCCC", 1, 4),
-    ("no_umi_pos", None, None, None),
+    ("no_left_anchor_pos", None, None, None),
     ("matched", "ACGTACGT", 1, 3),
     ("short_window", None, None, 5),
     ("no_match", None, None, 4),
@@ -139,7 +139,7 @@ def make_stats(**overrides: object) -> AssignStats:
         "total_reads": 10,
         "matched": 6,
         "unmatched_no_match": 2,
-        "unmatched_no_umi_pos": 1,
+        "unmatched_no_left_anchor_pos": 1,
         "unmatched_short_window": 1,
         "target_counts": dict(TARGET_COUNTS),
         "edit_distance_counts": dict(EDIT_DISTANCE_COUNTS),
@@ -156,7 +156,7 @@ def make_empty_stats() -> AssignStats:
         total_reads=0,
         matched=0,
         unmatched_no_match=0,
-        unmatched_no_umi_pos=0,
+        unmatched_no_left_anchor_pos=0,
         unmatched_short_window=0,
         target_counts={},
         edit_distance_counts={},
@@ -212,7 +212,7 @@ def outcome_sum(counts: AssignCounts) -> int:
     Returns:
         The sum of the matched and the three unmatched tallies.
     """
-    return counts.matched + counts.no_match + counts.no_umi_pos + counts.short_window
+    return counts.matched + counts.no_match + counts.no_left_anchor_pos + counts.short_window
 
 
 class TestAssignStatsValueObject:
@@ -280,7 +280,7 @@ class TestAssignStatsValueObject:
         assert_that(
             stats.matched
             + stats.unmatched_no_match
-            + stats.unmatched_no_umi_pos
+            + stats.unmatched_no_left_anchor_pos
             + stats.unmatched_short_window
         ).is_equal_to(stats.total_reads)
 
@@ -371,7 +371,7 @@ class TestAssignStatsReportCounts:
             "Total reads: 10",
             "Matched: 6 (60.00%)",
             "Unmatched (no_match): 2 (20.00%)",
-            "Unmatched (no_umi_pos): 1 (10.00%)",
+            "Unmatched (no_left_anchor_pos): 1 (10.00%)",
             "Unmatched (short_window): 1 (10.00%)",
         ],
     )

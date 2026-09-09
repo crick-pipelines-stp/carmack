@@ -397,7 +397,7 @@ class BarcodeGoldenOutputChecks:
 
 class UmiGoldenOutputChecks:
     """
-    Per-file golden checks for the three UMI extraction outputs.
+    Per-file golden checks for the two UMI extraction outputs.
 
     Only chemistries defining a UMI component reach this stage, so HyDrop test classes do
     not inherit it. This class is not collected itself: it has no Test prefix.
@@ -420,15 +420,6 @@ class UmiGoldenOutputChecks:
             golden_run: The extraction run under test.
         """
         assert_report_output_matches_golden(golden_run, "umi_stats.txt")
-
-    def test_umi_map_matches_golden(self, golden_run: GoldenRun) -> None:
-        """
-        Test that the raw-to-corrected UMI map matches the golden file.
-
-        Args:
-            golden_run: The extraction run under test.
-        """
-        assert_text_output_matches_golden(golden_run, "umi_map.tsv")
 
 
 class TargetGoldenOutputChecks:
