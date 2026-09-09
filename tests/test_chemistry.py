@@ -7,18 +7,25 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cached_property
 from importlib.resources import files
+from itertools import combinations
 from pathlib import Path
 
 import pytest
 from assertpy import assert_that
 
+from carmack.barcode.barcode_utils import edit_distance
 from carmack.chemistry.chemistry_base import (
     AnchorOffset,
     ChemistryBase,
     MatchErrors,
+    WhitelistDistancePolicy,
     WhitelistSource,
+    close_whitelist_pairs,
+    deletion_variants,
+    warn_once,
 )
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
+    BC2_PATH,
     POLYG_BASE,
     POLYG_MIN_RUN,
     TGIDX_LENGTH,
@@ -1895,3 +1902,244 @@ class TestTargetIndexValidation:
         warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
         assert_that(warnings).is_empty()
         assert_that(chemistry.tgidx_whitelist()).is_length(4)
+
+
+class TestWhitelistDistanceValidation:
+    """Tests for the whitelist distance bound checked at chemistry construction.
+
+    Correcting a read to a whitelist entry is only sound while every window inside the error
+    budget has a single nearest entry. Two thresholds bound that and they differ in kind, not
+    degree: two entries within ``max_errors`` of each other mean one sequencing error turns one
+    valid barcode into *the other*, matched exactly at its expected position and reported as a
+    perfect match, which nothing downstream can detect; two entries within ``2 * max_errors``
+    only mean a window can sit equally close to both, which is observable and is now a terminal
+    ambiguity verdict. The first fails construction for a whitelist this project owns; the
+    second is reported.
+    """
+
+    @pytest.fixture(autouse=True)
+    def reset_warn_once(self):
+        """Clear the warn-once cache so each test sees its own warnings.
+
+        ``warn_once`` caches on the message so a construction-time finding is reported once per
+        process rather than once per construction. That is right in production and wrong in a
+        test, where the message a previous test already emitted would be swallowed.
+        """
+        warn_once.cache_clear()
+        yield
+        warn_once.cache_clear()
+
+    def barcode_stub_with(self, entries: tuple[str, ...], **policy_kwargs) -> ChemistryBase:
+        """Build a stub chemistry over an in-memory whitelist with the given distance policy.
+
+        Args:
+            entries: The whitelist entries for the single BC1 component.
+            **policy_kwargs: Passed to ``WhitelistDistancePolicy``.
+
+        Returns:
+            A constructed chemistry, if construction succeeds.
+        """
+        policy = WhitelistDistancePolicy(**policy_kwargs)
+
+        @dataclass
+        class PolicyStub(StubChemistry):
+            """A stub chemistry carrying a caller-supplied distance policy."""
+
+            @cached_property
+            def whitelists(self) -> dict[str, tuple[str, ...]]:
+                """Return the in-memory whitelist, bypassing file loading."""
+                return {"BC1": entries}
+
+            def whitelist_distance_policy(self) -> WhitelistDistancePolicy:
+                """Return the policy the test asked for."""
+                return policy
+
+        return PolicyStub(
+            components=(ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),)
+        )
+
+    # ==========================================
+    # deletion_variants()
+    # ==========================================
+
+    def test_deletion_variants_at_zero_is_the_sequence_itself(self):
+        """Deleting nothing leaves one variant."""
+        assert_that(deletion_variants("ACGT", 0)).is_equal_to({"ACGT"})
+
+    def test_deletion_variants_at_one_drops_each_position(self):
+        """Deleting one character gives one variant per position, plus the original."""
+        assert_that(deletion_variants("ACGT", 1)).is_equal_to({"ACGT", "CGT", "AGT", "ACT", "ACG"})
+
+    def test_deletion_variants_include_shorter_neighbourhoods(self):
+        """A wider neighbourhood contains every narrower one."""
+        narrow = deletion_variants("ACGTA", 1)
+        wide = deletion_variants("ACGTA", 2)
+
+        assert_that(narrow - wide).is_empty()
+        assert_that(len(wide)).is_greater_than(len(narrow))
+
+    # ==========================================
+    # close_whitelist_pairs()
+    # ==========================================
+
+    def test_close_whitelist_pairs_finds_a_single_substitution_pair(self):
+        """A pair one substitution apart is reported at distance one."""
+        pairs = close_whitelist_pairs(("AGCTTGAGAG", "GGCTTGAGAG", "TTTTTTTTTT"), 2)
+
+        assert_that(pairs).is_equal_to({("AGCTTGAGAG", "GGCTTGAGAG"): 1})
+
+    def test_close_whitelist_pairs_finds_a_rotation(self):
+        """A pair related by a rotation is two edits apart, not ten.
+
+        Hamming distance would call these maximally different, which is why the check is on
+        edit distance: a rotation is one deletion and one insertion, well inside a budget of
+        two, and rotations do occur between the shipped barcode sets.
+        """
+        pairs = close_whitelist_pairs(("TTAGTTGGAC", "TAGTTGGACT"), 2)
+
+        assert_that(pairs).is_equal_to({("TAGTTGGACT", "TTAGTTGGAC"): 2})
+
+    def test_close_whitelist_pairs_reports_nothing_for_a_spread_whitelist(self):
+        """Entries further apart than the bound are not reported."""
+        assert_that(
+            close_whitelist_pairs(("AAAAAAAAAA", "CCCCCCCCCC", "GGGGGGGGGG"), 2)
+        ).is_empty()
+
+    def test_close_whitelist_pairs_agrees_with_direct_comparison(self):
+        """The bucketed scan finds exactly what comparing every pair finds.
+
+        The scan buckets entries by their deletion neighbourhoods so only colliding pairs need
+        measuring, which is what keeps it off the critical path of a chemistry built at import
+        time. That optimisation is only worth anything if it is exact.
+        """
+        entries = tuple(
+            line.strip() for line in BC2_PATH.open("r", encoding="utf-8") if line.strip()
+        )
+        for bound in (1, 2):
+            expected = {
+                tuple(sorted((first, second))): edit_distance(first, second, "N", False)
+                for first, second in combinations(entries, 2)
+                if edit_distance(first, second, "N", False) <= bound
+            }
+            assert_that(close_whitelist_pairs(entries, bound)).is_equal_to(expected)
+
+    # ==========================================
+    # Construction-time enforcement
+    # ==========================================
+
+    def test_construction_raises_on_a_pair_inside_the_error_budget(self):
+        """A pair within max_errors fails construction for a whitelist we own."""
+        with pytest.raises(ValueError) as excinfo:
+            self.barcode_stub_with(("AGCTTGAGAG", "GGCTTGAGAG", "TTTTTTTTTT"))
+
+        assert_that(str(excinfo.value)).contains("within its error budget of 1")
+        assert_that(str(excinfo.value)).contains("AGCTTGAGAG")
+        assert_that(str(excinfo.value)).contains("GGCTTGAGAG")
+
+    def test_construction_succeeds_for_a_spread_whitelist(self, caplog):
+        """A whitelist spread beyond twice the budget constructs silently."""
+        with caplog.at_level(logging.WARNING, logger=CHEMISTRY_BASE_LOGGER):
+            chemistry = self.barcode_stub_with(("AAAAAAAAAA", "CCCCCCCCCC", "GGGGGGGGGG"))
+
+        assert_that(chemistry.whitelists["BC1"]).is_length(3)
+        assert_that([r for r in caplog.records if r.name == CHEMISTRY_BASE_LOGGER]).is_empty()
+
+    def test_an_exempted_pair_warns_rather_than_raising(self, caplog):
+        """An explicitly declared pair is accepted, and still reported on every run.
+
+        The reads such a pair misattributes are indistinguishable from correct ones, so this
+        warning is the only place the blind spot surfaces at all. Accepting it silently would
+        hide exactly the defect the check exists to name.
+        """
+        with caplog.at_level(logging.WARNING, logger=CHEMISTRY_BASE_LOGGER):
+            chemistry = self.barcode_stub_with(
+                ("AGCTTGAGAG", "GGCTTGAGAG", "TTTTTTTTTT"),
+                exempt_pairs=frozenset({frozenset({"AGCTTGAGAG", "GGCTTGAGAG"})}),
+            )
+
+        messages = [r.getMessage() for r in caplog.records if r.name == CHEMISTRY_BASE_LOGGER]
+        assert_that(chemistry.whitelists["BC1"]).is_length(3)
+        assert_that(messages).is_length(1)
+        assert_that(messages[0]).contains("declared exemptions")
+
+    def test_a_non_enforcing_policy_warns_rather_than_raising(self, caplog):
+        """A whitelist this project does not own is reported, not refused.
+
+        Refusing to construct would make the chemistry unusable while leaving the underlying
+        risk exactly where it was, because the whitelist belongs to someone else's published
+        protocol and retiring an entry from it is not ours to do.
+        """
+        with caplog.at_level(logging.WARNING, logger=CHEMISTRY_BASE_LOGGER):
+            chemistry = self.barcode_stub_with(
+                ("AGCTTGAGAG", "GGCTTGAGAG", "TTTTTTTTTT"), enforce=False
+            )
+
+        messages = [r.getMessage() for r in caplog.records if r.name == CHEMISTRY_BASE_LOGGER]
+        assert_that(chemistry.whitelists["BC1"]).is_length(3)
+        assert_that(messages).is_length(1)
+        assert_that(messages[0]).contains("within its error budget of 1")
+
+    def test_a_single_entry_whitelist_has_no_pairs_to_check(self, caplog):
+        """A whitelist with nothing to confuse itself with constructs silently."""
+        with caplog.at_level(logging.WARNING, logger=CHEMISTRY_BASE_LOGGER):
+            chemistry = self.barcode_stub_with(("AGCTTGAGAG",))
+
+        assert_that(chemistry.whitelists["BC1"]).is_length(1)
+        assert_that([r for r in caplog.records if r.name == CHEMISTRY_BASE_LOGGER]).is_empty()
+
+    # ==========================================
+    # match_errors_for()
+    # ==========================================
+
+    @pytest.mark.parametrize(
+        "component_type, expected",
+        [
+            (ReadComponentType.BARCODE, 1),
+            (ReadComponentType.TGIDX, 1),
+            (ReadComponentType.PRIMER, None),
+            (ReadComponentType.UMI, None),
+        ],
+    )
+    def test_match_errors_for_reports_the_budget_of_whitelisted_types_only(
+        self, component_type, expected
+    ):
+        """Only components matched against a whitelist have a distance requirement."""
+        chemistry = ChemistryCarmackCustomSeq10()
+        component = ReadComponent(name="X", type=component_type, length=8)
+
+        assert_that(chemistry.match_errors_for(component)).is_equal_to(expected)
+
+    # ==========================================
+    # The shipped chemistries
+    # ==========================================
+
+    def test_shipped_custom_seq_chemistry_constructs_and_reports_its_known_pair(self, caplog):
+        """The shipped chemistry constructs, and names the BC2 pair it ships with.
+
+        BC2 holds two entries one substitution apart at a barcode budget of one, which is
+        undetectable in code and fixable only by retiring an entry -- a barcode-design decision
+        about a plate well and about libraries already sequenced. Until that is taken the pair
+        is declared in the chemistry, so construction succeeds and every run says so.
+        """
+        with caplog.at_level(logging.WARNING, logger=CHEMISTRY_BASE_LOGGER):
+            ChemistryCarmackCustomSeq10()
+
+        messages = [r.getMessage() for r in caplog.records if r.name == CHEMISTRY_BASE_LOGGER]
+        assert_that(messages).is_length(1)
+        assert_that(messages[0]).contains("BC2")
+        assert_that(messages[0]).contains("declared exemptions")
+
+    def test_shipped_hydrop_chemistry_constructs_despite_violating_the_bound(self, caplog):
+        """HyDrop constructs and warns, because its whitelist is not ours to change.
+
+        HyDrop's sets share their 10bp cores with the custom_seq sets and are used at twice the
+        error budget, so every one of its three whitelists holds pairs well inside that budget.
+        """
+        with caplog.at_level(logging.WARNING, logger=CHEMISTRY_BASE_LOGGER):
+            chemistry = ChemistryHydrop()
+
+        messages = [r.getMessage() for r in caplog.records if r.name == CHEMISTRY_BASE_LOGGER]
+        assert_that(chemistry.barcode_whitelists).is_length(3)
+        assert_that(messages).is_length(3)
+        for message in messages:
+            assert_that(message).contains("within its error budget of 2")
