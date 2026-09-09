@@ -2,7 +2,7 @@
 
 The extractor reads an annotated R1 FASTQ and takes the UMI as a fixed-length
 slice starting where its left anchor ends (BC1, read from the header ``BC1_POS``
-tag), annotating the read with a ``UMI`` tag. Nothing is searched for, so most of
+tag), annotating the read with ``UMI`` and ``UMI_POS`` tags. Nothing is searched for, so most of
 these tests are about what the slice contains whatever follows it, which reads
 are skipped, and the reconciling stats; the rest cover the report and the CLI
 wiring.
@@ -17,7 +17,7 @@ from assertpy import assert_that
 from click.testing import CliRunner
 
 import carmack.__main__
-from carmack.chemistry.annotation import format_span, position_key
+from carmack.chemistry.annotation import format_span, parse_span, position_key
 from carmack.io.read_annotation import ReadAnnotation
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.umi.umi_reporting import UmiExtractionStats
@@ -237,19 +237,39 @@ class TestExtractUmis:
         assert_that(stats.accepted).is_equal_to(1)
         assert_that(list(extracted_umis(tmp_path / "out.r1_umi.fastq.gz"))).is_equal_to(["good"])
 
-    def test_no_umi_pos_tag_is_written(self, build_extractor, tmp_path) -> None:
-        """A fixed-length UMI needs no span, so the tag is gone from the output.
+    def test_umi_pos_span_is_written_and_indexes_the_umi(self, build_extractor, tmp_path) -> None:
+        """The span is the fixed slice, and slicing the read by it returns the UMI.
 
-        Target assignment used to read the anchor run start back out of it, and
-        now computes that coordinate from the chemistry instead.
+        Asserted against the read rather than against the expected numbers alone,
+        so the tag is checked to be a usable coordinate and not merely present.
         """
-        records = [make_read("a", "ACTACTAC", 4), make_read("b", "ACTACTA", 5)]
+        records = [make_read("a", "ACTACTAC", 4), make_read("b", "GGCATCAT", 5)]
         build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
 
-        text = gzip.decompress((tmp_path / "out.r1_umi.fastq.gz").read_bytes()).decode()
-        assert_that(text).does_not_contain("UMI_POS")
-        for header, *_ in read_fastq(tmp_path / "out.r1_umi.fastq.gz"):
-            assert_that(ReadAnnotation.parse(header[1:]).get("UMI_POS")).is_none()
+        for header, seq, _plus, _qual in read_fastq(tmp_path / "out.r1_umi.fastq.gz"):
+            ann = ReadAnnotation.parse(header[1:])
+            start, end = parse_span(ann.get(position_key("UMI")))
+            assert_that((start, end)).is_equal_to((UMI_START, UMI_START + UMI_LENGTH))
+            assert_that(seq[start:end]).is_equal_to(ann.get("UMI"))
+
+    def test_umi_pos_follows_the_recorded_anchor_rather_than_a_nominal_start(
+        self, build_extractor, tmp_path
+    ) -> None:
+        """An upstream indel moves BC1_POS, and the span moves with it.
+
+        The whole point of measuring off the recorded anchor is that the span is
+        a read coordinate, not the layout's nominal one.
+        """
+        shifted = 23
+        records = [make_read("shifted", "ACTACTAC", 4, umi_start=shifted)]
+        build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        header, seq, _plus, _qual = read_fastq(tmp_path / "out.r1_umi.fastq.gz")[0]
+        ann = ReadAnnotation.parse(header[1:])
+        assert_that(parse_span(ann.get(position_key("UMI")))).is_equal_to(
+            (shifted, shifted + UMI_LENGTH)
+        )
+        assert_that(seq[shifted : shifted + UMI_LENGTH]).is_equal_to("ACTACTAC")
 
     def test_no_corrected_umi_tag_or_map_is_written(self, build_extractor, tmp_path) -> None:
         """Correction is gone: no UB tag, and no umi_map.tsv alongside the outputs."""

@@ -5,7 +5,7 @@ anchor run start it has already read from the annotated header, and these functi
 return the short slice of the read the target index must lie within, so matching never
 scans a whole read.
 
-The two steps are deliberately separate. :func:`homopolymer_run_end` needs the anchor
+The two steps are deliberately separate. :func:`locate_anchor_run` needs the anchor
 base, to count the run forward. :func:`locate_tgidx_window` needs only the run end that
 scan produces, because once the run's right edge is known the window is arithmetic on
 lengths alone.
@@ -147,7 +147,7 @@ def locate_tgidx_window(
     so an index beginning with the anchor base has nowhere to slide along the run.
 
     The anchor base is not needed here. Once the run's end is known the window is
-    arithmetic on lengths alone; see :func:`homopolymer_run_end` for the scan that
+    arithmetic on lengths alone; see :func:`locate_anchor_run` for the scan that
     produces it.
 
     Args:

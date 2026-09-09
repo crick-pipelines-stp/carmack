@@ -167,8 +167,8 @@ def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix):
     Extract fixed-length UMIs from an annotated R1 FASTQ.
 
     The UMI is the fixed number of bases the chemistry declares, taken immediately after its left
-    anchor (BC1, whose position is read from the header), and annotated onto the read with a UMI tag.
-    Nothing is searched for and nothing is corrected, so a read is skipped only when its anchor was
+    anchor (BC1, whose position is read from the header), and annotated onto the read with UMI and
+    UMI_POS tags. Nothing is searched for and nothing is corrected, so a read is skipped only when its anchor was
     never recorded or when the read ends before the UMI does. The stats report carries the anchor
     homopolymer run length observed just after the UMI, as a check that the layout is holding.
     """

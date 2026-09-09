@@ -84,7 +84,7 @@ class AssignStats:
         Derived from the run-length counter rather than stored alongside it, so
         the two cannot drift apart and the outcome invariant gains no extra term.
         It is the denominator of the run-length distribution: a read only reaches
-        the forward scan once its UMI position tag is in hand, so the reads
+        the forward scan once its anchor position tag is in hand, so the reads
         counted here are a subset of ``total_reads``.
         """
         return sum(self.homopolymer_run_counts.values())

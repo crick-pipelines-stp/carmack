@@ -91,14 +91,20 @@ class ReadComponent:
 
     @property
     def records_position(self) -> bool:
-        """Return whether extraction writes this component's position to the read header.
+        """Return whether barcode extraction writes this component's position down.
 
-        Only barcode components have their span recorded: barcode extraction
-        writes a ``<NAME>`` and a ``<NAME>_POS`` tag for each one and for nothing
-        else. This is deliberately separate from :attr:`is_anchor`, and neither
-        implies the other -- an anchor is a component that *can* be located
-        within a read, while this says the position it was found at is written
-        down and so can be read back by a later stage. A primer anchors a
-        neighbour perfectly well and records nothing.
+        Barcode extraction is the first stage to run and writes a ``<NAME>`` and
+        a ``<NAME>_POS`` tag for each barcode and for nothing else, so a barcode
+        span is the only coordinate a read carries that every later stage can
+        rely on. Narrower than "some stage records this": UMI extraction also
+        writes a ``UMI_POS``, and that span is deliberately excluded here,
+        because a stage that anchored on it would be made to depend on UMI
+        extraction having run first.
+
+        This is deliberately separate from :attr:`is_anchor`, and neither implies
+        the other -- an anchor is a component that *can* be located within a
+        read, while this says the position it was found at is written down early
+        enough to be read back. A primer anchors a neighbour perfectly well and
+        records nothing.
         """
         return self.type is ReadComponentType.BARCODE

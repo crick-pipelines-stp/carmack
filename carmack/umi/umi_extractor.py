@@ -4,7 +4,14 @@ The UMI is defined positionally: the fixed number of bases the chemistry
 declares, taken immediately after the component the UMI hangs off. That
 component's span is read from the annotated header written by barcode
 extraction, so the slice absorbs any upstream indel that moved it. Each read is
-annotated with a ``UMI`` tag and re-emitted.
+annotated with a ``UMI`` tag and a ``UMI_POS`` span, then re-emitted.
+
+The span is written because a tag naming a sequence says nothing about where in
+the read that sequence came from, and every other extracted component records
+its own coordinates. It is not read back by any later stage: target assignment
+derives the same coordinate from the chemistry, so the two stay independent and
+this span is a record of what was cut, for a consumer that wants to trim or
+re-inspect the read, not a channel between stages.
 
 There is nothing to search for and nothing to correct. The boundary is not
 inferred from the read, so no read is rejected for failing to present one, and
@@ -23,7 +30,7 @@ from collections import Counter
 from itertools import chain
 from pathlib import Path
 
-from carmack.chemistry.annotation import parse_span
+from carmack.chemistry.annotation import format_span, parse_span
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.read_component import ReadComponentType
 from carmack.io.fastq_file import FastqFile
@@ -67,6 +74,7 @@ class UmiExtractor:
         located = self.chemistry.resolve_anchor_offset(umi)
 
         self.umi_name = umi.name
+        self.umi_pos_key = umi.position_key
         self.umi_length = umi.length
         self.anchor_pos_key = located.position_key
         self.umi_offset = located.offset
@@ -168,6 +176,9 @@ class UmiExtractor:
                     continue
 
                 ann.set(self.umi_name, seq[umi_start:umi_end])
+                # Always the full fixed width: a read that could only yield a
+                # short span was counted truncated above and never reaches here.
+                ann.set(self.umi_pos_key, format_span(umi_start, umi_end))
                 FastqFile.write_read(umi_stream, ann.render(), seq, qual)
 
                 accepted += 1

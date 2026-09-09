@@ -192,7 +192,7 @@ class TargetAssigner:
         """Assign a target index to one read and tally the outcome it took.
 
         The read takes exactly one of four mutually exclusive outcomes - matched,
-        no UMI position tag, short window, no match - and each bumps one tally,
+        no anchor position tag, short window, no match - and each bumps one tally,
         so the four always sum to the reads tallied.
 
         Args:
@@ -291,8 +291,8 @@ class TargetAssigner:
             The reconciling :class:`AssignStats` for the run.
 
         Raises:
-            ValueError: If the first annotated read carries no UMI position tag,
-                raised before any output file is opened.
+            ValueError: If the first annotated read carries no anchor position
+                tag, raised before any output file is opened.
         """
         log.info(f"Assigning target indices in {self.fastq.filename}...")
 
@@ -304,8 +304,8 @@ class TargetAssigner:
         counts = AssignCounts()
 
         # Validate the first read's header before opening either output file, so
-        # a FASTQ that never went through extract-umis fails fast and leaves no
-        # truncated outputs behind to be mistaken for a completed run. The read
+        # a FASTQ that never went through extract-barcodes fails fast and leaves
+        # no truncated outputs behind to be mistaken for a completed run. The read
         # is pushed back onto the iterator rather than consumed, since validating
         # it is not the same as processing it.
         reads = self.fastq.open_read_iterator(as_string=True)
