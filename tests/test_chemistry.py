@@ -12,13 +12,17 @@ from pathlib import Path
 import pytest
 from assertpy import assert_that
 
-from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors, WhitelistSource
+from carmack.chemistry.chemistry_base import (
+    AnchorOffset,
+    ChemistryBase,
+    MatchErrors,
+    WhitelistSource,
+)
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
     POLYG_BASE,
     POLYG_MIN_RUN,
     TGIDX_LENGTH,
     UMI_LENGTH,
-    UMI_LENGTH_TOLERANCE,
     ChemistryCarmackCustomSeq10,
 )
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0_primd import (
@@ -106,15 +110,14 @@ class TestReadComponent:
         assert_that(comp.length).is_equal_to(22)
 
     def test_umi_component_valid(self) -> None:
-        """A UMI component accepts a positive length and non-negative tolerance."""
-        comp = ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=1)
-        assert_that(comp.length).is_equal_to(8)
-        assert_that(comp.length_tolerance).is_equal_to(1)
-
-    def test_umi_component_default_tolerance_is_zero(self) -> None:
-        """A UMI component without an explicit tolerance defaults to zero."""
+        """A UMI component accepts a positive length."""
         comp = ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8)
-        assert_that(comp.length_tolerance).is_equal_to(0)
+        assert_that(comp.length).is_equal_to(8)
+
+    def test_umi_component_is_fixed_length(self) -> None:
+        """A UMI occupies exactly its declared length, carrying no jitter."""
+        comp = ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8)
+        assert_that(comp.is_variable_length).is_false()
 
     def test_homopolymer_component_valid(self) -> None:
         """A homopolymer requires a single base and positive min_run; length may be None."""
@@ -151,11 +154,6 @@ class TestReadComponent:
         """Every non-homopolymer component type requires a length."""
         with pytest.raises(ValueError, match="length must be positive"):
             ReadComponent(name="X", type=component_type, length=None)
-
-    def test_umi_component_rejects_negative_tolerance(self) -> None:
-        """A UMI component rejects a negative length tolerance."""
-        with pytest.raises(ValueError, match="non-negative length_tolerance"):
-            ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=-1)
 
     @pytest.mark.parametrize("base", [None, "N", "GG", "g"])
     def test_homopolymer_component_rejects_invalid_base(self, base: str | None) -> None:
@@ -211,12 +209,6 @@ class TestReadComponent:
             (ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8), False),
             (
                 ReadComponent(
-                    name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=1
-                ),
-                True,
-            ),
-            (
-                ReadComponent(
                     name="HP",
                     type=ReadComponentType.HOMOPOLYMER,
                     homopolymer_base="G",
@@ -227,39 +219,217 @@ class TestReadComponent:
         ],
     )
     def test_is_variable_length(self, component: ReadComponent, expected: bool) -> None:
-        """is_variable_length reflects tolerance, homopolymer type, or unknown length."""
+        """is_variable_length reflects homopolymer type or unknown length."""
         assert_that(component.is_variable_length).is_equal_to(expected)
 
     @pytest.mark.parametrize(
-        "component,expected",
+        "component_type,expected",
         [
-            (ReadComponent(name="BC", type=ReadComponentType.BARCODE, length=10), 10),
-            (
-                ReadComponent(
-                    name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=1
-                ),
-                7,
-            ),
-            (
-                ReadComponent(
-                    name="HP",
-                    type=ReadComponentType.HOMOPOLYMER,
-                    homopolymer_base="G",
-                    min_run=3,
-                ),
-                3,
-            ),
+            (ReadComponentType.BARCODE, True),
+            (ReadComponentType.PRIMER, False),
+            (ReadComponentType.HOMOPOLYMER, False),
+            (ReadComponentType.UMI, False),
+            (ReadComponentType.TGIDX, False),
+            (ReadComponentType.OTHER, False),
         ],
     )
-    def test_min_length(self, component: ReadComponent, expected: int) -> None:
-        """min_length returns the minimum bases occupied per component type."""
-        assert_that(component.min_length).is_equal_to(expected)
+    def test_records_position(self, component_type: ReadComponentType, expected: bool) -> None:
+        """Only barcodes have their position written to the read header."""
+        comp = ReadComponent(
+            name="X",
+            type=component_type,
+            length=10,
+            homopolymer_base="G" if component_type is ReadComponentType.HOMOPOLYMER else None,
+            min_run=3 if component_type is ReadComponentType.HOMOPOLYMER else None,
+        )
+        assert_that(comp.records_position).is_equal_to(expected)
 
-    def test_min_length_none_when_length_unknown_and_not_homopolymer(self) -> None:
-        """min_length is None when a non-homopolymer component has no known length."""
-        comp = ReadComponent(name="X", type=ReadComponentType.OTHER, length=5)
-        comp.length = None
-        assert_that(comp.min_length).is_none()
+    def test_records_position_is_not_implied_by_is_anchor(self) -> None:
+        """A primer anchors a neighbour without its position ever being recorded.
+
+        The two properties are consulted together by the anchor-offset walk, and
+        conflating them would have it return a component whose position tag is
+        never written.
+        """
+        primer = ReadComponent(name="PRIMER_A", type=ReadComponentType.PRIMER, length=22)
+        assert_that(primer.is_anchor).is_true()
+        assert_that(primer.records_position).is_false()
+
+
+class TestResolveAnchorOffset:
+    """The leftward walk that locates a component against a recorded anchor.
+
+    The walk is what replaced reading a coordinate back out of a UMI span: it
+    turns "where does this component start" into chemistry arithmetic over a
+    barcode position tag, so a stage no longer depends on which neighbour an
+    earlier stage happened to record.
+    """
+
+    @staticmethod
+    def build(components: list[ReadComponent]) -> ChemistryBase:
+        """Return a chemistry over the given read structure.
+
+        Subclasses the shipped chemistry rather than ``ChemistryBase`` directly,
+        following the pattern the target-assigner tests use, so the barcode and
+        target-index whitelists construction validates against come for free.
+        """
+
+        class Synthetic(ChemistryCarmackCustomSeq10):
+            @cached_property
+            def name(self) -> str:
+                return "synthetic"
+
+            @cached_property
+            def read_structure(self) -> ReadStructure:
+                return ReadStructure(components)
+
+        return Synthetic()
+
+    @staticmethod
+    def polyg() -> ReadComponent:
+        """Return a poly-G homopolymer component."""
+        return ReadComponent(
+            name="POLYG", type=ReadComponentType.HOMOPOLYMER, homopolymer_base="G", min_run=3
+        )
+
+    def test_offset_is_zero_for_an_immediate_anchor(self) -> None:
+        """A component sitting directly on a barcode is at that barcode's span end."""
+        target = self.polyg()
+        chemistry = self.build(
+            [ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10), target]
+        )
+        assert_that(chemistry.resolve_anchor_offset(target)).is_equal_to(
+            AnchorOffset(anchor=chemistry.read_structure.get_component_by_name("BC1"), offset=0)
+        )
+
+    def test_offset_sums_one_crossed_component(self) -> None:
+        """Crossing a fixed-length UMI puts the run that many bases past the anchor."""
+        target = self.polyg()
+        chemistry = self.build(
+            [
+                ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8),
+                target,
+            ]
+        )
+        located = chemistry.resolve_anchor_offset(target)
+        assert_that(located.anchor.name).is_equal_to("BC1")
+        assert_that(located.offset).is_equal_to(8)
+        assert_that(located.position_key).is_equal_to("BC1_POS")
+
+    def test_offset_sums_several_crossed_components(self) -> None:
+        """A fixed-length linker between the UMI and the run is simply crossed too.
+
+        The old coordinate scheme rejected this layout outright, because the run
+        start was read off the end of the UMI span and a linker would have put
+        the window on the linker instead.
+        """
+        target = self.polyg()
+        chemistry = self.build(
+            [
+                ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8),
+                ReadComponent(name="LINKER", type=ReadComponentType.OTHER, length=10),
+                target,
+            ]
+        )
+        located = chemistry.resolve_anchor_offset(target)
+        assert_that(located.anchor.name).is_equal_to("BC1")
+        assert_that(located.offset).is_equal_to(18)
+
+    def test_variable_component_before_the_anchor_raises(self) -> None:
+        """A variable component in between makes the distance not a fixed number."""
+        target = ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8)
+        chemistry = self.build(
+            [
+                ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                self.polyg(),
+                target,
+            ]
+        )
+        with pytest.raises(ValueError, match="variable-length component 'POLYG'"):
+            chemistry.resolve_anchor_offset(target)
+
+    def test_no_anchor_to_the_left_raises(self) -> None:
+        """A component with nothing 5' of it cannot be located at all."""
+        target = self.polyg()
+        chemistry = self.build([target])
+        with pytest.raises(ValueError, match="no anchor 5' of component 'POLYG'"):
+            chemistry.resolve_anchor_offset(target)
+
+    def test_anchor_whose_position_is_not_recorded_raises(self) -> None:
+        """A primer anchors the run but never has its position written down.
+
+        This is the case ``records_position`` exists for. Testing ``is_anchor``
+        alone would return the primer here, and the stage would then look up a
+        ``PRIMER_A_POS`` tag that barcode extraction never writes, making every
+        read in the run look like it was missing its anchor.
+        """
+        target = self.polyg()
+        chemistry = self.build(
+            [ReadComponent(name="PRIMER_A", type=ReadComponentType.PRIMER, length=22), target]
+        )
+        with pytest.raises(ValueError, match="no anchor 5' of component 'POLYG'"):
+            chemistry.resolve_anchor_offset(target)
+
+    @pytest.mark.parametrize(
+        "chemistry_name,expected_offset",
+        [("carmack_custom_seq_1_0", 8), ("carmack_custom_seq_1_0_primd", 8)],
+    )
+    def test_shipped_chemistries_locate_the_run_from_bc1(
+        self, chemistry_name: str, expected_offset: int
+    ) -> None:
+        """Both shipped chemistries measure the poly-G run off BC1, across the UMI."""
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+        located = chemistry.resolve_anchor_offset(chemistry.tgidx_anchor())
+        assert_that(located.anchor.name).is_equal_to("BC1")
+        assert_that(located.offset).is_equal_to(expected_offset)
+        assert_that(located.position_key).is_equal_to("BC1_POS")
+
+
+class TestUmiRightAnchor:
+    """The diagnostic-only lookup of the component 3' of the UMI.
+
+    Nothing about extracting the UMI consults it -- the slice is taken off the
+    left anchor -- so every way it comes back empty has to leave extraction
+    working and merely drop the anchor-run section from the report. Built over
+    synthetic structures because no shipped chemistry has a UMI whose right
+    neighbour cannot anchor it.
+    """
+
+    build = staticmethod(TestResolveAnchorOffset.build)
+
+    @staticmethod
+    def umi() -> ReadComponent:
+        """Return a fixed-length UMI component."""
+        return ReadComponent(name="UMI", type=ReadComponentType.UMI, length=UMI_LENGTH)
+
+    def test_non_anchor_neighbour_is_not_returned(self) -> None:
+        """A UMI followed by something that cannot anchor it has no right anchor."""
+        chemistry = self.build(
+            [
+                ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                self.umi(),
+                ReadComponent(name="LINKER", type=ReadComponentType.OTHER, length=10),
+            ]
+        )
+        assert_that(chemistry.umi_right_anchor()).is_none()
+        assert_that(chemistry.supports_umi_extraction()).is_true()
+
+    def test_umi_at_the_end_of_the_read_has_no_right_anchor(self) -> None:
+        """With nothing 3' of the UMI at all there is no neighbour to inspect."""
+        chemistry = self.build(
+            [
+                ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
+                self.umi(),
+            ]
+        )
+        assert_that(chemistry.umi_right_anchor()).is_none()
+        assert_that(chemistry.supports_umi_extraction()).is_true()
+
+    def test_chemistry_with_no_umi_has_no_right_anchor(self) -> None:
+        """The lookup short-circuits rather than asking for a neighbour of nothing."""
+        assert_that(ChemistryHydrop().umi_right_anchor()).is_none()
 
 
 class TestReadStructure:
@@ -400,19 +570,21 @@ class TestComputeStartPositionsVariable:
         """The fixed prefix and first variable component keep starts; later ones are None."""
         components = [
             ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10),
-            ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=1),
+            ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8),
             ReadComponent(
                 name="polyG",
                 type=ReadComponentType.HOMOPOLYMER,
                 homopolymer_base="G",
                 min_run=3,
             ),
+            ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=8),
         ]
         ReadStructure(components)
         starts = {comp.name: comp.start for comp in components}
         assert_that(starts["BC1"]).is_equal_to(0)
         assert_that(starts["UMI"]).is_equal_to(10)
-        assert_that(starts["polyG"]).is_none()
+        assert_that(starts["polyG"]).is_equal_to(18)
+        assert_that(starts["TGIDX"]).is_none()
 
     def test_homopolymer_first_variable_gets_start_then_none(self) -> None:
         """A homopolymer as the first variable component still gets a concrete start."""
@@ -827,7 +999,6 @@ class TestChemistryCarmackCustomSeq10:
         umi = read_structure.get_component_by_name("UMI")
         assert_that(umi.type).is_equal_to(ReadComponentType.UMI)
         assert_that(umi.length).is_equal_to(8)
-        assert_that(umi.length_tolerance).is_equal_to(1)
 
         polyg = read_structure.get_component_by_name("POLYG")
         assert_that(polyg.type).is_equal_to(ReadComponentType.HOMOPOLYMER)
@@ -842,7 +1013,6 @@ class TestChemistryCarmackCustomSeq10:
     def test_module_constants(self):
         """The magic numbers are exposed as discoverable module constants."""
         assert_that(UMI_LENGTH).is_equal_to(8)
-        assert_that(UMI_LENGTH_TOLERANCE).is_equal_to(1)
         assert_that(POLYG_BASE).is_equal_to("G")
         assert_that(POLYG_MIN_RUN).is_equal_to(3)
         assert_that(TGIDX_LENGTH).is_equal_to(8)
@@ -854,13 +1024,13 @@ class TestChemistryCarmackCustomSeq10:
         assert_that(umi.name).is_equal_to("UMI")
         assert_that(umi.type).is_equal_to(ReadComponentType.UMI)
 
-    def test_umi_left_anchor_is_bc1(self, chemistry: ChemistryCarmackCustomSeq10):
-        """The UMI left anchor is BC1 and it is an anchor component."""
-        left_anchor = chemistry.umi_left_anchor()
-        assert_that(left_anchor).is_not_none()
-        assert_that(left_anchor.name).is_equal_to("BC1")
-        assert_that(left_anchor.type).is_equal_to(ReadComponentType.BARCODE)
-        assert_that(left_anchor.is_anchor).is_true()
+    def test_umi_is_measured_from_bc1(self, chemistry: ChemistryCarmackCustomSeq10):
+        """The UMI hangs directly off BC1, so its offset from that anchor is zero."""
+        located = chemistry.resolve_anchor_offset(chemistry.umi_component())
+        assert_that(located.anchor.name).is_equal_to("BC1")
+        assert_that(located.anchor.type).is_equal_to(ReadComponentType.BARCODE)
+        assert_that(located.offset).is_equal_to(0)
+        assert_that(located.position_key).is_equal_to("BC1_POS")
 
     def test_umi_right_anchor_is_polyg(self, chemistry: ChemistryCarmackCustomSeq10):
         """The UMI right anchor is the poly-G homopolymer and it is an anchor."""
@@ -873,14 +1043,13 @@ class TestChemistryCarmackCustomSeq10:
     def test_chemistry_exposes_umi_and_polyg_parameters(
         self, chemistry: ChemistryCarmackCustomSeq10
     ):
-        """UMI length/tolerance and poly-G base/min-run are exposed via the accessors."""
+        """UMI length and poly-G base/min-run are exposed via the accessors."""
         assert_that(chemistry.umi_component().length).is_equal_to(8)
-        assert_that(chemistry.umi_component().length_tolerance).is_equal_to(1)
         assert_that(chemistry.umi_right_anchor().homopolymer_base).is_equal_to("G")
         assert_that(chemistry.umi_right_anchor().min_run).is_equal_to(3)
 
     def test_supports_umi_extraction_true(self, chemistry: ChemistryCarmackCustomSeq10):
-        """custom_seq_1_0 supports UMI extraction (UMI anchored on its left by BC1)."""
+        """custom_seq_1_0 declares a UMI, so it supports UMI extraction."""
         assert_that(chemistry.supports_umi_extraction()).is_true()
 
     def test_tgidx_component_and_anchor_accessors(self, chemistry: ChemistryCarmackCustomSeq10):
@@ -907,7 +1076,10 @@ class TestChemistryCarmackCustomSeq10:
             "PRIMER_A": 42,
             "BC1": 64,
             "UMI": 74,
-            "POLYG": None,
+            # Resolves now that the UMI is fixed-length. It is a layout fact, not a
+            # read coordinate: an upstream indel invalidates it, which is why the
+            # stages locate the run from a recorded anchor span instead.
+            "POLYG": 82,
             "TGIDX": None,
         }
         for component in read_structure:
@@ -1000,11 +1172,12 @@ class TestChemistryCarmackCustomSeq10PrimD:
             base_comp = base.read_structure.get_component_by_name(name)
             assert_that(variant_comp.type).is_equal_to(base_comp.type)
             assert_that(variant_comp.length).is_equal_to(base_comp.length)
-            assert_that(variant_comp.length_tolerance).is_equal_to(base_comp.length_tolerance)
             assert_that(variant_comp.homopolymer_base).is_equal_to(base_comp.homopolymer_base)
             assert_that(variant_comp.min_run).is_equal_to(base_comp.min_run)
 
-        assert_that(chemistry.umi_left_anchor().name).is_equal_to("BC1")
+        assert_that(
+            chemistry.resolve_anchor_offset(chemistry.umi_component()).anchor.name
+        ).is_equal_to("BC1")
         assert_that(chemistry.umi_right_anchor().name).is_equal_to("POLYG")
 
     def test_supports_umi_extraction_true(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
@@ -1030,7 +1203,7 @@ class TestChemistryCarmackCustomSeq10PrimD:
             "PRIMER_A": 64,
             "BC1": 86,
             "UMI": 96,
-            "POLYG": None,
+            "POLYG": 104,
             "TGIDX": None,
         }
         for component in read_structure:
@@ -1147,7 +1320,7 @@ class TestChemistryHydrop:
     def test_umi_component_is_none(self, chemistry: ChemistryHydrop):
         """A barcode-only chemistry has no UMI component."""
         assert_that(chemistry.umi_component()).is_none()
-        assert_that(chemistry.umi_left_anchor()).is_none()
+        assert_that(chemistry.umi_component()).is_none()
         assert_that(chemistry.umi_right_anchor()).is_none()
 
     def test_supports_umi_extraction_false(self, chemistry: ChemistryHydrop):

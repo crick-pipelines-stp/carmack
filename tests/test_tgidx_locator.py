@@ -26,8 +26,9 @@ import pytest
 from assertpy import assert_that
 
 from carmack.assign_targets.tgidx_locator import (
+    ANCHOR_RUN_MAX_SHIFT,
     TrimWindow,
-    homopolymer_run_end,
+    locate_anchor_run,
     locate_tgidx_window,
 )
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
@@ -48,6 +49,10 @@ WINDOW_LEAD = 3
 WINDOW_FLOOR = 7
 
 ANCHOR_BASE = "G"
+
+# Copies of the anchor base a shifted offset must present before it is taken as the run
+# start. Tracks the shipped chemistry's POLYG min_run.
+MIN_RUN = 3
 
 # Filler either side of the anchor run, deliberately free of the anchor base so that
 # every run in a synthetic read is exactly the run the test placed there.
@@ -115,14 +120,14 @@ def window_after_run(seq: str, run_start: int, **kwargs) -> TrimWindow:
     Returns:
         The located window.
     """
-    run_end = homopolymer_run_end(seq, run_start, ANCHOR_BASE)
+    run_end = locate_anchor_run(seq, run_start, ANCHOR_BASE, MIN_RUN).end
     kwargs.setdefault("tgidx_len", TGIDX_LEN)
     kwargs.setdefault("max_errors", MAX_ERRORS)
     return locate_tgidx_window(seq, run_end, **kwargs)
 
 
-class TestHomopolymerRunEnd:
-    """Tests for resolving the exact right edge of an anchor homopolymer run."""
+class TestLocateAnchorRun:
+    """Tests for locating an anchor homopolymer run against a predicted start."""
 
     @pytest.mark.parametrize("run_len", [3, 4, 5, 6, 7, 8])
     def test_run_end_is_start_plus_run_length(self, run_len: int) -> None:
@@ -130,7 +135,7 @@ class TestHomopolymerRunEnd:
         seq = build_read(run_len)
         run_start = len(PREFIX)
 
-        result = homopolymer_run_end(seq, run_start, ANCHOR_BASE)
+        result = locate_anchor_run(seq, run_start, ANCHOR_BASE, MIN_RUN).end
 
         assert_that(result).is_equal_to(run_start + run_len)
 
@@ -150,8 +155,8 @@ class TestHomopolymerRunEnd:
         honest_start = umi_start + UMI_LEN
         latched_start = umi_start + UMI_LEN - 1
 
-        honest_end = homopolymer_run_end(seq, honest_start, ANCHOR_BASE)
-        latched_end = homopolymer_run_end(seq, latched_start, ANCHOR_BASE)
+        honest_end = locate_anchor_run(seq, honest_start, ANCHOR_BASE, MIN_RUN).end
+        latched_end = locate_anchor_run(seq, latched_start, ANCHOR_BASE, MIN_RUN).end
 
         assert_that(honest_end).is_equal_to(latched_end)
         assert_that(honest_end).is_equal_to(umi_start + UMI_LEN + run_len)
@@ -170,7 +175,7 @@ class TestHomopolymerRunEnd:
         umi_start = len(PREFIX)
         starts = [umi_start + UMI_LEN - 2, umi_start + UMI_LEN - 1, umi_start + UMI_LEN]
 
-        ends = {homopolymer_run_end(seq, start, ANCHOR_BASE) for start in starts}
+        ends = {locate_anchor_run(seq, start, ANCHOR_BASE, MIN_RUN).end for start in starts}
 
         assert_that(ends).is_length(1)
         assert_that(ends.pop()).is_equal_to(umi_start + UMI_LEN + run_len)
@@ -179,7 +184,7 @@ class TestHomopolymerRunEnd:
         """Test that a run running off the end of the read ends at the read end."""
         seq = PREFIX + ANCHOR_BASE * 5
 
-        result = homopolymer_run_end(seq, len(PREFIX), ANCHOR_BASE)
+        result = locate_anchor_run(seq, len(PREFIX), ANCHOR_BASE, MIN_RUN).end
 
         assert_that(result).is_equal_to(len(seq))
 
@@ -192,9 +197,77 @@ class TestHomopolymerRunEnd:
         run_len = 18
         seq = build_read(run_len)
 
-        result = homopolymer_run_end(seq, len(PREFIX), ANCHOR_BASE)
+        result = locate_anchor_run(seq, len(PREFIX), ANCHOR_BASE, MIN_RUN).end
 
         assert_that(result).is_equal_to(len(PREFIX) + run_len)
+
+
+class TestLocateAnchorRunForwardSearch:
+    """Tests for the bounded forward search when the predicted start misses the run.
+
+    The predicted start is chemistry arithmetic over a recorded anchor span, so it is
+    exact only for a read that matches the layout base for base. Landing inside the run
+    is absorbed for free by counting forward; landing before it is what this search is
+    for. Only forward, because a backward search would find nothing the forward count
+    does not already reach.
+    """
+
+    @pytest.mark.parametrize("shift", [1, 2])
+    def test_run_starting_late_is_found_and_measured_in_full(self, shift: int) -> None:
+        """A run pushed later by an upstream insertion is still located exactly."""
+        run_len = 6
+        seq = PREFIX + "C" * shift + ANCHOR_BASE * run_len + INDEX_NO_LEADING_ANCHOR + TAIL
+        predicted = len(PREFIX)
+
+        run = locate_anchor_run(seq, predicted, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(run.start).is_equal_to(predicted + shift)
+        assert_that(run.end).is_equal_to(predicted + shift + run_len)
+        assert_that(run.length).is_equal_to(run_len)
+
+    def test_run_beyond_the_shift_bound_reports_no_run(self) -> None:
+        """Past the bound the read has diverged too far to guess a window from."""
+        seq = PREFIX + "C" * (ANCHOR_RUN_MAX_SHIFT + 1) + ANCHOR_BASE * 6 + TAIL
+        predicted = len(PREFIX)
+
+        run = locate_anchor_run(seq, predicted, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(run.start).is_equal_to(predicted)
+        assert_that(run.length).is_equal_to(0)
+
+    def test_fewer_than_min_run_copies_at_the_shift_is_not_taken(self) -> None:
+        """A short smear of anchor bases is not the run and must not be latched onto.
+
+        This is what keeps the search off a target index's own leading anchor bases:
+        a whitelist entry may open with at most ``TGIDX_MAX_LEADING_ANCHOR`` of them,
+        which is below every real ``min_run``.
+        """
+        seq = PREFIX + "C" + ANCHOR_BASE * (MIN_RUN - 1) + "C" + TAIL
+        predicted = len(PREFIX)
+
+        run = locate_anchor_run(seq, predicted, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(run.length).is_equal_to(0)
+
+    def test_predicted_start_inside_the_run_needs_no_search(self) -> None:
+        """A start already inside the run is taken as-is, not shifted forward."""
+        run_len = 6
+        seq = build_read(run_len)
+        inside = len(PREFIX) + 2
+
+        run = locate_anchor_run(seq, inside, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(run.start).is_equal_to(inside)
+        assert_that(run.end).is_equal_to(len(PREFIX) + run_len)
+
+    def test_predicted_start_past_the_read_end_reports_no_run(self) -> None:
+        """A truncated read yields a zero-length run rather than raising."""
+        seq = PREFIX + ANCHOR_BASE * 4
+        predicted = len(seq) + 5
+
+        run = locate_anchor_run(seq, predicted, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(run.length).is_equal_to(0)
 
 
 class TestLocateTgidxWindow:

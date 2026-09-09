@@ -19,7 +19,6 @@ dependencies = [
     "scipy",
     "kneed",
     "biopython",
-    "umi_tools>=1.1.0",
 ]
 scripts = { "carmack" = "carmack.__main__:run_carmack" }
 

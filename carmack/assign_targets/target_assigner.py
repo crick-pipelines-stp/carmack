@@ -1,9 +1,16 @@
 """Target index assignment from the UMI-annotated R1 FASTQ.
 
-For each annotated read the assigner derives a bounded window off the end of the
-anchor homopolymer run recorded by UMI extraction, matches the target index
-lying in that window against the chemistry whitelist, and re-emits the read
-carrying either a whitelist entry with its ``TGIDX_POS`` span or ``TGIDX=NONE``.
+For each annotated read the assigner locates the anchor homopolymer run, derives
+a bounded window off the end of that run, matches the target index lying in the
+window against the chemistry whitelist, and re-emits the read carrying either a
+whitelist entry with its ``TGIDX_POS`` span or ``TGIDX=NONE``.
+
+The run's start is not recorded on the read. It is computed from the chemistry:
+the span end of the nearest anchor whose position barcode extraction wrote down,
+plus the fixed bases the layout places between that anchor and the run. So the
+only tag this stage consumes is a barcode position tag, and it does not depend
+on UMI extraction having run -- though the canonical order still puts UMI
+extraction first, because that is what carries the ``UMI`` tag onto the read.
 
 This is an assignment, not a filter. ``NONE`` is the correct answer for every
 scRNA read in a mixed library, so no read is ever dropped and reads written
@@ -21,7 +28,7 @@ from itertools import chain
 from pathlib import Path
 
 from carmack.assign_targets.assign_reporting import AssignCounts, AssignStats
-from carmack.assign_targets.tgidx_locator import homopolymer_run_end, locate_tgidx_window
+from carmack.assign_targets.tgidx_locator import locate_anchor_run, locate_tgidx_window
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.chemistry.annotation import format_span, parse_span, position_key
 from carmack.chemistry.chemistry_factory import ChemistryFactory
@@ -77,7 +84,7 @@ class TargetAssigner:
 
         Args:
             fastq_file: Path to the UMI-annotated R1 FASTQ (produced by UMI
-                extraction, carrying ``UMI_POS`` header tags).
+                extraction, carrying the barcode position tags this stage reads).
             chemistry_name: Name of the chemistry describing the read layout.
             n_workers: Width of the process pool the assignment pass runs on.
             batch_size: Reads a submitted batch carries, defaulting to
@@ -88,9 +95,9 @@ class TargetAssigner:
 
         Raises:
             ValueError: If the chemistry is unknown, declares no target index
-                anchored by a homopolymer run, cannot locate that run's start
-                from the UMI span, or declares a target index whitelist that
-                loads no entries.
+                anchored by a homopolymer run, places no recorded anchor a fixed
+                distance 5' of that run, or declares a target index whitelist
+                that loads no entries.
         """
         self.fastq = FastqFile(fastq_file)
         self.chemistry_name = chemistry_name
@@ -106,35 +113,22 @@ class TargetAssigner:
 
         tgidx = self.chemistry.tgidx_component()
         anchor = self.chemistry.tgidx_anchor()
-        umi = self.chemistry.umi_component()
-        right = self.chemistry.umi_right_anchor()
 
-        # The linchpin of the stage. The anchor run's start is not recorded
-        # anywhere in the read; it is read back from the END of the UMI span
-        # that extraction wrote. That equality holds only when the component
-        # following the UMI is the very homopolymer that anchors the target
-        # index. Where the two diverge - a linker between them, or no UMI at all
-        # - the window would hang off a coordinate belonging to some other
-        # component and every read would be scored, silently and plausibly,
-        # against arbitrary sequence. There is no downstream symptom to catch
-        # that by, so it has to be fatal here.
-        if umi is None:
+        # The linchpin of the stage. The anchor run's start is recorded nowhere in
+        # the read; it is computed as the end of the nearest recorded anchor span
+        # plus the fixed bases the chemistry places between that anchor and the
+        # run. Where that distance is not fixed, or where no recorded anchor lies
+        # 5' of the run at all, the window would hang off a coordinate belonging
+        # to some other component and every read would be scored, silently and
+        # plausibly, against arbitrary sequence. There is no downstream symptom to
+        # catch that by, so it has to be fatal here.
+        try:
+            located = self.chemistry.resolve_anchor_offset(anchor)
+        except ValueError as error:
             raise ValueError(
-                f"chemistry '{chemistry_name}' declares no UMI component, so the anchor run "
-                "start cannot be read from a UMI span and no target window can be derived"
-            )
-        if right is None:
-            raise ValueError(
-                f"chemistry '{chemistry_name}' has no anchor 3' of its UMI, so the anchor run "
-                "start cannot be read from the UMI span and no target window can be derived"
-            )
-        if right.name != anchor.name:
-            raise ValueError(
-                f"chemistry '{chemistry_name}' bounds its UMI with '{right.name}' but anchors "
-                f"its target index on '{anchor.name}'. The UMI span end is only the anchor run "
-                "start when these are the same component, so the target window would be cut "
-                "from the wrong coordinate"
-            )
+                f"chemistry '{chemistry_name}' cannot locate the start of the anchor run "
+                f"'{anchor.name}' that its target index hangs off: {error}"
+            ) from error
 
         # Closed here rather than in the chemistry because
         # ChemistryBase.supports_target_assignment() asks only whether the index
@@ -153,8 +147,12 @@ class TargetAssigner:
         self.tgidx_name = tgidx.name
         self.tgidx_length = tgidx.length
         self.anchor_base = anchor.homopolymer_base
+        self.anchor_min_run = anchor.min_run
         self.max_errors = self.chemistry.max_errors.tgidx
-        self.umi_pos_key = position_key(umi.name)
+        # Scalars rather than the AnchorOffset itself: the whole assigner is
+        # pickled out to every worker in the pool.
+        self.anchor_pos_key = located.position_key
+        self.run_offset = located.offset
 
         # Built once, here, because the k-mer index is built inside the
         # matcher's constructor: a matcher created per read would rebuild that
@@ -170,30 +168,31 @@ class TargetAssigner:
         """Validate that an annotated read carries the tag this stage reads.
 
         Checks the first annotated read against the supplied chemistry: it must
-        carry the UMI position tag, since its span end is where the anchor run
-        is found. Its absence means the FASTQ was produced with a different
-        chemistry than the one supplied, or was never put through UMI
+        carry the position tag of the anchor the run start is measured from,
+        since that span's end plus a fixed offset is where the anchor run is
+        found. Its absence means the FASTQ was produced with a different
+        chemistry than the one supplied, or was never put through barcode
         extraction at all.
 
         Args:
             ann: The parsed header of the first annotated read.
 
         Raises:
-            ValueError: When the UMI position tag is absent from the header.
+            ValueError: When the anchor position tag is absent from the header.
         """
-        if ann.get(self.umi_pos_key) is None:
+        if ann.get(self.anchor_pos_key) is None:
             raise ValueError(
                 f"Annotated read '{ann.read_id}' is missing the expected "
-                f"'{self.umi_pos_key}' tag for chemistry '{self.chemistry_name}'. The "
+                f"'{self.anchor_pos_key}' tag for chemistry '{self.chemistry_name}'. The "
                 "annotated FASTQ may have been produced with a different chemistry, or "
-                "without running the 'extract-umis' stage."
+                "without running the 'extract-barcodes' stage."
             )
 
     def assign_read(self, name: str, seq: str, counts: AssignCounts) -> str:
         """Assign a target index to one read and tally the outcome it took.
 
         The read takes exactly one of four mutually exclusive outcomes - matched,
-        no UMI position tag, short window, no match - and each bumps one tally,
+        no anchor position tag, short window, no match - and each bumps one tally,
         so the four always sum to the reads tallied.
 
         Args:
@@ -211,16 +210,20 @@ class TargetAssigner:
         attempt = None
         window = None
 
-        pos = ann.get(self.umi_pos_key)
+        pos = ann.get(self.anchor_pos_key)
         if pos is None:
             # Fatal on the first read, merely unassigned here: by this point the
             # chemistry has been shown to match the FASTQ, so a read missing the
             # tag is a read, not an operator error.
-            counts.no_umi_pos += 1
+            counts.no_left_anchor_pos += 1
         else:
-            run_start = parse_span(pos)[1]
-            run_end = homopolymer_run_end(seq, run_start, self.anchor_base)
-            counts.run_counts[run_end - run_start] += 1
+            # The chemistry says the run begins a fixed number of bases after the
+            # anchor's end. UMI extraction slices its UMI off the same
+            # coordinate, so this is the index its own run tally is measured at.
+            expected_start = parse_span(pos)[1] + self.run_offset
+            run = locate_anchor_run(seq, expected_start, self.anchor_base, self.anchor_min_run)
+            run_end = run.end
+            counts.run_counts[run.length] += 1
             # The seed length is passed explicitly, never defaulted. Both
             # defaults are 4 today so omitting it would work by coincidence, and
             # TrimWindow.is_matchable only keeps a window the matcher would raise
@@ -288,8 +291,8 @@ class TargetAssigner:
             The reconciling :class:`AssignStats` for the run.
 
         Raises:
-            ValueError: If the first annotated read carries no UMI position tag,
-                raised before any output file is opened.
+            ValueError: If the first annotated read carries no anchor position
+                tag, raised before any output file is opened.
         """
         log.info(f"Assigning target indices in {self.fastq.filename}...")
 
@@ -301,8 +304,8 @@ class TargetAssigner:
         counts = AssignCounts()
 
         # Validate the first read's header before opening either output file, so
-        # a FASTQ that never went through extract-umis fails fast and leaves no
-        # truncated outputs behind to be mistaken for a completed run. The read
+        # a FASTQ that never went through extract-barcodes fails fast and leaves
+        # no truncated outputs behind to be mistaken for a completed run. The read
         # is pushed back onto the iterator rather than consumed, since validating
         # it is not the same as processing it.
         reads = self.fastq.open_read_iterator(as_string=True)

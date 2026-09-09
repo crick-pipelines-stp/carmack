@@ -85,6 +85,28 @@ class WhitelistSource:
     line_slice: tuple[int, int | None] | None = None
 
 
+@dataclass(frozen=True)
+class AnchorOffset:
+    """The recorded anchor a component's start is measured from, and that distance.
+
+    Attributes:
+        anchor: Nearest component 5' of the target that both anchors a variable
+            neighbour and has its own position written to the read header, so its
+            span end can be read back at read time.
+        offset: Fixed bases between that anchor's end and the target component's
+            start, the sum of the lengths of the components in between. Zero when
+            the anchor is the target's immediate 5' neighbour.
+    """
+
+    anchor: ReadComponent
+    offset: int
+
+    @property
+    def position_key(self) -> str:
+        """Return the annotation header key the anchor's span is read from."""
+        return self.anchor.position_key
+
+
 @dataclass
 class ChemistryBase(ABC):
     """
@@ -253,33 +275,70 @@ class ChemistryBase(ABC):
             None,
         )
 
-    def umi_left_anchor(self) -> ReadComponent | None:
-        """Return the anchor component immediately 5' of the UMI.
+    def resolve_anchor_offset(self, component: ReadComponent) -> AnchorOffset:
+        """Return the recorded anchor a component's start can be measured from.
 
-        The left anchor is the component preceding the UMI in the read
-        structure, but only when that neighbour exists and can anchor a
-        variable-length component (:attr:`ReadComponent.is_anchor`). For
-        ``custom_seq_1_0`` this is the ``BC1`` barcode.
+        Walks 5' from ``component``, summing the lengths of the components it
+        crosses, and stops at the first that both :attr:`ReadComponent.is_anchor`
+        and :attr:`ReadComponent.records_position`. That component's span is the
+        only coordinate the read offers, so at read time the target component
+        starts at the anchor's span end plus the returned offset. Walking from
+        ``POLYG`` in ``custom_seq_1_0`` crosses the 8bp ``UMI`` and lands on
+        ``BC1``, giving an offset of 8; walking from the ``UMI`` lands on ``BC1``
+        directly, giving 0.
+
+        Both conditions are required and neither implies the other.
+        ``is_anchor`` says the component can be located within a read at all;
+        ``records_position`` says the position it was found at is written to the
+        header and so can be read back here. A primer satisfies the first and not
+        the second, and treating the two as one would have this return a
+        component whose position tag is never written, making every read look
+        like it was missing its anchor.
+
+        Args:
+            component: The component whose start is to be located.
 
         Returns:
-            The anchoring :class:`ReadComponent`, or ``None`` when there is no
-            UMI or its left neighbour cannot anchor it.
+            The anchor to read the span from, and the fixed offset to add to its
+            span end.
+
+        Raises:
+            ValueError: If a variable-length component is crossed before an
+                anchor is reached, or if no such anchor lies 5' of ``component``.
         """
-        umi = self.umi_component()
-        if umi is None:
-            return None
-        previous = self.read_structure.get_previous(umi)
-        if previous is not None and previous.is_anchor:
-            return previous
-        return None
+        offset = 0
+        current = component
+        while True:
+            previous = self.read_structure.get_previous(current)
+            if previous is None:
+                raise ValueError(
+                    f"chemistry '{self.name}' has no anchor 5' of component "
+                    f"'{component.name}' whose position is recorded on the read header, "
+                    "so that component's start cannot be located in a read"
+                )
+            if previous.is_anchor and previous.records_position:
+                return AnchorOffset(anchor=previous, offset=offset)
+            # Tested before the length is added, because a variable component's
+            # length may be None and adding it would raise a TypeError in place
+            # of the explanatory error below.
+            if previous.is_variable_length:
+                raise ValueError(
+                    f"chemistry '{self.name}' places variable-length component "
+                    f"'{previous.name}' between '{component.name}' and the nearest "
+                    "recorded anchor, so the distance between them is not a fixed "
+                    f"number of bases and '{component.name}' cannot be located"
+                )
+            offset += previous.length
+            current = previous
 
     def umi_right_anchor(self) -> ReadComponent | None:
         """Return the anchor component immediately 3' of the UMI.
 
-        The right anchor is the component following the UMI in the read
-        structure, but only when that neighbour exists and can anchor a
-        variable-length component (:attr:`ReadComponent.is_anchor`). For
-        ``custom_seq_1_0`` this is the ``POLYG`` homopolymer.
+        Diagnostic only. The UMI is a fixed-length slice taken off its left
+        anchor, so nothing about extracting it consults the component 3' of it.
+        This supplies the base for the anchor-run tally that UMI extraction
+        reports as a check that the layout is holding, which is why its absence
+        degrades that report rather than failing a run.
 
         Returns:
             The anchoring :class:`ReadComponent`, or ``None`` when there is no
@@ -294,17 +353,19 @@ class ChemistryBase(ABC):
         return None
 
     def supports_umi_extraction(self) -> bool:
-        """Return whether this chemistry can support UMI extraction.
+        """Return whether this chemistry declares a UMI to extract.
 
-        UMI extraction requires a UMI component whose left neighbour exists and
-        can anchor it. Barcode-only chemistries without a UMI (e.g. hydrop)
-        return ``False`` rather than raising.
+        Answers only whether a UMI component exists. Whether its start can
+        actually be located is :meth:`resolve_anchor_offset`'s question, and that
+        one raises with a specific diagnostic rather than collapsing every way it
+        can fail into a bare ``False``. Barcode-only chemistries without a UMI
+        (e.g. hydrop) return ``False`` here rather than raising.
 
         Returns:
-            ``True`` when the read structure contains a UMI anchored on its 5'
-            side, ``False`` otherwise.
+            ``True`` when the read structure contains a UMI component, ``False``
+            otherwise.
         """
-        return self.umi_left_anchor() is not None
+        return self.umi_component() is not None
 
     def tgidx_component(self) -> ReadComponent | None:
         """Return the target index component of the read structure, if one is defined.

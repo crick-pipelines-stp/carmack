@@ -1,12 +1,12 @@
 # Target Index Assignment Stats
 # Input is {prefix}.r1_umi.fastq.gz, which extract-umis has already subset:
-# reads with no anchor run inside the UMI length window never arrive here,
-# so the matched fraction below is not the scTIP fraction of the library.
-# See the matching .umi_stats.txt for the run's total read count.
-Total reads: 1890
-Matched: 1585 (83.86%)
-Unmatched (no_match): 305 (16.14%)
-Unmatched (no_umi_pos): 0 (0.00%)
+# a read whose anchor was never recorded, or which ends inside its UMI, does
+# not arrive here, so the matched fraction below is not the scTIP fraction of
+# the library. See the matching .umi_stats.txt for the run's total read count.
+Total reads: 1902
+Matched: 1585 (83.33%)
+Unmatched (no_match): 317 (16.67%)
+Unmatched (no_left_anchor_pos): 0 (0.00%)
 Unmatched (short_window): 0 (0.00%)
 
 # Target Distribution
@@ -17,10 +17,13 @@ Unmatched (short_window): 0 (0.00%)
 	1	30 (1.89%)
 
 # Anchor G-run Length Distribution
-	3	148 (7.83%)
-	4	98 (5.19%)
-	5	64 (3.39%)
-	6	1236 (65.40%)
-	7	311 (16.46%)
-	8	29 (1.53%)
-	9	4 (0.21%)
+	0	11 (0.58%)
+	1	1 (0.05%)
+	2	1 (0.05%)
+	3	173 (9.10%)
+	4	88 (4.63%)
+	5	84 (4.42%)
+	6	1401 (73.66%)
+	7	128 (6.73%)
+	8	13 (0.68%)
+	9	2 (0.11%)

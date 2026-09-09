@@ -40,7 +40,7 @@ class AssignStats:
             tie between targets: it arises either from two whitelist entries or
             from one entry matching at two offsets, so a counter named for
             ambiguity would mostly not be measuring ambiguity between targets.
-        unmatched_no_umi_pos: Reads whose header carried no UMI position tag, so
+        unmatched_no_left_anchor_pos: Reads whose header carried no anchor position tag, so
             no anchor run end and no window could be derived. Counted and
             annotated ``NONE`` rather than raised on, to conserve read count.
         unmatched_short_window: Reads whose window was shorter than the floor the
@@ -56,7 +56,7 @@ class AssignStats:
             index which itself opens with anchor bases includes those bases,
             because at that boundary they are indistinguishable from the run.
 
-    By construction ``matched + unmatched_no_match + unmatched_no_umi_pos +
+    By construction ``matched + unmatched_no_match + unmatched_no_left_anchor_pos +
     unmatched_short_window`` always equals ``total_reads``. Uniquely to this
     stage, ``total_reads`` also equals the number of reads **written**: no read
     is ever dropped, so reads written equals reads read.
@@ -65,7 +65,7 @@ class AssignStats:
     total_reads: int
     matched: int
     unmatched_no_match: int
-    unmatched_no_umi_pos: int
+    unmatched_no_left_anchor_pos: int
     unmatched_short_window: int
     target_counts: dict[str, int]
     edit_distance_counts: dict[int, int]
@@ -84,7 +84,7 @@ class AssignStats:
         Derived from the run-length counter rather than stored alongside it, so
         the two cannot drift apart and the outcome invariant gains no extra term.
         It is the denominator of the run-length distribution: a read only reaches
-        the forward scan once its UMI position tag is in hand, so the reads
+        the forward scan once its anchor position tag is in hand, so the reads
         counted here are a subset of ``total_reads``.
         """
         return sum(self.homopolymer_run_counts.values())
@@ -112,8 +112,8 @@ class AssignStats:
             f"({self.fraction(self.unmatched_no_match, self.total_reads):.2%})\n"
         )
         report += (
-            f"Unmatched (no_umi_pos): {self.unmatched_no_umi_pos} "
-            f"({self.fraction(self.unmatched_no_umi_pos, self.total_reads):.2%})\n"
+            f"Unmatched (no_left_anchor_pos): {self.unmatched_no_left_anchor_pos} "
+            f"({self.fraction(self.unmatched_no_left_anchor_pos, self.total_reads):.2%})\n"
         )
         report += (
             f"Unmatched (short_window): {self.unmatched_short_window} "
@@ -129,17 +129,17 @@ class AssignStats:
         """Render the caveat that qualifies every count below it.
 
         The stage reads ``{prefix}.r1_umi.fastq.gz``, which ``extract-umis`` has
-        already subset: a read with no anchor run inside the UMI length window
-        never arrives here at all. ``total_reads`` is therefore not the run's
-        read count and the matched fraction is not the scTIP fraction of the
-        library. The note is emitted before the counts so the caveat is read
-        before the number it qualifies; without it someone will read the target
-        index rate as a modality fraction of the library.
+        already subset: a read whose anchor was never recorded, or which ends
+        before its UMI does, never arrives here at all. ``total_reads`` is
+        therefore not the run's read count and the matched fraction is not the
+        scTIP fraction of the library. The note is emitted before the counts so
+        the caveat is read before the number it qualifies; without it someone
+        will read the target index rate as a modality fraction of the library.
         """
         note = "# Input is {prefix}.r1_umi.fastq.gz, which extract-umis has already subset:\n"
-        note += "# reads with no anchor run inside the UMI length window never arrive here,\n"
-        note += "# so the matched fraction below is not the scTIP fraction of the library.\n"
-        note += "# See the matching .umi_stats.txt for the run's total read count.\n"
+        note += "# a read whose anchor was never recorded, or which ends inside its UMI, does\n"
+        note += "# not arrive here, so the matched fraction below is not the scTIP fraction of\n"
+        note += "# the library. See the matching .umi_stats.txt for the run's total read count.\n"
         return note
 
     def target_section(self) -> str:
@@ -200,7 +200,7 @@ class AssignCounts:
     Attributes:
         total: Reads tallied.
         matched: Reads whose window resolved to a single whitelist entry.
-        no_umi_pos: Reads whose header carried no UMI position tag, so no window
+        no_left_anchor_pos: Reads whose header carried no anchor position tag, so no window
             could be derived.
         short_window: Reads whose window was shorter than the floor the matcher
             needs.
@@ -212,7 +212,7 @@ class AssignCounts:
 
     total: int = 0
     matched: int = 0
-    no_umi_pos: int = 0
+    no_left_anchor_pos: int = 0
     short_window: int = 0
     no_match: int = 0
     target_counts: Counter[str] = field(default_factory=Counter)
@@ -228,7 +228,7 @@ class AssignCounts:
         """
         self.total += other.total
         self.matched += other.matched
-        self.no_umi_pos += other.no_umi_pos
+        self.no_left_anchor_pos += other.no_left_anchor_pos
         self.short_window += other.short_window
         self.no_match += other.no_match
         # Counter.update ADDS counts, where dict.update would overwrite them.
@@ -255,7 +255,7 @@ class AssignCounts:
             total_reads=self.total,
             matched=self.matched,
             unmatched_no_match=self.no_match,
-            unmatched_no_umi_pos=self.no_umi_pos,
+            unmatched_no_left_anchor_pos=self.no_left_anchor_pos,
             unmatched_short_window=self.short_window,
             target_counts=dict(self.target_counts),
             edit_distance_counts=dict(self.edit_distance_counts),

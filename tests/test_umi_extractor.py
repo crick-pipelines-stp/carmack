@@ -1,16 +1,14 @@
 """Tests for the extract-umis module.
 
-The extractor reads an annotated R1 FASTQ, extracts the raw UMI lying between
-its left anchor (BC1, read from the header ``BC1_POS`` tag) and the downstream
-poly-G run, annotates the read with ``UMI`` / ``UMI_POS`` and reports the length
-distribution. Most of these tests build synthetic annotated reads and exercise
-the greedy poly-G anchoring, the two-sided length window, the reconciling stats
-and the CLI wiring; the closing class drives real barcode extraction twice over
-to pin the map's row order down across repeat runs.
+The extractor reads an annotated R1 FASTQ and takes the UMI as a fixed-length
+slice starting where its left anchor ends (BC1, read from the header ``BC1_POS``
+tag), annotating the read with ``UMI`` and ``UMI_POS`` tags. Nothing is searched for, so most of
+these tests are about what the slice contains whatever follows it, which reads
+are skipped, and the reconciling stats; the rest cover the report and the CLI
+wiring.
 """
 
 import gzip
-from collections import defaultdict
 from pathlib import Path
 from unittest import mock
 
@@ -20,13 +18,11 @@ from click.testing import CliRunner
 
 import carmack.__main__
 from carmack.chemistry.annotation import format_span, parse_span, position_key
+from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ChemistryCarmackCustomSeq10
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.io.read_annotation import ReadAnnotation
-from carmack.umi.umi_corrector import CorrectedUmi, UmiCorrector, UmiRecord
 from carmack.umi.umi_extractor import UmiExtractor
-from carmack.umi.umi_reporting import CorrectionStats, UmiExtractionStats
-from carmack.umi.umi_shards import UmiShardStore, shard_index
-from tests.test_barcode_extractor import run_extraction_in_process_group
+from carmack.umi.umi_reporting import UmiExtractionStats
 
 CHEMISTRY = "carmack_custom_seq_1_0"
 DUMMY_FASTQ = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
@@ -37,9 +33,12 @@ BC1_START = 10
 UMI_START = 20
 TAIL = "TTTTTT"
 
+# The chemistry's fixed UMI length, spelled out so a change to it is visible here.
+UMI_LENGTH = 8
+
 # Default barcode-component sequences carried by synthetic annotated reads. They
-# mirror the BC1/BC2/BC3 tags written by barcode extraction so the correction
-# stage can rebuild the full cell barcode.
+# mirror the BC1/BC2/BC3 tags written by barcode extraction, which the extractor
+# checks the first read for.
 BC1_SEQ = "AAAAAAAAAA"
 BC2_SEQ = "CCCCCCCCCC"
 BC3_SEQ = "GGGGGGGGGG"
@@ -52,11 +51,7 @@ def make_read_header(
     bc2: str = BC2_SEQ,
     bc3: str = BC3_SEQ,
 ) -> str:
-    """Render a header carrying the BC1_POS anchor and the BC1/BC2/BC3 barcodes.
-
-    The extractor consumes only the BC1_POS end to locate the UMI; the barcode
-    tags let the correction stage reconstruct the full cell barcode.
-    """
+    """Render a header carrying the BC1_POS anchor and the BC1/BC2/BC3 barcodes."""
     ann = ReadAnnotation(read_id=read_id)
     ann.set(position_key("BC1"), format_span(BC1_START, umi_start))
     ann.set("BC1", bc1)
@@ -77,22 +72,12 @@ def make_read(
     """Build a synthetic ``(header, seq, qual)`` annotated read.
 
     The sequence is ``A * umi_start`` + ``umi_seq`` + ``G * run_len`` + tail, so
-    the poly-G run begins exactly at ``umi_start + len(umi_seq)``.
+    the poly-G run begins exactly at ``umi_start + len(umi_seq)``. Passing a
+    ``umi_seq`` shorter or longer than the chemistry's fixed length is how a read
+    whose run starts early or late is built.
     """
     seq = "A" * umi_start + umi_seq + "G" * run_len + TAIL
     return make_read_header(read_id, umi_start, bc1, bc2, bc3), seq, "I" * len(seq)
-
-
-@pytest.fixture
-def build_extractor(tmp_path):
-    """Return a factory that writes records to a FASTQ and builds an extractor."""
-
-    def build(records: list[tuple[str, str, str]], name: str = "SK462.r1_annotated.fastq.gz"):
-        fastq_path = tmp_path / name
-        write_fastq(fastq_path, records)
-        return UmiExtractor(str(fastq_path), CHEMISTRY)
-
-    return build
 
 
 def write_fastq(path, records: list[tuple[str, str, str]]) -> None:
@@ -109,20 +94,24 @@ def read_fastq(path) -> list[tuple[str, str, str, str]]:
     return [tuple(lines[i : i + 4]) for i in range(0, len(lines), 4)]
 
 
-class FakeChemistryNoRightAnchor:
-    """Chemistry stub that supports a left anchor but exposes no poly-G anchor."""
+def extracted_umis(path) -> dict[str, str]:
+    """Return the ``read_id -> UMI`` mapping from an output FASTQ."""
+    return {
+        ReadAnnotation.parse(header[1:]).read_id: ReadAnnotation.parse(header[1:]).get("UMI")
+        for header, _seq, _plus, _qual in read_fastq(path)
+    }
 
-    def supports_umi_extraction(self) -> bool:
-        return True
 
-    def umi_left_anchor(self) -> ReadComponent:
-        return ReadComponent(name="BC1", type=ReadComponentType.BARCODE, length=10)
+@pytest.fixture
+def build_extractor(tmp_path):
+    """Return a factory that writes records to a FASTQ and builds an extractor."""
 
-    def umi_component(self) -> ReadComponent:
-        return ReadComponent(name="UMI", type=ReadComponentType.UMI, length=8, length_tolerance=1)
+    def build(records: list[tuple[str, str, str]], name: str = "SK462.r1_annotated.fastq.gz"):
+        fastq_path = tmp_path / name
+        write_fastq(fastq_path, records)
+        return UmiExtractor(str(fastq_path), CHEMISTRY)
 
-    def umi_right_anchor(self) -> None:
-        return None
+    return build
 
 
 class TestUmiExtractorConstruction:
@@ -131,183 +120,284 @@ class TestUmiExtractorConstruction:
     def test_resolves_parameters_from_chemistry(self) -> None:
         extractor = UmiExtractor(DUMMY_FASTQ, CHEMISTRY)
         assert_that(extractor.umi_name).is_equal_to("UMI")
-        assert_that(extractor.umi_length).is_equal_to(8)
-        assert_that(extractor.umi_length_tolerance).is_equal_to(1)
-        assert_that(extractor.polyg_base).is_equal_to("G")
-        assert_that(extractor.polyg_min_run).is_equal_to(3)
-        assert_that(extractor.left_key).is_equal_to("BC1_POS")
+        assert_that(extractor.umi_length).is_equal_to(UMI_LENGTH)
+        assert_that(extractor.anchor_pos_key).is_equal_to("BC1_POS")
+        assert_that(extractor.umi_offset).is_equal_to(0)
+        assert_that(extractor.anchor_base).is_equal_to("G")
 
-    def test_unsupported_chemistry_raises(self) -> None:
-        with pytest.raises(ValueError, match="no usable left anchor"):
+    @pytest.mark.parametrize("attribute", ["umi_length_tolerance", "polyg_min_run", "left_key"])
+    def test_removed_window_parameters_are_gone(self, attribute: str) -> None:
+        """The length window and its min-run gate no longer exist on the extractor.
+
+        Asserted rather than merely deleted, because a fixed-length slice that
+        quietly regained a tolerance would still pass every other test here.
+        """
+        extractor = UmiExtractor(DUMMY_FASTQ, CHEMISTRY)
+        assert_that(hasattr(extractor, attribute)).is_false()
+
+    def test_chemistry_without_umi_raises(self) -> None:
+        with pytest.raises(ValueError, match="declares no UMI component"):
             UmiExtractor(DUMMY_FASTQ, "hydrop")
-
-    def test_missing_right_anchor_raises(self) -> None:
-        with mock.patch(
-            "carmack.umi.umi_extractor.ChemistryFactory.get_chemistry",
-            return_value=FakeChemistryNoRightAnchor(),
-        ):
-            with pytest.raises(ValueError, match="poly-G"):
-                UmiExtractor(DUMMY_FASTQ, "fake")
 
     def test_invalid_chemistry_name_raises(self) -> None:
         with pytest.raises(ValueError, match="not supported"):
             UmiExtractor(DUMMY_FASTQ, "does_not_exist")
 
+    def test_non_homopolymer_neighbour_constructs_with_no_anchor_base(self) -> None:
+        """A UMI with no homopolymer 3' of it extracts fine and reports no anchor base.
 
-class TestFindPolygStart:
-    """Greedy earliest poly-G run detection within the two-sided window."""
-
-    @pytest.fixture
-    def extractor(self) -> UmiExtractor:
-        return UmiExtractor(DUMMY_FASTQ, CHEMISTRY)
-
-    def test_returns_run_start_inside_window(self, extractor: UmiExtractor) -> None:
-        # UMI length 8 -> poly-G begins at umi_start + 8 (inside window 7..9).
-        seq = "A" * UMI_START + "ACTACTAC" + "GGG" + TAIL
-        assert_that(extractor.find_polyg_start(seq, UMI_START)).is_equal_to(UMI_START + 8)
-
-    def test_picks_earliest_run_when_two_present(self, extractor: UmiExtractor) -> None:
-        # Runs begin at both +7 and +9; the greedy scan returns the earliest.
-        seq = "A" * UMI_START + "ACTACTA" + "GGG" + "A" + "GGG" + TAIL
-        assert_that(extractor.find_polyg_start(seq, UMI_START)).is_equal_to(UMI_START + 7)
-
-    def test_run_before_window_not_scanned(self, extractor: UmiExtractor) -> None:
-        # A minimal run beginning at +6 leaves no 3-run starting within 7..9.
-        seq = "A" * UMI_START + "ACTACT" + "GGG" + TAIL
-        assert_that(extractor.find_polyg_start(seq, UMI_START)).is_none()
-
-    def test_run_after_window_not_scanned(self, extractor: UmiExtractor) -> None:
-        # UMI length 10 pushes the run to +10, beyond the window.
-        seq = "A" * UMI_START + "ACTACTACTA" + "GGG" + TAIL
-        assert_that(extractor.find_polyg_start(seq, UMI_START)).is_none()
-
-    def test_slippage_same_run_start(self, extractor: UmiExtractor) -> None:
-        short_run = "A" * UMI_START + "ACTACTAC" + "GGG" + TAIL
-        long_run = "A" * UMI_START + "ACTACTAC" + "GGGGGG" + TAIL
-        start_short = extractor.find_polyg_start(short_run, UMI_START)
-        start_long = extractor.find_polyg_start(long_run, UMI_START)
-        assert_that(start_short).is_equal_to(UMI_START + 8)
-        assert_that(start_long).is_equal_to(start_short)
-
-    def test_run_truncated_by_read_end_not_matched(self, extractor: UmiExtractor) -> None:
-        # Only two G's remain at the read end: the min-run guard rejects it.
-        seq = "A" * 7 + "GG"
-        assert_that(extractor.find_polyg_start(seq, 0)).is_none()
-
-    def test_no_polyg_in_read(self, extractor: UmiExtractor) -> None:
-        seq = "A" * 40
-        assert_that(extractor.find_polyg_start(seq, UMI_START)).is_none()
+        The right neighbour is diagnostic only now, so its absence degrades the
+        report's anchor-run section rather than failing the run. This replaces the
+        constructor guard that used to reject such a chemistry outright.
+        """
+        chemistry = UmiExtractor(DUMMY_FASTQ, CHEMISTRY).chemistry
+        with mock.patch.object(type(chemistry), "umi_right_anchor", return_value=None):
+            extractor = UmiExtractor(DUMMY_FASTQ, CHEMISTRY)
+        assert_that(extractor.anchor_base).is_none()
 
 
 class TestExtractUmis:
     """End-to-end extraction over synthetic annotated FASTQ files."""
 
-    @pytest.fixture
-    def extractor_factory(self, tmp_path):
-        def build(records: list[tuple[str, str, str]], name: str = "SK462.r1_annotated.fastq.gz"):
-            fastq_path = tmp_path / name
-            write_fastq(fastq_path, records)
-            return UmiExtractor(str(fastq_path), CHEMISTRY)
+    def test_umi_is_the_fixed_window_after_the_left_anchor(
+        self, build_extractor, tmp_path
+    ) -> None:
+        """Every accepted read yields exactly the chemistry's length, whatever follows.
 
-        return build
-
-    def test_accepts_lengths_7_8_9(self, extractor_factory, tmp_path) -> None:
+        The three reads place the poly-G run one base early, exactly where the
+        layout says, and one base late. Under the old two-sided window these came
+        out at 7, 8 and 9 bases; the slice makes all three 8.
+        """
         records = [
-            make_read("r7", "ACTACTA", 4),
-            make_read("r8", "ACTACTAC", 4),
-            make_read("r9", "ACTACTACT", 4),
+            make_read("early", "ACTACTA", 4),
+            make_read("exact", "ACTACTAC", 4),
+            make_read("late", "ACTACTACT", 4),
         ]
-        extractor = extractor_factory(records)
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
+        stats = build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
 
         assert_that(stats.accepted).is_equal_to(3)
-        assert_that(stats.length_counts).is_equal_to({7: 1, 8: 1, 9: 1})
+        assert_that(extracted_umis(tmp_path / "out.r1_umi.fastq.gz")).is_equal_to(
+            {"early": "ACTACTAG", "exact": "ACTACTAC", "late": "ACTACTAC"}
+        )
 
-        out = read_fastq(tmp_path / "out.r1_umi.fastq.gz")
-        assert_that(out).is_length(3)
-        umis = {
-            ReadAnnotation.parse(header[1:]).read_id: ReadAnnotation.parse(header[1:]).get("UMI")
-            for header, _seq, _plus, _qual in out
-        }
-        assert_that(umis).is_equal_to({"r7": "ACTACTA", "r8": "ACTACTAC", "r9": "ACTACTACT"})
+    def test_read_with_no_anchor_run_is_still_accepted(self, build_extractor, tmp_path) -> None:
+        """A read presenting no poly-G at all is accepted, not rejected.
 
-    def test_rejects_lengths_6_and_10(self, extractor_factory, tmp_path) -> None:
-        records = [
-            make_read("short6", "ACTACT", 3),
-            make_read("long10", "ACTACTACTA", 3),
-        ]
-        extractor = extractor_factory(records)
+        This is the behaviour change with the widest effect: these reads used to
+        be dropped from the output entirely.
+        """
+        no_g = (make_read_header("nog"), "A" * 40, "I" * 40)
+        stats = build_extractor([no_g]).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(stats.accepted).is_equal_to(1)
+        assert_that(extracted_umis(tmp_path / "out.r1_umi.fastq.gz")).is_equal_to(
+            {"nog": "AAAAAAAA"}
+        )
+        assert_that(stats.homopolymer_run_counts).is_equal_to({0: 1})
+
+    def test_a_fixed_linker_before_the_umi_shifts_the_slice_by_its_length(self, tmp_path) -> None:
+        """The resolved offset is added to the anchor's end, not assumed to be zero.
+
+        Every shipped chemistry puts the UMI directly on BC1, so ``umi_offset``
+        is zero and dropping the term entirely would leave every other test here
+        passing while quietly cutting the UMI from the linker. A layout with a
+        fixed linker in between is the only thing that tells the two apart.
+        """
+        linker = "TTTTTTTTTT"
+
+        class ChemistryLinkerBeforeUmi(ChemistryCarmackCustomSeq10):
+            def _build_components(self):
+                components = super()._build_components()
+                umi_index = next(
+                    index
+                    for index, component in enumerate(components)
+                    if component.type is ReadComponentType.UMI
+                )
+                components.insert(
+                    umi_index,
+                    ReadComponent(
+                        name="LINKER",
+                        type=ReadComponentType.OTHER,
+                        length=len(linker),
+                        sequence=linker,
+                    ),
+                )
+                return components
+
+        umi = "ACTACTAC"
+        seq = "A" * UMI_START + linker + umi + "GGGG" + TAIL
+        fastq_path = tmp_path / "linker.r1_annotated.fastq.gz"
+        write_fastq(fastq_path, [(make_read_header("linker"), seq, "I" * len(seq))])
+
+        with mock.patch(
+            "carmack.umi.umi_extractor.ChemistryFactory.get_chemistry",
+            return_value=ChemistryLinkerBeforeUmi(),
+        ):
+            extractor = UmiExtractor(str(fastq_path), CHEMISTRY)
         stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
 
+        assert_that(extractor.umi_offset).is_equal_to(len(linker))
+        assert_that(stats.accepted).is_equal_to(1)
+        header, _seq, _plus, _qual = read_fastq(tmp_path / "out.r1_umi.fastq.gz")[0]
+        ann = ReadAnnotation.parse(header[1:])
+        assert_that(ann.get("UMI")).is_equal_to(umi)
+        assert_that(parse_span(ann.get(position_key("UMI")))).is_equal_to(
+            (UMI_START + len(linker), UMI_START + len(linker) + UMI_LENGTH)
+        )
+
+    def test_empty_input_writes_an_empty_fastq_and_a_zero_count_report(
+        self, build_extractor, tmp_path
+    ) -> None:
+        """With no reads there is no first header, so validation is skipped entirely.
+
+        The outputs still have to appear: an absent FASTQ is indistinguishable
+        from a stage that never ran.
+        """
+        stats = build_extractor([]).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(stats.total_reads).is_equal_to(0)
         assert_that(stats.accepted).is_equal_to(0)
-        assert_that(stats.no_polyg_anchor).is_equal_to(2)
+        assert_that(read_fastq(tmp_path / "out.r1_umi.fastq.gz")).is_empty()
+        assert_that((tmp_path / "out.umi_stats.txt").read_text()).contains("Total reads: 0")
+
+    def test_umi_containing_n_is_extracted_unfiltered(self, build_extractor, tmp_path) -> None:
+        """An ambiguous base in the UMI is carried through untouched.
+
+        Correction used to drop these, because a sentinel base collided with its
+        padding character. With no correction there is no sentinel and no reason
+        to treat the read differently from any other.
+        """
+        records = [make_read("ambiguous", "ACTNCTAC", 4)]
+        build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(extracted_umis(tmp_path / "out.r1_umi.fastq.gz")).is_equal_to(
+            {"ambiguous": "ACTNCTAC"}
+        )
+
+    def test_read_too_short_for_the_umi_is_counted_truncated(
+        self, build_extractor, tmp_path
+    ) -> None:
+        short = (make_read_header("short"), "A" * (UMI_START + UMI_LENGTH - 1), "I" * 27)
+        stats = build_extractor([short]).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(stats.truncated).is_equal_to(1)
+        assert_that(stats.accepted).is_equal_to(0)
         assert_that(read_fastq(tmp_path / "out.r1_umi.fastq.gz")).is_empty()
 
-    def test_slippage_yields_identical_umi_and_position(self, extractor_factory, tmp_path) -> None:
-        records = [
-            make_read("run3", "ACTACTAC", 3),
-            make_read("run6", "ACTACTAC", 6),
-        ]
-        extractor = extractor_factory(records)
-        extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
+    def test_read_ending_exactly_at_the_umi_end_is_accepted(
+        self, build_extractor, tmp_path
+    ) -> None:
+        """The boundary is inclusive: a read that stops at the UMI's last base counts."""
+        exact = (make_read_header("exact"), "A" * (UMI_START + UMI_LENGTH), "I" * 28)
+        stats = build_extractor([exact]).extract_umis(output_dir=str(tmp_path), prefix="out")
 
-        out = read_fastq(tmp_path / "out.r1_umi.fastq.gz")
-        anns = [ReadAnnotation.parse(header[1:]) for header, *_ in out]
-        assert_that({ann.get("UMI") for ann in anns}).is_equal_to({"ACTACTAC"})
-        assert_that({ann.get("UMI_POS") for ann in anns}).is_equal_to({format_span(20, 28)})
+        assert_that(stats.accepted).is_equal_to(1)
+        assert_that(stats.truncated).is_equal_to(0)
 
-    def test_missing_left_anchor_excluded(self, extractor_factory, tmp_path) -> None:
+    def test_missing_left_anchor_excluded(self, build_extractor, tmp_path) -> None:
         good = make_read("good", "ACTACTAC", 4)
         header_no_bc1 = ReadAnnotation(read_id="nobc1").render()
         bad = (header_no_bc1, "A" * 40, "I" * 40)
-        extractor = extractor_factory([good, bad])
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
+        stats = build_extractor([good, bad]).extract_umis(output_dir=str(tmp_path), prefix="out")
 
         assert_that(stats.missing_left_anchor).is_equal_to(1)
         assert_that(stats.accepted).is_equal_to(1)
-        out = read_fastq(tmp_path / "out.r1_umi.fastq.gz")
-        assert_that([ReadAnnotation.parse(h[1:]).read_id for h, *_ in out]).is_equal_to(["good"])
+        assert_that(list(extracted_umis(tmp_path / "out.r1_umi.fastq.gz"))).is_equal_to(["good"])
 
-    def test_no_polyg_anchor_excluded(self, extractor_factory, tmp_path) -> None:
-        good = make_read("good", "ACTACTAC", 4)
-        no_g = (make_read_header("nog"), "A" * 40, "I" * 40)
-        extractor = extractor_factory([good, no_g])
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
+    def test_umi_pos_span_is_written_and_indexes_the_umi(self, build_extractor, tmp_path) -> None:
+        """The span is the fixed slice, and slicing the read by it returns the UMI.
 
-        assert_that(stats.no_polyg_anchor).is_equal_to(1)
-        assert_that(stats.accepted).is_equal_to(1)
-
-    def test_stats_reconcile(self, extractor_factory, tmp_path) -> None:
-        records = [
-            make_read("a", "ACTACTAC", 4),
-            make_read("b", "ACTACTA", 4),
-            make_read("c", "ACTACT", 3),
-            (ReadAnnotation(read_id="d").render(), "A" * 40, "I" * 40),
-            (make_read_header("e"), "A" * 40, "I" * 40),
-        ]
-        extractor = extractor_factory(records)
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
-
-        assert_that(stats.total_reads).is_equal_to(5)
-        assert_that(
-            stats.accepted + stats.missing_left_anchor + stats.no_polyg_anchor
-        ).is_equal_to(stats.total_reads)
-
-    def test_umi_pos_round_trips(self, extractor_factory, tmp_path) -> None:
-        records = [make_read("r8", "ACTACTAC", 4), make_read("r9", "ACTACTACT", 5)]
-        extractor = extractor_factory(records)
-        extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
+        Asserted against the read rather than against the expected numbers alone,
+        so the tag is checked to be a usable coordinate and not merely present.
+        """
+        records = [make_read("a", "ACTACTAC", 4), make_read("b", "GGCATCAT", 5)]
+        build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
 
         for header, seq, _plus, _qual in read_fastq(tmp_path / "out.r1_umi.fastq.gz"):
             ann = ReadAnnotation.parse(header[1:])
-            start, end = parse_span(ann.get("UMI_POS"))
+            start, end = parse_span(ann.get(position_key("UMI")))
+            assert_that((start, end)).is_equal_to((UMI_START, UMI_START + UMI_LENGTH))
             assert_that(seq[start:end]).is_equal_to(ann.get("UMI"))
 
-    def test_output_preserves_input_order_seq_and_qual(self, extractor_factory, tmp_path) -> None:
+    def test_umi_pos_follows_the_recorded_anchor_rather_than_a_nominal_start(
+        self, build_extractor, tmp_path
+    ) -> None:
+        """An upstream indel moves BC1_POS, and the span moves with it.
+
+        The whole point of measuring off the recorded anchor is that the span is
+        a read coordinate, not the layout's nominal one.
+        """
+        shifted = 23
+        records = [make_read("shifted", "ACTACTAC", 4, umi_start=shifted)]
+        build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        header, seq, _plus, _qual = read_fastq(tmp_path / "out.r1_umi.fastq.gz")[0]
+        ann = ReadAnnotation.parse(header[1:])
+        assert_that(parse_span(ann.get(position_key("UMI")))).is_equal_to(
+            (shifted, shifted + UMI_LENGTH)
+        )
+        assert_that(seq[shifted : shifted + UMI_LENGTH]).is_equal_to("ACTACTAC")
+
+    def test_no_corrected_umi_tag_or_map_is_written(self, build_extractor, tmp_path) -> None:
+        """Correction is gone: no UB tag, and no umi_map.tsv alongside the outputs."""
+        build_extractor([make_read("a", "ACTACTAC", 4)]).extract_umis(
+            output_dir=str(tmp_path), prefix="out"
+        )
+
+        text = gzip.decompress((tmp_path / "out.r1_umi.fastq.gz").read_bytes()).decode()
+        assert_that(text).does_not_contain("UB")
+        assert_that((tmp_path / "out.umi_map.tsv").exists()).is_false()
+        assert_that(sorted(p.name for p in Path(tmp_path).glob("out.*"))).is_equal_to(
+            ["out.r1_umi.fastq.gz", "out.umi_stats.txt"]
+        )
+
+    def test_stats_reconcile(self, build_extractor, tmp_path) -> None:
+        records = [
+            make_read("a", "ACTACTAC", 4),
+            make_read("b", "ACTACTA", 4),
+            (ReadAnnotation(read_id="c").render(), "A" * 40, "I" * 40),
+            (make_read_header("d"), "A" * (UMI_START + 1), "I" * (UMI_START + 1)),
+        ]
+        stats = build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(stats.total_reads).is_equal_to(4)
+        assert_that(stats.accepted).is_equal_to(2)
+        assert_that(stats.missing_left_anchor).is_equal_to(1)
+        assert_that(stats.truncated).is_equal_to(1)
+        assert_that(stats.accepted + stats.missing_left_anchor + stats.truncated).is_equal_to(
+            stats.total_reads
+        )
+
+    def test_anchor_run_is_measured_at_the_fixed_offset(self, build_extractor, tmp_path) -> None:
+        """The tally counts the run from the base after the UMI, not from its true start.
+
+        The early read's run genuinely spans five bases, but one of them was
+        consumed by the slice, so four are left to count. That difference is the
+        point: the section describes the layout as the slice sees it.
+        """
+        records = [
+            make_read("exact", "ACTACTAC", 5),
+            make_read("early", "ACTACTA", 5),
+        ]
+        stats = build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(stats.homopolymer_run_counts).is_equal_to({5: 1, 4: 1})
+
+    def test_every_accepted_read_is_measured(self, build_extractor, tmp_path) -> None:
+        """The run tally covers exactly the accepted reads, so accepted is its denominator."""
+        records = [
+            make_read("a", "ACTACTAC", 4),
+            make_read("b", "ACTACTAC", 6),
+            (make_read_header("nog"), "A" * 40, "I" * 40),
+        ]
+        stats = build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(sum(stats.homopolymer_run_counts.values())).is_equal_to(stats.accepted)
+
+    def test_output_preserves_input_order_seq_and_qual(self, build_extractor, tmp_path) -> None:
         r_first = make_read("first", "ACTACTAC", 4)
         r_second = make_read("second", "ACTACTA", 4)
-        extractor = extractor_factory([r_first, r_second])
-        extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
+        build_extractor([r_first, r_second]).extract_umis(output_dir=str(tmp_path), prefix="out")
 
         out = read_fastq(tmp_path / "out.r1_umi.fastq.gz")
         ids = [ReadAnnotation.parse(h[1:]).read_id for h, *_ in out]
@@ -316,108 +406,88 @@ class TestExtractUmis:
         assert_that(out[0][1]).is_equal_to(r_first[1])
         assert_that(out[0][3]).is_equal_to(r_first[2])
 
-    @pytest.mark.parametrize("raw", [True, False])
-    def test_raw_emits_no_ub_tag(self, extractor_factory, tmp_path, raw: bool) -> None:
-        records = [make_read("a", "ACTACTAC", 4)]
-        extractor = extractor_factory(records)
-        extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=raw)
-
-        text = (tmp_path / "out.r1_umi.fastq.gz").read_bytes()
-        assert_that(gzip.decompress(text).decode()).does_not_contain("UB")
-
-    def test_prefix_derived_from_input_filename(self, extractor_factory, tmp_path) -> None:
-        records = [make_read("a", "ACTACTAC", 4)]
-        extractor = extractor_factory(records, name="SK462.r1_annotated.fastq.gz")
+    def test_prefix_derived_from_input_filename(self, build_extractor, tmp_path) -> None:
+        extractor = build_extractor(
+            [make_read("a", "ACTACTAC", 4)], name="SK462.r1_annotated.fastq.gz"
+        )
         extractor.extract_umis(output_dir=str(tmp_path))
 
         assert_that((tmp_path / "SK462.r1_umi.fastq.gz").exists()).is_true()
         assert_that((tmp_path / "SK462.umi_stats.txt").exists()).is_true()
 
-    def test_stats_file_reports_counts(self, extractor_factory, tmp_path) -> None:
+    def test_stats_file_reports_counts(self, build_extractor, tmp_path) -> None:
         records = [
             make_read("a", "ACTACTAC", 4),
-            make_read("b", "ACTACT", 3),
+            (make_read_header("b"), "A" * (UMI_START + 1), "I" * (UMI_START + 1)),
         ]
-        extractor = extractor_factory(records)
-        extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
+        build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
 
         report = (tmp_path / "out.umi_stats.txt").read_text()
         assert_that(report).contains("Total reads: 2")
         assert_that(report).contains("Accepted: 1")
-        assert_that(report).contains("no_polyg_anchor): 1")
+        assert_that(report).contains("truncated): 1")
         assert_that(report).contains("missing_left_anchor): 0")
+        assert_that(report).does_not_contain("no_polyg_anchor")
 
 
 class TestUmiExtractionStatsReport:
     """The stats value object and its report rendering."""
 
-    def test_report_includes_run_details_and_distribution(self) -> None:
-        stats = UmiExtractionStats(
-            total_reads=4,
-            accepted=2,
-            missing_left_anchor=1,
-            no_polyg_anchor=1,
-            length_counts={8: 1, 9: 1},
-        )
-        report = stats.get_report()
+    @staticmethod
+    def build(**overrides) -> UmiExtractionStats:
+        """Return stats with the given fields overridden on a sane default."""
+        fields = {
+            "total_reads": 4,
+            "accepted": 2,
+            "missing_left_anchor": 1,
+            "truncated": 1,
+            "umi_length": UMI_LENGTH,
+        }
+        return UmiExtractionStats(**{**fields, **overrides})
+
+    def test_report_includes_run_details_and_counts(self) -> None:
+        report = self.build().get_report()
         assert_that(report).contains("# Carmack version:")
         assert_that(report).contains("# UMI Extraction Stats")
         assert_that(report).contains("Total reads: 4")
         assert_that(report).contains("Accepted: 2")
-        assert_that(report).contains("# UMI Length Distribution")
-        assert_that(report).contains("\t8\t1")
-        assert_that(report).contains("\t9\t1")
+        assert_that(report).contains("Rejected (missing_left_anchor): 1")
+        assert_that(report).contains("Rejected (truncated): 1")
+
+    def test_report_states_the_fixed_umi_length(self) -> None:
+        """The constant replaces the distribution a measured length would have earned."""
+        assert_that(self.build().get_report()).contains(f"fixed {UMI_LENGTH} bases")
+
+    def test_report_omits_the_length_distribution_section(self) -> None:
+        """A one-bin histogram over a constant is noise, so it is not rendered."""
+        assert_that(self.build().get_report()).does_not_contain("UMI Length Distribution")
+
+    def test_report_omits_the_correction_section(self) -> None:
+        assert_that(self.build().get_report()).does_not_contain("Correction")
 
     def test_report_handles_zero_reads_without_error(self) -> None:
-        stats = UmiExtractionStats(
-            total_reads=0,
-            accepted=0,
-            missing_left_anchor=0,
-            no_polyg_anchor=0,
-            length_counts={},
-        )
-        report = stats.get_report()
+        report = self.build(
+            total_reads=0, accepted=0, missing_left_anchor=0, truncated=0
+        ).get_report()
         assert_that(report).contains("Total reads: 0")
         assert_that(report).contains("0.00%")
 
     def test_report_includes_anchor_run_distribution(self) -> None:
-        stats = UmiExtractionStats(
+        report = self.build(
             total_reads=3,
             accepted=3,
             missing_left_anchor=0,
-            no_polyg_anchor=0,
-            length_counts={8: 3},
+            truncated=0,
             homopolymer_base="G",
             homopolymer_run_counts={3: 1, 4: 2},
-        )
-        report = stats.get_report()
+        ).get_report()
         assert_that(report).contains("# Anchor G-run Length Distribution")
         assert_that(report).contains("\t3\t1")
         assert_that(report).contains("\t4\t2")
 
-    def test_correction_report_includes_new_metrics(self) -> None:
-        stats = UmiExtractionStats(
-            total_reads=4,
-            accepted=4,
-            missing_left_anchor=0,
-            no_polyg_anchor=0,
-            length_counts={8: 4},
-            correction=CorrectionStats(
-                assigned_reads=4,
-                corrections_applied=1,
-                num_cell_barcodes=1,
-                dropped_raw_n=0,
-                dropped_off_length=0,
-                distinct_corrected_umis=1,
-                umi_collapses=3,
-            ),
-        )
-        report = stats.get_report()
-        assert_that(report).contains("# UMI Correction Stats")
-        assert_that(report).contains("Cell barcodes (groups): 1")
-        assert_that(report).contains("Reads assigned UB: 4")
-        assert_that(report).contains("Corrections applied (UB != raw): 1")
-        assert_that(report).contains("Mean reads per UMI: 4.00")
+    def test_report_omits_the_anchor_section_when_no_base_is_known(self) -> None:
+        """A chemistry with no homopolymer 3' of its UMI simply has nothing to report."""
+        assert_that(self.build().get_report()).does_not_contain("Anchor")
 
 
 class TestExtractUmisCli:
@@ -435,15 +505,24 @@ class TestExtractUmisCli:
                     CHEMISTRY,
                     "--output_dir",
                     str(tmp_path),
-                    "--raw",
                 ],
             )
 
         assert_that(result.exit_code).is_equal_to(0)
         mock_extractor.assert_called_once_with(DUMMY_FASTQ, CHEMISTRY)
-        mock_extractor.return_value.extract_umis.assert_called_once_with(
-            str(tmp_path), None, raw=True, temp_dir=None, shard_count=256
+        mock_extractor.return_value.extract_umis.assert_called_once_with(str(tmp_path), None)
+
+    @pytest.mark.parametrize("option", ["--raw", "--temp-dir", "--shard-count"])
+    def test_removed_options_are_rejected(self, tmp_path, option: str) -> None:
+        """The correction options are gone, so passing one is an error rather than a no-op."""
+        runner = CliRunner()
+        result = runner.invoke(
+            carmack.__main__.carmack_cli,
+            ["extract-umis", DUMMY_FASTQ, "--chemistry", CHEMISTRY, option],
         )
+
+        assert_that(result.exit_code).is_not_equal_to(0)
+        assert_that(result.output).contains("No such option")
 
     def test_cli_listed_in_help(self) -> None:
         runner = CliRunner()
@@ -452,101 +531,14 @@ class TestExtractUmisCli:
         assert_that(result.output).contains("extract-umis")
 
 
-class TestExtractUmisCorrection:
-    """The correction stage: the umi_map.tsv contract and correction stats."""
-
-    def read_map(self, path) -> list[list[str]]:
-        """Read the tab-separated, header-less umi_map.tsv into split rows."""
-        return [line.split("\t") for line in path.read_text().splitlines()]
-
-    def test_writes_umi_map_with_corrected_reads(self, build_extractor, tmp_path) -> None:
-        records = [
-            make_read("p1", "ACTACTAC", 4),
-            make_read("p2", "ACTACTAC", 4),
-            make_read("p3", "ACTACTAC", 4),
-            make_read("v1", "ACTACTTC", 4),
-        ]
-        extractor = build_extractor(records)
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=False)
-
-        rows = self.read_map(tmp_path / "out.umi_map.tsv")
-        assert_that(rows).is_length(4)
-        for row in rows:
-            assert_that(row).is_length(4)  # read_id, barcode, UR, UB
-
-        full_barcode = extractor.chemistry.construct_full_barcode(
-            {"BC1": BC1_SEQ, "BC2": BC2_SEQ, "BC3": BC3_SEQ}
-        )
-        by_id = {row[0]: row for row in rows}
-        assert_that(by_id["v1"][1]).is_equal_to(full_barcode)
-        assert_that(by_id["v1"][2]).is_equal_to("ACTACTTC")  # UR = faithful raw
-        assert_that(by_id["v1"][3]).is_equal_to("ACTACTAC")  # UB = highest-count rep
-        assert_that({row[3] for row in rows}).is_equal_to({"ACTACTAC"})
-        assert_that(stats.correction.assigned_reads).is_equal_to(4)
-        # Only v1 (ACTACTTC) was reassigned to the ACTACTAC representative.
-        assert_that(stats.correction.corrections_applied).is_equal_to(1)
-        # The anchor run-length distribution is recorded (all reads use a 4-G run).
-        assert_that(stats.homopolymer_base).is_equal_to("G")
-        assert_that(stats.homopolymer_run_counts).is_equal_to({4: 4})
-
-    def test_raw_true_writes_no_map_and_no_ub(self, build_extractor, tmp_path) -> None:
-        records = [make_read("a", "ACTACTAC", 4)]
-        extractor = build_extractor(records)
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=True)
-
-        assert_that((tmp_path / "out.umi_map.tsv").exists()).is_false()
-        assert_that(stats.correction).is_none()
-        fastq = gzip.decompress((tmp_path / "out.r1_umi.fastq.gz").read_bytes()).decode()
-        assert_that(fastq).does_not_contain("UB")
-
-    def test_grouping_isolates_barcodes_end_to_end(self, build_extractor, tmp_path) -> None:
-        records = [
-            make_read("g1", "ACTACTAC", 4, bc1="AAAAAAAAAA"),
-            make_read("g2", "ACTACTAC", 4, bc1="TTTTTTTTTT"),
-        ]
-        extractor = build_extractor(records)
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=False)
-
-        rows = {row[0]: row for row in self.read_map(tmp_path / "out.umi_map.tsv")}
-        assert_that(rows["g1"][1]).is_not_equal_to(rows["g2"][1])
-        assert_that(stats.correction.distinct_corrected_umis).is_equal_to(2)
-
-    def test_raw_n_read_excluded_from_map(self, build_extractor, tmp_path) -> None:
-        records = [
-            make_read("clean", "ACTACTAC", 4),
-            make_read("ncontam", "ACTNCTAC", 4),
-        ]
-        extractor = build_extractor(records)
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=False)
-
-        ids = [row[0] for row in self.read_map(tmp_path / "out.umi_map.tsv")]
-        assert_that(ids).contains("clean")
-        assert_that(ids).does_not_contain("ncontam")
-        assert_that(stats.correction.dropped_raw_n).is_equal_to(1)
-
-    def test_correction_stats_in_report(self, build_extractor, tmp_path) -> None:
-        records = [make_read("a", "ACTACTAC", 4), make_read("b", "ACTACTAC", 4)]
-        extractor = build_extractor(records)
-        extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=False)
-
-        report = (tmp_path / "out.umi_stats.txt").read_text()
-        assert_that(report).contains("# UMI Correction Stats")
-        assert_that(report).contains("Cell barcodes (groups): 1")
-        assert_that(report).contains("Reads assigned UB: 2")
-        # Two identical UMIs: both are the representative, so nothing is reassigned.
-        assert_that(report).contains("Corrections applied (UB != raw): 0")
-
-    def test_raw_report_omits_correction_section(self, build_extractor, tmp_path) -> None:
-        records = [make_read("a", "ACTACTAC", 4)]
-        extractor = build_extractor(records)
-        extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=True)
-
-        report = (tmp_path / "out.umi_stats.txt").read_text()
-        assert_that(report).does_not_contain("# UMI Correction Stats")
-
-
 class TestExtractUmisHeaderValidation:
-    """The first read's header is validated against the supplied chemistry."""
+    """The first read's header is validated against the supplied chemistry.
+
+    This is the stage's only agreement check between the chemistry it was given
+    and the FASTQ it was pointed at. Everything after it succeeds
+    unconditionally, so without it a mismatched chemistry would run to completion
+    and emit UMIs cut from the wrong coordinate.
+    """
 
     def make_missing_bc3(self, read_id: str) -> tuple[str, str, str]:
         """An annotated read carrying BC1/BC2 (+BC1_POS) but no BC3 tag."""
@@ -557,15 +549,12 @@ class TestExtractUmisHeaderValidation:
         seq = "A" * UMI_START + "ACTACTAC" + "GGGG" + TAIL
         return ann.render(), seq, "I" * len(seq)
 
-    @pytest.mark.parametrize("raw", [False, True])
-    def test_missing_barcode_tag_raises_clear_error(
-        self, build_extractor, tmp_path, raw: bool
-    ) -> None:
+    def test_missing_barcode_tag_raises_clear_error(self, build_extractor, tmp_path) -> None:
         records = [self.make_missing_bc3("r1"), self.make_missing_bc3("r2")]
         extractor = build_extractor(records)
 
         with pytest.raises(ValueError, match="BC3"):
-            extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=raw)
+            extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
         # Validation runs before any output is written.
         assert_that((tmp_path / "out.r1_umi.fastq.gz").exists()).is_false()
 
@@ -578,568 +567,4 @@ class TestExtractUmisHeaderValidation:
         extractor = build_extractor([bad])
 
         with pytest.raises(ValueError, match="BC1_POS"):
-            extractor.extract_umis(output_dir=str(tmp_path), prefix="out", raw=True)
-
-
-class TestCorrectionStatsCombine:
-    """Summing per-shard correction stats back into one run-level total."""
-
-    # Twelve cell barcodes whose crc32 digests populate all four shards, so the
-    # sharded run genuinely spans several shards rather than degenerating to one.
-    BARCODES = [f"{'ACGT' * 2}{index:02d}{'C' * 10}" for index in range(12)]
-
-    def sharded_records(self) -> list[UmiRecord]:
-        """Build a record set spanning many barcodes, collapses and both drop reasons.
-
-        Every barcode carries a three-read parent UMI, a one-read neighbour that
-        clustering collapses into it and a distant UMI that stays separate; some
-        barcodes additionally carry a short UMI that normalisation pads, a raw
-        UMI holding the padding sentinel and an off-length UMI.
-
-        Returns:
-            The assembled records in extraction order.
-        """
-        records: list[UmiRecord] = []
-        for index, barcode in enumerate(self.BARCODES):
-            umis = ["AAAAAAAA"] * 3 + ["AAAAAAAT"] + ["CCCCCCCC"] * 2
-            if index % 2 == 0:
-                umis.append("GGGGGGG")
-            if index % 3 == 0:
-                umis.append("AAAANAAA")
-            if index % 4 == 0:
-                umis.append("TTT")
-            for position, raw_umi in enumerate(umis):
-                records.append(
-                    UmiRecord(
-                        read_id=f"r{index:02d}_{position:02d}", barcode=barcode, raw_umi=raw_umi
-                    )
-                )
-        return records
-
-    def test_combine_sums_every_field(self) -> None:
-        parts = [
-            CorrectionStats(1, 2, 3, 4, 5, 6, 7),
-            CorrectionStats(10, 20, 30, 40, 50, 60, 70),
-            CorrectionStats(100, 0, 5, 0, 1, 2, 0),
-        ]
-
-        combined = CorrectionStats.combine(parts)
-
-        assert_that(combined).is_equal_to(CorrectionStats(111, 22, 38, 44, 56, 68, 77))
-
-    def test_combine_of_nothing_is_all_zero_stats(self) -> None:
-        combined = CorrectionStats.combine([])
-
-        assert_that(combined).is_equal_to(CorrectionStats(0, 0, 0, 0, 0, 0, 0))
-
-    def test_combine_of_a_single_part_returns_that_part(self) -> None:
-        part = CorrectionStats(
-            assigned_reads=9,
-            corrections_applied=2,
-            num_cell_barcodes=3,
-            dropped_raw_n=1,
-            dropped_off_length=4,
-            distinct_corrected_umis=5,
-            umi_collapses=6,
-        )
-
-        assert_that(CorrectionStats.combine([part])).is_equal_to(part)
-
-    def test_sharded_stats_combine_to_the_monolithic_stats(self) -> None:
-        records = self.sharded_records()
-        monolithic_map, monolithic = UmiCorrector(x=8, tol=1).correct(records)
-
-        shards: dict[int, list[UmiRecord]] = defaultdict(list)
-        for record in records:
-            shards[shard_index(record.barcode, 4)].append(record)
-        parts = []
-        sharded_map: dict[str, CorrectedUmi] = {}
-        for index in sorted(shards):
-            mapping, stats = UmiCorrector(x=8, tol=1).correct(shards[index])
-            sharded_map.update(mapping)
-            parts.append(stats)
-        combined = CorrectionStats.combine(parts)
-
-        # Several shards must be populated or the equality proves nothing.
-        assert_that(len(parts)).is_greater_than(1)
-        assert_that(combined).is_equal_to(monolithic)
-        assert_that(combined.num_cell_barcodes).is_equal_to(monolithic.num_cell_barcodes)
-        assert_that(combined.distinct_corrected_umis).is_equal_to(
-            monolithic.distinct_corrected_umis
-        )
-        assert_that(combined.umi_collapses).is_equal_to(monolithic.umi_collapses)
-        assert_that(sharded_map).is_equal_to(monolithic_map)
-
-
-# Synthetic cell-barcode panel used by the sharding tests. Seven barcodes each
-# carrying four reads put twenty-eight reads through the run, so the ordinals run
-# well past ten and the barcodes land in several distinct shards.
-SHARDED_BARCODE_COUNT = 7
-SHARDED_UMIS = ["ACTACTAC", "ACTACTAC", "ACTACTAC", "ACTACTTC"]
-
-
-def make_cell_barcode(index: int) -> str:
-    """Return a distinct ten-base BC1 sequence for one synthetic cell barcode.
-
-    Args:
-        index: Position of the barcode in the synthetic panel (0-15).
-
-    Returns:
-        A ten-base sequence differing from that of every other index.
-    """
-    bases = "ACGT"
-    return f"AACCGGTT{bases[index // 4]}{bases[index % 4]}"
-
-
-def make_many_barcode_records() -> list[tuple[str, str, str]]:
-    """Build annotated reads spanning many cell barcodes and many ordinals.
-
-    Every barcode carries a three-read parent UMI plus one single-read neighbour
-    that directional clustering collapses into it, so the run exercises grouping,
-    collapsing and more than ten reads at once.
-
-    Returns:
-        The ``(header, seq, qual)`` records in input order.
-    """
-    records: list[tuple[str, str, str]] = []
-    for index in range(SHARDED_BARCODE_COUNT):
-        for umi_seq in SHARDED_UMIS:
-            read_id = f"read{len(records) + 1:02d}"
-            records.append(make_read(read_id, umi_seq, 4, bc1=make_cell_barcode(index)))
-    return records
-
-
-def input_read_ids(records: list[tuple[str, str, str]]) -> list[str]:
-    """Return the read ids of annotated records in input order.
-
-    Args:
-        records: The ``(header, seq, qual)`` records handed to the extractor.
-
-    Returns:
-        The parsed read ids, in the order the reads appear in the FASTQ.
-    """
-    return [ReadAnnotation.parse(header).read_id for header, _seq, _qual in records]
-
-
-class TestExtractUmisSharding:
-    """Sharded correction must be invisible in the extractor's output."""
-
-    def read_map(self, path) -> list[list[str]]:
-        """Read the tab-separated, header-less umi_map.tsv into split rows."""
-        return [line.split("\t") for line in path.read_text().splitlines()]
-
-    def full_barcodes(self, extractor: UmiExtractor) -> set[str]:
-        """Return the full cell barcodes the synthetic panel resolves to.
-
-        Args:
-            extractor: The extractor whose chemistry assembles the barcode.
-
-        Returns:
-            The distinct full barcodes carried by the panel's reads.
-        """
-        return {
-            extractor.chemistry.construct_full_barcode(
-                {"BC1": make_cell_barcode(index), "BC2": BC2_SEQ, "BC3": BC3_SEQ}
-            )
-            for index in range(SHARDED_BARCODE_COUNT)
-        }
-
-    def test_umi_map_is_identical_across_shard_counts(self, build_extractor, tmp_path) -> None:
-        records = make_many_barcode_records()
-        extractor = build_extractor(records)
-
-        outputs: dict[int, bytes] = {}
-        for shard_count in (1, 3, 7, 256):
-            output_dir = tmp_path / f"shards{shard_count}"
-            output_dir.mkdir()
-            extractor.extract_umis(
-                output_dir=str(output_dir), prefix="out", shard_count=shard_count
-            )
-            outputs[shard_count] = (output_dir / "out.umi_map.tsv").read_bytes()
-
-        # The panel must straddle several shards or the equality proves nothing.
-        barcodes = self.full_barcodes(extractor)
-        for shard_count in (3, 7, 256):
-            spread = {shard_index(barcode, shard_count) for barcode in barcodes}
-            assert_that(len(spread)).is_greater_than(1)
-
-        # shard_count=1 reproduces the old single-pass behaviour, so it is the reference.
-        reference = outputs[1]
-        assert_that(reference).is_not_empty()
-        assert_that(outputs[3]).is_equal_to(reference)
-        assert_that(outputs[7]).is_equal_to(reference)
-        assert_that(outputs[256]).is_equal_to(reference)
-
-    @pytest.mark.parametrize("shard_count", [3, 7, 256])
-    def test_correction_stats_match_the_single_shard_run(
-        self, build_extractor, tmp_path, shard_count: int
-    ) -> None:
-        records = make_many_barcode_records()
-        extractor = build_extractor(records)
-        single_dir = tmp_path / "single"
-        single_dir.mkdir()
-        sharded_dir = tmp_path / "sharded"
-        sharded_dir.mkdir()
-
-        reference = extractor.extract_umis(output_dir=str(single_dir), prefix="out", shard_count=1)
-        sharded = extractor.extract_umis(
-            output_dir=str(sharded_dir), prefix="out", shard_count=shard_count
-        )
-
-        assert_that(sharded.correction).is_equal_to(reference.correction)
-        # The three counts of distinct things are the ones sharding could double count.
-        assert_that(sharded.correction.num_cell_barcodes).is_equal_to(
-            reference.correction.num_cell_barcodes
-        )
-        assert_that(sharded.correction.distinct_corrected_umis).is_equal_to(
-            reference.correction.distinct_corrected_umis
-        )
-        assert_that(sharded.correction.umi_collapses).is_equal_to(
-            reference.correction.umi_collapses
-        )
-        # The fixture must actually group and collapse, or the equality is vacuous.
-        assert_that(reference.correction.num_cell_barcodes).is_equal_to(SHARDED_BARCODE_COUNT)
-        assert_that(reference.correction.umi_collapses).is_greater_than(0)
-
-    @pytest.mark.parametrize("shard_count", [1, 3, 7, 256])
-    def test_read_order_is_preserved_past_the_tenth_read(
-        self, build_extractor, tmp_path, shard_count: int
-    ) -> None:
-        records = make_many_barcode_records()
-        extractor = build_extractor(records)
-
-        extractor.extract_umis(output_dir=str(tmp_path), prefix="out", shard_count=shard_count)
-
-        read_ids = [row[0] for row in self.read_map(tmp_path / "out.umi_map.tsv")]
-        # Ordinals compared as text would sort 1, 10, 11, 2, ..., so the run must
-        # be long enough for that scramble to show up in the read order.
-        assert_that(len(read_ids)).is_greater_than(10)
-        assert_that(read_ids).is_equal_to(input_read_ids(records))
-
-    def test_dropped_read_omitted_while_neighbours_keep_their_order(
-        self, build_extractor, tmp_path
-    ) -> None:
-        records = make_many_barcode_records()
-        records.insert(14, make_read("sentinel", "ACTNCTAC", 4, bc1=make_cell_barcode(2)))
-        extractor = build_extractor(records)
-
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", shard_count=7)
-
-        read_ids = [row[0] for row in self.read_map(tmp_path / "out.umi_map.tsv")]
-        expected = [read_id for read_id in input_read_ids(records) if read_id != "sentinel"]
-        assert_that(read_ids).does_not_contain("sentinel")
-        assert_that(read_ids).is_equal_to(expected)
-        assert_that(stats.correction.dropped_raw_n).is_equal_to(1)
-
-    def test_every_read_rejected_writes_an_empty_map(self, build_extractor, tmp_path) -> None:
-        records = [(make_read_header(f"nog{index}"), "A" * 40, "I" * 40) for index in range(3)]
-        extractor = build_extractor(records)
-
-        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out", shard_count=4)
-
-        umi_map_path = tmp_path / "out.umi_map.tsv"
-        assert_that(umi_map_path.exists()).is_true()
-        assert_that(umi_map_path.read_bytes()).is_empty()
-        assert_that(stats.correction).is_equal_to(CorrectionStats(0, 0, 0, 0, 0, 0, 0))
-
-    @pytest.mark.parametrize("shard_count", [0, -1])
-    def test_shard_count_below_one_raises(
-        self, build_extractor, tmp_path, shard_count: int
-    ) -> None:
-        extractor = build_extractor([make_read("a", "ACTACTAC", 4)])
-
-        with pytest.raises(ValueError, match="shard_count"):
-            extractor.extract_umis(output_dir=str(tmp_path), prefix="out", shard_count=shard_count)
-
-
-def make_spilled_records(extractor: UmiExtractor, replicates: int) -> list[UmiRecord]:
-    """Build the records extraction would spill for the synthetic barcode panel.
-
-    Each record is shaped the way ``extract_umis`` shapes it: a full cell barcode
-    assembled by the chemistry from the panel's BC1/BC2/BC3 tags, and one record
-    per accepted read. Every UMI is in-window and sentinel-free, so correction
-    assigns all of them and the merged map carries one row per record.
-
-    Args:
-        extractor: The extractor whose chemistry assembles the full barcode.
-        replicates: Number of times the panel's reads are repeated, which sets
-            how much text each shard's write handle has to hold.
-
-    Returns:
-        The records in extraction order, so their ordinals ascend from zero.
-    """
-    barcodes = [
-        extractor.chemistry.construct_full_barcode(
-            {"BC1": make_cell_barcode(index), "BC2": BC2_SEQ, "BC3": BC3_SEQ}
-        )
-        for index in range(SHARDED_BARCODE_COUNT)
-    ]
-    records: list[UmiRecord] = []
-    for _ in range(replicates):
-        for barcode in barcodes:
-            for umi_seq in SHARDED_UMIS:
-                records.append(
-                    UmiRecord(read_id=f"read{len(records):05d}", barcode=barcode, raw_umi=umi_seq)
-                )
-    return records
-
-
-class TestCorrectShards:
-    """Correction driven straight against a shard store the caller populated."""
-
-    # Enough replicates of the panel that every shard holds several times the
-    # text one write handle buffers, so a shard read that missed the buffered
-    # tail would drop rows from the middle of the map and not only its end.
-    REPLICATES = 40
-
-    def test_correct_shards_maps_every_record_without_a_caller_side_close(
-        self, build_extractor, tmp_path
-    ) -> None:
-        extractor = build_extractor([make_read("a", "ACTACTAC", 4)])
-        records = make_spilled_records(extractor, self.REPLICATES)
-        umi_map_path = tmp_path / "out.umi_map.tsv"
-
-        with UmiShardStore(shard_count=4, temp_dir=str(tmp_path)) as store:
-            for ordinal, record in enumerate(records):
-                store.write(ordinal, record)
-            stats = extractor.correct_shards(store, umi_map_path)
-
-        # The panel has to straddle several shards, or one readable shard could
-        # carry the whole map and a lost shard would go unnoticed.
-        spread = {shard_index(record.barcode, 4) for record in records}
-        assert_that(len(spread)).is_greater_than(1)
-        read_ids = [line.split("\t")[0] for line in umi_map_path.read_text().splitlines()]
-        assert_that(read_ids).is_length(len(records))
-        assert_that(read_ids).is_equal_to([record.read_id for record in records])
-        assert_that(stats.assigned_reads).is_equal_to(len(records))
-
-
-class TestExtractUmisTempDir:
-    """Where the spill tree is created, and that it never outlives the run."""
-
-    @pytest.fixture
-    def spill_dir(self, tmp_path):
-        """Return a pre-created, empty directory to hold the spill tree."""
-        path = tmp_path / "spill"
-        path.mkdir()
-        return path
-
-    def test_raw_run_does_no_shard_work(self, build_extractor, tmp_path, spill_dir) -> None:
-        extractor = build_extractor([make_read("a", "ACTACTAC", 4), make_read("b", "ACTACTAC", 4)])
-
-        extractor.extract_umis(
-            output_dir=str(tmp_path), prefix="out", raw=True, temp_dir=str(spill_dir)
-        )
-
-        assert_that(list(spill_dir.iterdir())).is_empty()
-        assert_that((tmp_path / "out.umi_map.tsv").exists()).is_false()
-
-    def test_successful_run_leaves_no_spill_tree(
-        self, build_extractor, tmp_path, spill_dir
-    ) -> None:
-        extractor = build_extractor(make_many_barcode_records())
-
-        extractor.extract_umis(
-            output_dir=str(tmp_path), prefix="out", temp_dir=str(spill_dir), shard_count=4
-        )
-
-        assert_that(list(spill_dir.iterdir())).is_empty()
-        assert_that((tmp_path / "out.umi_map.tsv").exists()).is_true()
-
-    def test_failed_correction_still_removes_the_spill_tree(
-        self, build_extractor, tmp_path, spill_dir
-    ) -> None:
-        extractor = build_extractor(make_many_barcode_records())
-
-        with mock.patch(
-            "carmack.umi.umi_extractor.UmiCorrector.correct",
-            side_effect=RuntimeError("correction exploded"),
-        ):
-            with pytest.raises(RuntimeError, match="correction exploded"):
-                extractor.extract_umis(
-                    output_dir=str(tmp_path), prefix="out", temp_dir=str(spill_dir), shard_count=4
-                )
-
-        assert_that(list(spill_dir.iterdir())).is_empty()
-
-    def test_spill_tree_is_created_under_the_supplied_temp_dir(
-        self, build_extractor, tmp_path, spill_dir
-    ) -> None:
-        extractor = build_extractor(make_many_barcode_records())
-        original_correct = UmiCorrector.correct
-        observed: list[list[str]] = []
-
-        def spying_correct(corrector, records):
-            """Record the supplied temp dir's contents at the moment correction runs."""
-            observed.append([entry.name for entry in sorted(Path(spill_dir).iterdir())])
-            return original_correct(corrector, records)
-
-        with mock.patch.object(UmiCorrector, "correct", spying_correct):
-            extractor.extract_umis(
-                output_dir=str(tmp_path), prefix="out", temp_dir=str(spill_dir), shard_count=4
-            )
-
-        assert_that(observed).is_not_empty()
-        assert_that(observed[0]).is_not_empty()
-        for name in observed[0]:
-            assert_that(name).starts_with("carmack-umi-")
-        # The tree the run created is gone once the run is over.
-        assert_that(list(spill_dir.iterdir())).is_empty()
-
-
-class TestExtractUmisCliShardOptions:
-    """CLI wiring for the temp-dir and shard-count options."""
-
-    def test_cli_passes_temp_dir_and_shard_count(self, tmp_path) -> None:
-        runner = CliRunner()
-        with mock.patch("carmack.__main__.UmiExtractor", autospec=True) as mock_extractor:
-            result = runner.invoke(
-                carmack.__main__.carmack_cli,
-                [
-                    "extract-umis",
-                    DUMMY_FASTQ,
-                    "--chemistry",
-                    CHEMISTRY,
-                    "--output_dir",
-                    str(tmp_path),
-                    "--temp-dir",
-                    str(tmp_path),
-                    "--shard-count",
-                    "8",
-                ],
-            )
-
-        assert_that(result.exit_code).is_equal_to(0)
-        mock_extractor.return_value.extract_umis.assert_called_once_with(
-            str(tmp_path), None, raw=False, temp_dir=str(tmp_path), shard_count=8
-        )
-
-    def test_cli_help_lists_the_sharding_options(self) -> None:
-        runner = CliRunner()
-        result = runner.invoke(carmack.__main__.carmack_cli, ["extract-umis", "--help"])
-
-        assert_that(result.exit_code).is_equal_to(0)
-        assert_that(result.output).contains("--temp-dir")
-        assert_that(result.output).contains("--shard-count")
-
-    def test_cli_rejects_a_shard_count_below_one(self, tmp_path) -> None:
-        runner = CliRunner()
-        with mock.patch("carmack.__main__.UmiExtractor", autospec=True) as mock_extractor:
-            result = runner.invoke(
-                carmack.__main__.carmack_cli,
-                [
-                    "extract-umis",
-                    DUMMY_FASTQ,
-                    "--chemistry",
-                    CHEMISTRY,
-                    "--output_dir",
-                    str(tmp_path),
-                    "--shard-count",
-                    "0",
-                ],
-            )
-
-        assert_that(result.exit_code).is_not_equal_to(0)
-        assert_that(result.output).contains("not in the range")
-        mock_extractor.return_value.extract_umis.assert_not_called()
-
-
-UMI_MAP_DETERMINISM_INPUT = (
-    Path(__file__).parent / "data" / "golden" / "custom_seq_1_0_small_R1.fastq.gz"
-)
-UMI_MAP_DETERMINISM_PREFIX = "determinism"
-UMI_MAP_DETERMINISM_WORKERS = 16
-UMI_MAP_DETERMINISM_RUNS = 2
-# Barcode extraction sizes its batches as min(max(10, ceil(200 / 16)), 2500) = 13, so the
-# 200-read input becomes 16 batches spread over 16 workers. That the batches genuinely run
-# concurrently is what gives a completion-order fold the chance to reorder the annotated
-# FASTQ, and so the map, in the first place.
-UMI_MAP_DETERMINISM_BATCH_SIZE = 13
-# Four shards keep the spilled records spread over several shard files while costing four
-# open file descriptors rather than the production default's 256, which is worth avoiding
-# for a 200-read run sharing a session with the rest of the suite.
-UMI_MAP_DETERMINISM_SHARD_COUNT = 4
-
-
-class TestUmiMapRepeatRunDeterminism:
-    """The umi_map.tsv is byte-stable over repeat runs at a high worker count.
-
-    Every accepted read is stamped with its ordinal in annotated-FASTQ order and
-    the shard merge sorts the map on that ordinal, so the map's row order is
-    exactly the annotated FASTQ's read order. While barcode extraction folded its
-    worker results as they completed, that read order followed however the pool
-    happened to schedule its batches rather than the input, so two runs of the
-    same input at the same worker count could write the same rows in a different
-    order. Folding in submission order is what removes that variation, and this
-    is what keeps it removed.
-
-    The two runs are compared against each other rather than against a stored
-    golden, so the assertion holds whatever the goldens happen to contain.
-
-    ``fast=True`` drops the alignment matcher tier, which is the tier that makes
-    barcode extraction slow. Row order is what is asserted here, not matcher
-    sensitivity, so dropping that tier costs no coverage.
-
-    Barcode extraction is driven through a deadline-guarded process group: it is
-    the stage that forks a worker pool while gzip writer subprocesses are open, so
-    a teardown regression there hangs the session rather than failing it. UMI
-    extraction opens no pool, so it runs in-process.
-    """
-
-    @pytest.fixture(scope="class")
-    def umi_maps(self, tmp_path_factory: pytest.TempPathFactory) -> list[bytes]:
-        """Run barcode then UMI extraction twice over, returning each run's map bytes.
-
-        Each run gets its own output directory and its own spill directory under
-        the session's temporary tree, so neither run can observe the other's
-        files and the spill never reaches a possibly RAM-backed system default.
-
-        Args:
-            tmp_path_factory: Factory supplying the class-scoped working tree.
-
-        Returns:
-            The raw bytes of each run's ``umi_map.tsv``, in run order.
-        """
-        work_dir = tmp_path_factory.mktemp("umi_map_determinism")
-        maps: list[bytes] = []
-
-        for run in range(UMI_MAP_DETERMINISM_RUNS):
-            run_dir = work_dir / f"run{run}"
-            run_dir.mkdir()
-            spill_dir = run_dir / "spill"
-            spill_dir.mkdir()
-
-            run_extraction_in_process_group(
-                str(UMI_MAP_DETERMINISM_INPUT),
-                run_dir,
-                UMI_MAP_DETERMINISM_PREFIX,
-                chemistry_name=CHEMISTRY,
-                n_workers=UMI_MAP_DETERMINISM_WORKERS,
-                fast=True,
-            )
-
-            annotated = run_dir / f"{UMI_MAP_DETERMINISM_PREFIX}.r1_annotated.fastq.gz"
-            extractor = UmiExtractor(str(annotated), CHEMISTRY)
-            extractor.extract_umis(
-                output_dir=str(run_dir),
-                prefix=UMI_MAP_DETERMINISM_PREFIX,
-                temp_dir=str(spill_dir),
-                shard_count=UMI_MAP_DETERMINISM_SHARD_COUNT,
-            )
-            maps.append((run_dir / f"{UMI_MAP_DETERMINISM_PREFIX}.umi_map.tsv").read_bytes())
-
-        return maps
-
-    def test_umi_map_is_byte_identical_across_repeat_runs(self, umi_maps: list[bytes]) -> None:
-        first, second = umi_maps
-
-        # Two empty maps compare equal for the wrong reason, and rows drawn from a single
-        # batch could not have been reordered at all, so both are ruled out up front.
-        assert_that(first).is_not_empty()
-        assert_that(len(first.decode().splitlines())).is_greater_than(
-            UMI_MAP_DETERMINISM_BATCH_SIZE
-        )
-
-        assert_that(second).described_as(
-            f"umi_map.tsv over two independent {UMI_MAP_DETERMINISM_WORKERS}-worker runs"
-        ).is_equal_to(first)
+            extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
