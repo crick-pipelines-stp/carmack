@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from carmack import __version__ as carmack_version
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,215 @@ class AssignStats:
             count = self.homopolymer_run_counts[run_length]
             section += f"\t{run_length}\t{count} ({self.fraction(count, measured):.2%})\n"
         return section
+
+    def to_mqc_general_stats(self, prefix: str) -> dict[str, object]:
+        """Build a MultiQC "generalstats" custom-content payload summarising this run.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with a single row of headline percentages
+            (matched, no_match, no_left_anchor_pos, short_window) for this sample.
+        """
+        pct_matched = 100 * self.fraction(self.matched, self.total_reads)
+        pct_no_match = 100 * self.fraction(self.unmatched_no_match, self.total_reads)
+        pct_no_left_anchor_pos = 100 * self.fraction(
+            self.unmatched_no_left_anchor_pos, self.total_reads
+        )
+        pct_short_window = 100 * self.fraction(self.unmatched_short_window, self.total_reads)
+
+        return {
+            "id": "carmack_tgidx_general_stats",
+            "plot_type": "generalstats",
+            "pconfig": [
+                {
+                    "pct_matched": {
+                        "title": "% Matched",
+                        "description": "Percentage of reads whose window resolved to a single whitelist entry.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "RdYlGn",
+                    }
+                },
+                {
+                    "pct_no_match": {
+                        "title": "% No Match",
+                        "description": "Percentage of reads whose window was searched and yielded no usable answer.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+                {
+                    "pct_no_left_anchor_pos": {
+                        "title": "% No Anchor Pos",
+                        "description": "Percentage of reads whose header carried no anchor position tag, so no window could be derived.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+                {
+                    "pct_short_window": {
+                        "title": "% Short Window",
+                        "description": "Percentage of reads whose window was shorter than the floor the matcher needs.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+            ],
+            "data": {
+                prefix: {
+                    "pct_matched": pct_matched,
+                    "pct_no_match": pct_no_match,
+                    "pct_no_left_anchor_pos": pct_no_left_anchor_pos,
+                    "pct_short_window": pct_short_window,
+                }
+            },
+        }
+
+    def to_mqc_breakdown(self, prefix: str) -> dict[str, object]:
+        """Build a MultiQC "bargraph" custom-content payload of raw outcome counts.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload nested under carmack's shared parent section,
+            with one bar per sample split into matched/no_match/no_left_anchor_pos/
+            short_window read counts.
+        """
+        return {
+            "id": "carmack_tgidx_breakdown",
+            "plot_type": "bargraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Target Index Assignment Breakdown",
+            "description": "Read counts broken down by target index assignment outcome.",
+            "pconfig": {
+                "id": "carmack_tgidx_breakdown_plot",
+                "title": "Target Index Assignment: Outcomes",
+                "ylab": "Reads",
+            },
+            "data": {
+                prefix: {
+                    "matched": self.matched,
+                    "no_match": self.unmatched_no_match,
+                    "no_left_anchor_pos": self.unmatched_no_left_anchor_pos,
+                    "short_window": self.unmatched_short_window,
+                }
+            },
+        }
+
+    def to_mqc_target_distribution(self, prefix: str) -> dict[str, object]:
+        """Build a MultiQC "bargraph" custom-content payload of the per-target distribution.
+
+        Unlike :meth:`to_mqc_edit_distance` and :meth:`to_mqc_anchor_run`, this is
+        never suppressed: an empty run still gets a plot with an empty ``data``
+        mapping, because a cross-target hopping signal absent from a run is itself
+        worth showing rather than omitting.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload carrying ``target_counts`` verbatim,
+            with no filtering or sorting applied. This is the cross-target hopping
+            signal: a read assigned to a target other than the one expected for
+            this sample is the highest-value diagnostic this stage produces.
+        """
+        return {
+            "id": "carmack_tgidx_target_distribution",
+            "plot_type": "bargraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Target Index Distribution",
+            "description": (
+                "Per-target read counts among matched reads. This is the cross-target "
+                "hopping signal: reads assigned to a target other than the one expected "
+                "for this sample indicate index hopping or misassignment, making it the "
+                "highest-value plot this stage produces."
+            ),
+            "pconfig": {
+                "id": "carmack_tgidx_target_distribution_plot",
+                "title": "Target Index Assignment: Target Distribution",
+                "ylab": "Reads",
+            },
+            "data": {prefix: dict(self.target_counts)},
+        }
+
+    def to_mqc_edit_distance(self, prefix: str) -> dict[str, object] | None:
+        """Build a MultiQC "linegraph" custom-content payload of the edit distance distribution.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with the edit distance distribution over
+            matched reads, or ``None`` if no read was ever matched.
+        """
+        if not self.edit_distance_counts:
+            return None
+
+        return {
+            "id": "carmack_tgidx_edit_distance",
+            "plot_type": "linegraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Target Index Edit Distance",
+            "description": "Distribution of edit distances for matched target index reads.",
+            "pconfig": {
+                "id": "carmack_tgidx_edit_distance_plot",
+                "title": "Target Index Assignment: Edit Distance Distribution",
+                "xlab": "Edit distance",
+                "ylab": "Reads",
+            },
+            "data": {prefix: dict(self.edit_distance_counts)},
+        }
+
+    def to_mqc_anchor_run(self, prefix: str) -> dict[str, object] | None:
+        """Build a MultiQC "linegraph" custom-content payload of the anchor run distribution.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with the anchor homopolymer run-length
+            distribution, or ``None`` when no run was ever measured. Independent of
+            :meth:`to_mqc_edit_distance`: a run with no matched reads can still have
+            measured anchor runs, and vice versa.
+        """
+        if not self.homopolymer_run_counts:
+            return None
+
+        return {
+            "id": "carmack_tgidx_anchor_run",
+            "plot_type": "linegraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Target Index Anchor Run Length",
+            "description": (
+                "Distribution of the observed anchor homopolymer run length ahead of the "
+                "target index."
+            ),
+            "pconfig": {
+                "id": "carmack_tgidx_anchor_run_plot",
+                "title": "Target Index Assignment: Anchor Run Length Distribution",
+                "xlab": "Run length",
+                "ylab": "Reads",
+            },
+            "data": {prefix: dict(self.homopolymer_run_counts)},
+        }
 
 
 @dataclass
