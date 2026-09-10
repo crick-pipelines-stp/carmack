@@ -272,9 +272,11 @@ class ReadPreparer:
             The reconciling :class:`PrepareStats` for the run.
 
         Raises:
-            ValueError: If the first pulled pair's read ids disagree, or if one stream
-                is exhausted before the other -- raised before any output file is
-                opened, so a mismatched input leaves no truncated output behind.
+            ValueError: If an R1 read is carried by no remaining read in R2. The first
+                pair is pulled before any output file is opened, so the wholesale
+                mismatch of an R2 belonging to another sample leaves no truncated
+                output behind; a read missing further into an otherwise matching R2
+                surfaces mid-run instead, once output is already flowing.
         """
         prefix = prefix or get_prefix(self.r1_fastq.filename)
 
@@ -282,9 +284,12 @@ class ReadPreparer:
         r2_reads = self.r2_fastq.open_read_iterator(as_string=True)
         pairs = iter_paired_reads(r1_reads, r2_reads)
 
-        # Pulled and validated before anything is opened, so a mismatch on the very
-        # first pair -- the one place `next()` can raise here -- leaves no executor, no
-        # writer and no partial output file behind for the caller to clean up.
+        # Pulled before anything is opened, because the first pair is the one whose
+        # failure is worth catching early: an R2 from another sample matches the first
+        # R1 read nowhere, so this `next()` walks the whole of R2 out and raises with
+        # no executor, no writer and no partial output file behind it. A read missing
+        # from an otherwise matching R2 can only surface where the pairing reaches it,
+        # mid-stream and with output already open, so this buys nothing for that case.
         first_pair = next(pairs, None)
         if first_pair is not None:
             pairs = chain([first_pair], pairs)
@@ -431,43 +436,63 @@ def prepare_read_batch(
 
 
 def iter_paired_reads(r1_reads: Iterable[Read], r2_reads: Iterable[Read]) -> Iterator[ReadPair]:
-    """Lazily zip an R1 read stream with its R2 stream, validating every pulled pair.
+    """Lazily pair a thinned R1 read stream against the full R2 stream it was cut from.
 
-    At most one read is pulled from each stream before its pair is validated and
-    yielded, so a mismatch anywhere in the streams is raised at exactly that point,
-    with every pair already yielded left unaffected and nothing beyond the mismatch
-    ever pulled from either stream.
+    R1 reaches this point already thinned: barcode extraction writes out only the
+    reads whose barcode matched, and UMI extraction then drops the reads missing
+    their anchor or too short to carry the UMI slice. Neither stage reorders or
+    duplicates a survivor, and nothing filters R2 at all, so R1's reads are always an
+    order-preserving subsequence of R2's. Pairing by position would therefore fall
+    out of step at the first read R1 lost. Each R1 read's partner is instead searched
+    for by advancing R2 and discarding what it hands back until the ids agree, which
+    that subsequence property is exactly what makes sound: every R1 read's partner
+    lies somewhere ahead in R2, and every R2 read passed over on the way to it is one
+    upstream filtering already discarded. R2 outliving R1 is how a healthy run ends,
+    so the stream simply stops once R1 does.
+
+    Laziness is an R1-side guarantee only, and unavoidably so. Nothing is ever pulled
+    from R1 beyond the read currently being matched, so a caller that bounds its own
+    consumption bounds how far into R1 the pairing runs. R2 can carry no such
+    promise: skipping ahead cannot know a partner is absent until the stream ends, so
+    the one search that fails has drained the whole remainder of R2 to prove it.
 
     Args:
         r1_reads: R1 reads, each yielding at least ``(name, seq, qual)``.
         r2_reads: R2 reads, each yielding at least ``(name, seq, qual)``.
 
     Yields:
-        The next ``(r1_read, r2_read)`` pair, in stream order.
+        The next ``(r1_read, r2_read)`` pair, in R1's order.
 
     Raises:
-        ValueError: If a pulled pair's read ids disagree, or if one stream is
-            exhausted before the other.
+        ValueError: If R2 runs out before the current R1 read's id is found in it.
+            No amount of upstream filtering can produce an R1 read that no remaining
+            R2 read matches, so the two files did not come from the same run -- R2 is
+            truncated, reordered, or from another sample.
     """
-    r1_iter = iter(r1_reads)
     r2_iter = iter(r2_reads)
-    sentinel = object()
+    last_r2_id: str | None = None
 
-    while True:
-        r1_read = next(r1_iter, sentinel)
-        r2_read = next(r2_iter, sentinel)
-
-        if r1_read is sentinel and r2_read is sentinel:
-            return
-        if r1_read is sentinel or r2_read is sentinel:
-            raise ValueError("R1 and R2 streams do not carry the same number of reads")
-
+    for r1_read in r1_reads:
         r1_id = ReadAnnotation.parse(r1_read[0]).read_id
-        r2_id = ReadAnnotation.parse(r2_read[0]).read_id
-        if r1_id != r2_id:
-            raise ValueError(f"R1 read '{r1_id}' does not pair with R2 read '{r2_id}'")
 
-        yield r1_read, r2_read
+        partner: Read | None = None
+        for r2_read in r2_iter:
+            last_r2_id = ReadAnnotation.parse(r2_read[0]).read_id
+            if last_r2_id == r1_id:
+                partner = r2_read
+                break
+
+        if partner is None:
+            # An empty R2 has no id to point at, so the two cases are worded apart
+            # rather than letting a placeholder stand where a read id should be.
+            reached = (
+                "the R2 stream was empty"
+                if last_r2_id is None
+                else f"the R2 stream was exhausted after read '{last_r2_id}'"
+            )
+            raise ValueError(f"R1 read '{r1_id}' has no matching read in R2: {reached}")
+
+        yield r1_read, partner
 
 
 def iter_read_pair_batches(
