@@ -1,15 +1,32 @@
 """Tests for ScrnaWriter, which writes one TGIDX=NONE read into the scRNA arm's three
 STARsolo-shaped output files: a trimmed R1 insert, a passthrough R2, and a synthesized
-barcodes FASTQ built by slicing the original untrimmed R1 at each barcode/UMI
-component's own recorded ``*_POS`` span.
+barcodes FASTQ carrying that read's barcode and UMI.
 
-This file currently covers only ``ScrnaWriter.__init__``: the handful of attributes it
-resolves and caches once at construction time, rather than re-deriving on every read -
-the UMI component itself, the annotation key its position is recorded under, its right
-anchor (the anchor ``insert_start`` walks past to find where the trimmed R1 insert
-begins), and the ordered tuple of barcode components that fixes the order barcode
-segments are concatenated into the synthesized barcodes FASTQ. Getting any of these
-wrong at construction time would silently corrupt every read the writer ever
+The barcodes record's two halves come from two different sources, and most of this file
+exists to hold that split in place. Its sequence is read out of the header annotation's
+own value tags - the corrected whitelist barcodes barcode extraction already wrote
+there, concatenated in read-structure order by ``chemistry.construct_full_barcode``,
+followed by the UMI's own tag value - and is never re-sliced out of the raw read. The
+scTIP arm already emits exactly those corrected values in its ``CB=``/``UR=`` header,
+and the two arms of one multiome experiment are joined downstream by barcode, so an arm
+that re-derived raw, error-containing bases here would split one physical cell into two
+apparent cells. The record's quality has no such source - a header carries no quality -
+so it is sliced out of the read's own quality string at each component's recorded
+start, for that component's own declared length, never out to the matched span's end.
+Slicing by declared length is what keeps the record at one fixed total width (38bp for
+``carmack_custom_seq_1_0``) even when a corrected indel left a recorded span a base
+narrower or wider than the component really is. The rare consequence, accepted
+deliberately rather than chased for more precision, is that one quality position inside
+that fixed window can really belong to the neighbouring component.
+
+``TestScrnaWriterInit`` covers the attributes ``__init__`` resolves and caches once at
+construction time rather than re-deriving on every read: the chemistry itself, which
+``write_read`` needs a handle on to call ``construct_full_barcode``; the UMI component;
+the annotation key its position is recorded under; its right anchor (the anchor
+``insert_start`` walks past to find where the trimmed R1 insert begins); and the
+ordered tuple of barcode components, which fixes both the order barcode segments are
+concatenated in and the declared length each one's quality is sliced by. Getting any of
+these wrong at construction time would silently corrupt every read the writer ever
 processes, since none of them are re-checked per read.
 
 The UMI-less-chemistry test exists because ``ScrnaWriter`` is documented to fail
@@ -18,11 +35,18 @@ directly against a chemistry that cannot supply a UMI. Every read this class is 
 handed in production already passed through extract-umis, which transitively
 guarantees a UMI component exists, but the class must not trust that transitively.
 
-Later additions to this file will cover ``write_read``'s R1 trim, R2 passthrough, and
-barcode+UMI concatenation order (using ``io.BytesIO()`` streams), a reordering guard
-against a read structure whose barcodes are not declared BC3/BC2/BC1, a missing
-``*_POS``-tag failure case, and one golden gzip round-trip test using
-``GzipFile.open_write_stream()``.
+The rest of the file covers ``write_read``. ``TestScrnaWriterWriteRead`` takes a read
+whose every component matched cleanly and covers the R1 trim, the R2 passthrough, the
+bare-read-id output headers, and barcode+UMI concatenation order.
+``TestScrnaWriterEmitsCorrectedFixedWidthRecords`` drives the two cases a clean read
+cannot reach: a recorded span whose raw bases disagree with the corrected value written
+beside them, and a recorded span whose width disagrees with the component's declared
+length. ``TestScrnaWriterBarcodeOrderIsStructural`` guards concatenation order against
+ever hardcoding BC3/BC2/BC1, using a fabricated chemistry double.
+``TestScrnaWriterMissingPositionTag`` and ``TestScrnaWriterMissingValueTag`` cover the
+two per-read guards, one over the position tags quality is sliced by and one over the
+value tags sequence is built from. ``TestScrnaWriterGoldenGzipRoundTrip`` is the only
+test here that writes through a real gzip subprocess rather than an ``io.BytesIO()``.
 """
 
 import io
@@ -47,10 +71,27 @@ from carmack.prepare_reads.scrna_writer import ScrnaWriter
 CHEMISTRY = "carmack_custom_seq_1_0"
 
 # Barcode component names in the order the shipped chemistry's read structure
-# declares them - the order barcode_position_keys must reproduce.
+# declares them - the order barcode_components must reproduce, and the order the
+# emitted barcodes record concatenates them in.
 BARCODE_NAMES_IN_STRUCTURE_ORDER = ("BC3", "BC2", "BC1")
 
 NO_UMI_CHEMISTRY = "custom_seq_without_umi_for_scrna_writer"
+
+# The real carmack_custom_seq_1_0 chemistry's own declared component widths - its
+# BC_CHUNK_LEN and UMI_LENGTH - restated here so the synthetic reads built below look like
+# the real thing. These are not decorative: write_read slices quality by each component's
+# declared length rather than out to its recorded span's end, so a synthetic read whose
+# component widths disagreed with the chemistry's would be exercising a layout the writer is
+# not contracted to handle. Tests that deliberately disagree with a declared width do so on
+# one named component at a time, and say so.
+BARCODE_LENGTH = 10
+UMI_LENGTH = 8
+
+# The one fixed total width every synthesized barcodes record has for this chemistry: BC3,
+# BC2 and BC1 at BARCODE_LENGTH each, then the UMI at UMI_LENGTH. Written as the sum rather
+# than as the literal 38 so a chemistry change moves it honestly; the tests that assert on it
+# also check it against the chemistry's own declared lengths.
+FIXED_BARCODES_RECORD_LENGTH = 3 * BARCODE_LENGTH + UMI_LENGTH
 
 
 class ChemistryWithoutUmi(ChemistryCarmackCustomSeq10):
@@ -88,18 +129,39 @@ class TestScrnaWriterInit:
         """
         return ChemistryFactory.get_chemistry(CHEMISTRY)
 
+    def test_retains_the_chemistry_itself(self, chemistry: ChemistryBase) -> None:
+        """Test that __init__ keeps the chemistry it was handed, not only facts derived from it.
+
+        ``write_read`` builds the barcodes record's sequence by calling
+        ``chemistry.construct_full_barcode`` - the same helper the scTIP arm's header
+        rendering already uses - so the writer needs the chemistry object itself for the
+        life of the run, not just the component metadata it unpacked at construction
+        time. Reusing that one helper, rather than reimplementing concatenation here, is
+        what guarantees both arms of a multiome experiment agree on how a full barcode
+        is spelled.
+        """
+        writer = ScrnaWriter(chemistry)
+
+        assert_that(writer.chemistry).is_same_as(chemistry)
+
     def test_caches_the_chemistrys_umi_component(self, chemistry: ChemistryBase) -> None:
         """Test that __init__ resolves chemistry.umi_component() once, onto self.umi.
 
         A later write_read call has no per-read way to re-derive this, so if
         this were ever wrong, cut placement for every read the writer
-        processes would be wrong, and consistently wrong.
+        processes would be wrong, and consistently wrong. The component carries
+        the UMI's declared length as well as its name, and write_read needs all
+        three facts - the name to read the corrected value tag under, the
+        position key to read the recorded start from, and the declared length to
+        slice that many quality characters - so caching the component itself is
+        what makes a separate cached UMI length unnecessary.
         """
         writer = ScrnaWriter(chemistry)
 
         assert_that(writer.umi).is_equal_to(chemistry.umi_component())
         assert_that(writer.umi.name).is_equal_to("UMI")
         assert_that(writer.umi.type).is_equal_to(ReadComponentType.UMI)
+        assert_that(writer.umi.length).is_equal_to(UMI_LENGTH)
 
     def test_caches_the_umi_position_key(self, chemistry: ChemistryBase) -> None:
         """Test that umi_position_key is the position_key of the resolved UMI's own name.
@@ -128,27 +190,36 @@ class TestScrnaWriterInit:
         assert_that(writer.umi_right_anchor.type).is_equal_to(ReadComponentType.HOMOPOLYMER)
         assert_that(writer.umi_right_anchor.name).is_equal_to("POLYG")
 
-    def test_caches_barcode_position_keys_in_read_structure_order(
+    def test_caches_barcode_components_in_read_structure_order(
         self, chemistry: ChemistryBase
     ) -> None:
-        """Test that barcode_position_keys follows read_structure order, not a hardcoded list.
+        """Test that barcode_components follows read_structure order, not a hardcoded list.
 
-        The synthesized barcodes FASTQ concatenates barcode segments in this
-        order, so this is the one mechanism that makes that order follow
-        whatever the chemistry declares rather than a name list baked into
-        the writer.
+        Every per-read fact write_read needs about a barcode hangs off this one
+        tuple, and each of the three comes from a different half of the record:
+        the component's name is the tag the corrected sequence is read from, its
+        position key is the tag the recorded start is read from, and its
+        declared length is how many quality characters are taken from that
+        start. Caching the components themselves rather than three parallel
+        tuples keeps those three facts from ever drifting out of step with each
+        other, and walking
+        ``get_components_by_type(ReadComponentType.BARCODE)`` rather than a name
+        list baked into the writer is what makes concatenation order follow
+        whatever the chemistry declares.
         """
         writer = ScrnaWriter(chemistry)
 
-        expected = tuple(position_key(name) for name in BARCODE_NAMES_IN_STRUCTURE_ORDER)
-        assert_that(writer.barcode_position_keys).is_equal_to(expected)
-        assert_that(writer.barcode_position_keys).is_equal_to(
-            tuple(
-                position_key(comp.name)
-                for comp in chemistry.read_structure.get_components_by_type(
-                    ReadComponentType.BARCODE
-                )
-            )
+        assert_that(writer.barcode_components).is_equal_to(
+            tuple(chemistry.read_structure.get_components_by_type(ReadComponentType.BARCODE))
+        )
+        assert_that(tuple(comp.name for comp in writer.barcode_components)).is_equal_to(
+            BARCODE_NAMES_IN_STRUCTURE_ORDER
+        )
+        assert_that(tuple(comp.position_key for comp in writer.barcode_components)).is_equal_to(
+            tuple(position_key(name) for name in BARCODE_NAMES_IN_STRUCTURE_ORDER)
+        )
+        assert_that(tuple(comp.length for comp in writer.barcode_components)).is_equal_to(
+            (BARCODE_LENGTH,) * len(BARCODE_NAMES_IN_STRUCTURE_ORDER)
         )
 
     def test_umiless_chemistry_raises_value_error(self) -> None:
@@ -165,15 +236,6 @@ class TestScrnaWriterInit:
 
         with pytest.raises(ValueError):
             ScrnaWriter(chemistry)
-
-
-# Fixed component lengths used to build synthetic reads below, matching the real
-# carmack_custom_seq_1_0 chemistry's own BC_CHUNK_LEN and UMI_LENGTH so the synthetic
-# reads look like the real thing, even though write_read itself never checks a
-# component's length against the chemistry - only against the span already recorded on
-# the read's own annotation header.
-BARCODE_LENGTH = 10
-UMI_LENGTH = 8
 
 
 def parse_fastq_record(stream: io.BytesIO) -> tuple[str, str, str]:
@@ -207,10 +269,19 @@ def build_scrna_read(
     """Build a synthetic, fully-annotated R1 read for write_read tests.
 
     Lays out BC3, BC2, BC1, UMI, a poly-G run of the given length, and an insert, in
-    that read-structure order, then records each barcode/UMI component's own span on a
-    ReadAnnotation exactly the way the pipeline's own extraction stages do -
-    position_key plus format_span - since that header is the only input write_read is
-    contracted to trust for locating any of them.
+    that read-structure order, then annotates each barcode/UMI component exactly the way
+    the pipeline's own extraction stages do: a ``<NAME>`` tag holding the component's
+    sequence and a ``<NAME>_POS`` tag holding its span, written through position_key and
+    format_span. Both halves matter, because write_read reads each half for a different
+    purpose - the value tag is where the emitted sequence comes from, the position tag is
+    where the emitted quality's start comes from - and a read annotated with only one of
+    them is not a read the writer is ever handed in production.
+
+    Every component here is laid out at exactly its declared width, and its value tag
+    holds exactly the bases the read carries at its own span, so a read built by this
+    helper is the clean case: nothing was corrected, and raw slice and corrected value
+    would agree. Tests that need those two to disagree, in bases or in width, build
+    their read through build_indel_corrected_scrna_read instead.
 
     Args:
         read_id: The read id to put on the annotation.
@@ -246,9 +317,13 @@ def build_scrna_read(
     r1_qual = "".join(chr(33 + (position % 50)) for position in range(len(r1_seq)))
 
     annotation = ReadAnnotation(read_id=read_id)
+    annotation.set("BC3", bc3_seq)
     annotation.set(position_key("BC3"), format_span(bc3_start, bc3_end))
+    annotation.set("BC2", bc2_seq)
     annotation.set(position_key("BC2"), format_span(bc2_start, bc2_end))
+    annotation.set("BC1", bc1_seq)
     annotation.set(position_key("BC1"), format_span(bc1_start, bc1_end))
+    annotation.set("UMI", umi_seq)
     annotation.set(position_key("UMI"), format_span(umi_start, umi_end))
     if extra_tag is not None:
         annotation.set(*extra_tag)
@@ -495,6 +570,380 @@ class TestScrnaWriterWriteRead:
             assert_that(header).does_not_contain("=")
 
 
+# A BC2 whitelist entry and one single-substitution misread of it. Barcode extraction
+# writes the first into the read's BC2 tag while the read itself still carries the second,
+# which is the whole point of correction: the pair is shaped after the real chemistry's own
+# declared BC2 blind spot, where a single A->G - the dominant substitution direction on
+# 2-colour Illumina chemistry - turns one valid cell barcode into another. Tests below
+# assert these differ at exactly one base rather than trusting this comment.
+CORRECTED_BC2 = "AGCTTGAGAG"
+RAW_BC2_VARIANT = "AGCTTGACAG"
+
+
+def build_indel_corrected_scrna_read(
+    read_id: str,
+    bc3_seq: str,
+    bc2_observed_seq: str,
+    bc2_corrected_seq: str,
+    bc1_seq: str,
+    umi_seq: str,
+    polyg_run_length: int,
+    insert_seq: str,
+) -> tuple[ReadAnnotation, str, str]:
+    """Build a synthetic R1 read whose BC2 tag disagrees with the bases BC2 was read from.
+
+    ``build_scrna_read`` can only produce the clean case, where every component's value
+    tag repeats the bases sitting at its own span. This helper produces the case
+    correction actually creates: BC2's recorded span covers ``bc2_observed_seq``, the
+    bases the sequencer produced, while BC2's value tag holds ``bc2_corrected_seq``, the
+    whitelist entry the matcher resolved them to. The two may differ in bases, in width,
+    or in both - ``KmerMatcher.extend_and_verify`` tolerates an indel by searching window
+    lengths either side of the declared length and keeping whichever scores best, so a
+    corrected span really can be a base narrower or wider than the barcode is. Every
+    other component is left clean, so exactly one component is under test at a time.
+
+    Args:
+        read_id: The read id to put on the annotation.
+        bc3_seq: The BC3 component's sequence, recorded and observed alike.
+        bc2_observed_seq: The bases the read carries where BC2 was matched, and whose
+            length therefore sets BC2's recorded span width.
+        bc2_corrected_seq: The corrected whitelist value recorded in BC2's own tag.
+        bc1_seq: The BC1 component's sequence, recorded and observed alike.
+        umi_seq: The UMI component's sequence, recorded and observed alike.
+        polyg_run_length: How many ``G`` bases immediately follow the UMI.
+        insert_seq: Sequence placed immediately after the poly-G run.
+
+    Returns:
+        The annotation, the assembled R1 sequence, and a same-length quality string.
+    """
+    bc3_start = 0
+    bc3_end = bc3_start + len(bc3_seq)
+    bc2_start = bc3_end
+    bc2_end = bc2_start + len(bc2_observed_seq)
+    bc1_start = bc2_end
+    bc1_end = bc1_start + len(bc1_seq)
+    umi_start = bc1_end
+    umi_end = umi_start + len(umi_seq)
+
+    r1_seq = bc3_seq + bc2_observed_seq + bc1_seq + umi_seq + ("G" * polyg_run_length) + insert_seq
+    r1_qual = "".join(chr(33 + (position % 50)) for position in range(len(r1_seq)))
+    # Every quality character in this read has to be distinct, so that a test asserting one
+    # specific read position's quality never reaches the emitted record is really asserting
+    # that, rather than being satisfied by the same character arriving from somewhere else.
+    # The generator above only starts repeating after 50 positions, so this holds while
+    # callers keep their reads short; checking it here turns a silently weakened assertion
+    # into a visible failure.
+    assert_that(set(r1_qual)).is_length(len(r1_qual))
+
+    annotation = ReadAnnotation(read_id=read_id)
+    annotation.set("BC3", bc3_seq)
+    annotation.set(position_key("BC3"), format_span(bc3_start, bc3_end))
+    annotation.set("BC2", bc2_corrected_seq)
+    annotation.set(position_key("BC2"), format_span(bc2_start, bc2_end))
+    annotation.set("BC1", bc1_seq)
+    annotation.set(position_key("BC1"), format_span(bc1_start, bc1_end))
+    annotation.set("UMI", umi_seq)
+    annotation.set(position_key("UMI"), format_span(umi_start, umi_end))
+
+    return annotation, r1_seq, r1_qual
+
+
+def write_barcodes_record(
+    writer: ScrnaWriter, annotation: ReadAnnotation, r1_seq: str, r1_qual: str
+) -> tuple[str, str, str]:
+    """Drive one write_read call and hand back only the barcodes record it emitted.
+
+    write_read writes all three output files in one call and cannot be asked for one of
+    them in isolation, so all three streams are supplied here and the R1/R2 pair is
+    discarded. R2 is a fixed stand-in rather than a per-test value because nothing in the
+    barcodes record derives from it; the tests that do care about R1 and R2 live in
+    ``TestScrnaWriterWriteRead`` and spell their own calls out.
+
+    Args:
+        writer: The writer under test.
+        annotation: The parsed annotation header of the R1 read.
+        r1_seq: The full, untrimmed R1 sequence.
+        r1_qual: The full, untrimmed R1 quality string.
+
+    Returns:
+        The barcodes record's ``(header, seq, qual)``.
+    """
+    r2_seq = "ACGT" * 5
+    barcodes_stream = io.BytesIO()
+    writer.write_read(
+        annotation,
+        r1_seq,
+        r1_qual,
+        annotation.read_id,
+        r2_seq,
+        "I" * len(r2_seq),
+        io.BytesIO(),
+        io.BytesIO(),
+        barcodes_stream,
+    )
+    return parse_fastq_record(barcodes_stream)
+
+
+class TestScrnaWriterEmitsCorrectedFixedWidthRecords:
+    """Covers the two ways a real read's recorded span disagrees with what must be emitted.
+
+    Every read in ``TestScrnaWriterWriteRead`` matched cleanly, so for those reads the
+    raw bases under a span, the corrected value recorded beside it, and the component's
+    declared width all coincide - which means those tests cannot tell the contract apart
+    from re-slicing the read. Correction breaks that coincidence in two independent ways,
+    and both are ordinary rather than exotic, so both are driven here directly.
+
+    A substitution makes the bases disagree. Barcode extraction records the whitelist
+    entry it resolved to in the component's own value tag, and the scTIP arm already
+    emits that corrected value in its ``CB=`` header; because the two arms of one
+    multiome experiment are joined downstream by barcode, an scRNA arm that re-derived
+    the raw bases would present the same physical cell under two different barcodes and
+    split its data in half.
+
+    An indel makes the widths disagree. The matcher searches window lengths either side
+    of the declared length and keeps the best-scoring one, so a corrected span can be a
+    base narrower or wider than the component really is. Quality has no source but the
+    read itself, so it must still be sliced out of ``r1_qual`` - but from the recorded
+    start for the component's own declared length, never out to the matched end, or the
+    emitted record's total width would drift read to read. The rare cost, accepted
+    deliberately, is that one quality position in that fixed window can belong to the
+    neighbouring component.
+    """
+
+    @pytest.fixture
+    def chemistry(self) -> ChemistryBase:
+        """Provide the shipped chemistry write_read is exercised against.
+
+        Returns:
+            The registered ``carmack_custom_seq_1_0`` chemistry instance.
+        """
+        return ChemistryFactory.get_chemistry(CHEMISTRY)
+
+    @pytest.fixture
+    def writer(self, chemistry: ChemistryBase) -> ScrnaWriter:
+        """Provide a ScrnaWriter constructed against the shipped chemistry.
+
+        Returns:
+            A ``ScrnaWriter`` built from the ``carmack_custom_seq_1_0`` chemistry.
+        """
+        return ScrnaWriter(chemistry)
+
+    def test_write_read_uses_the_corrected_annotation_value_not_the_raw_read_slice(
+        self, writer: ScrnaWriter
+    ) -> None:
+        """Test that emitted barcode bases come from the value tag, not from the read.
+
+        This read's BC2 span covers a one-substitution misread while its BC2 tag holds
+        the whitelist entry that misread was corrected to, so the two possible
+        implementations - read the tag, or re-slice the read - produce visibly different
+        records rather than the same one. The corrected base must appear at the
+        substituted position, and the raw variant must not survive anywhere in the
+        emitted record at all, which is what makes this arm agree with the scTIP arm's
+        ``CB=`` header for the same physical cell instead of inventing a second one.
+
+        Quality is asserted here too, unchanged: correcting the sequence must not move
+        where quality is read from, since the header carries no quality to correct with.
+        """
+        bc3_seq = "G" * BARCODE_LENGTH
+        bc1_seq = "T" * BARCODE_LENGTH
+        umi_seq = "A" * UMI_LENGTH
+        differences = [
+            index
+            for index, (raw, corrected) in enumerate(zip(RAW_BC2_VARIANT, CORRECTED_BC2))
+            if raw != corrected
+        ]
+        assert_that(differences).is_length(1)
+        substitution = differences[0]
+
+        annotation, r1_seq, r1_qual = build_indel_corrected_scrna_read(
+            read_id="read-corrected-bc2",
+            bc3_seq=bc3_seq,
+            bc2_observed_seq=RAW_BC2_VARIANT,
+            bc2_corrected_seq=CORRECTED_BC2,
+            bc1_seq=bc1_seq,
+            umi_seq=umi_seq,
+            polyg_run_length=3,
+            insert_seq="TATAGCCTA",
+        )
+        bc2_start, bc2_end = parse_span(annotation.get(position_key("BC2")))
+        assert_that(r1_seq[bc2_start:bc2_end]).is_equal_to(RAW_BC2_VARIANT)
+
+        header, seq, qual = write_barcodes_record(writer, annotation, r1_seq, r1_qual)
+
+        assert_that(header).is_equal_to(annotation.read_id)
+        assert_that(seq).is_equal_to(bc3_seq + CORRECTED_BC2 + bc1_seq + umi_seq)
+        assert_that(seq).is_length(FIXED_BARCODES_RECORD_LENGTH)
+        assert_that(seq[BARCODE_LENGTH + substitution]).is_equal_to(CORRECTED_BC2[substitution])
+        assert_that(seq[BARCODE_LENGTH + substitution]).is_not_equal_to(
+            RAW_BC2_VARIANT[substitution]
+        )
+        assert_that("\n".join((header, seq, qual))).does_not_contain(RAW_BC2_VARIANT)
+        assert_that(qual).is_equal_to(r1_qual[:FIXED_BARCODES_RECORD_LENGTH])
+
+    def test_write_read_emits_the_fixed_declared_width_for_an_indel_shortened_span(
+        self, writer: ScrnaWriter, chemistry: ChemistryBase
+    ) -> None:
+        """Test that a 9bp recorded BC2 span still emits a full-width record.
+
+        A deletion inside BC2 leaves the matcher's best window one base short, so the
+        recorded span is 9bp for a component the chemistry declares as 10bp. The
+        sequence half is unaffected - it comes from the corrected 10bp value tag - but
+        the quality half would shrink the whole record to 37bp if it were sliced out to
+        the matched span's end, and a record whose width drifts read to read is not the
+        fixed-width barcode read STARsolo is being handed. Slicing the declared length
+        from the recorded start keeps it at 38bp, at the accepted cost that BC2's last
+        quality character here really belongs to BC1's first base; that overlap is
+        asserted explicitly rather than left as a surprise.
+        """
+        bc3_seq = "G" * BARCODE_LENGTH
+        bc1_seq = "T" * BARCODE_LENGTH
+        umi_seq = "A" * UMI_LENGTH
+        bc2_observed_seq = CORRECTED_BC2[:-1]
+        assert_that(bc2_observed_seq).is_length(BARCODE_LENGTH - 1)
+
+        declared_total = (
+            sum(
+                comp.length
+                for comp in chemistry.read_structure.get_components_by_type(
+                    ReadComponentType.BARCODE
+                )
+            )
+            + chemistry.umi_component().length
+        )
+        assert_that(declared_total).is_equal_to(FIXED_BARCODES_RECORD_LENGTH)
+        assert_that(FIXED_BARCODES_RECORD_LENGTH).is_equal_to(38)
+
+        annotation, r1_seq, r1_qual = build_indel_corrected_scrna_read(
+            read_id="read-indel-shortened-bc2",
+            bc3_seq=bc3_seq,
+            bc2_observed_seq=bc2_observed_seq,
+            bc2_corrected_seq=CORRECTED_BC2,
+            bc1_seq=bc1_seq,
+            umi_seq=umi_seq,
+            polyg_run_length=3,
+            insert_seq="TATAGCCTAC",
+        )
+        bc2_start, bc2_end = parse_span(annotation.get(position_key("BC2")))
+        assert_that(bc2_end - bc2_start).is_equal_to(BARCODE_LENGTH - 1)
+
+        header, seq, qual = write_barcodes_record(writer, annotation, r1_seq, r1_qual)
+
+        assert_that(header).is_equal_to(annotation.read_id)
+        assert_that(seq).is_length(FIXED_BARCODES_RECORD_LENGTH)
+        assert_that(qual).is_length(FIXED_BARCODES_RECORD_LENGTH)
+        assert_that(seq).is_equal_to(
+            chemistry.construct_full_barcode(
+                {"BC3": bc3_seq, "BC2": CORRECTED_BC2, "BC1": bc1_seq}
+            )
+            + umi_seq
+        )
+
+        bc2_quality = qual[BARCODE_LENGTH : 2 * BARCODE_LENGTH]
+        assert_that(bc2_quality).is_equal_to(r1_qual[bc2_start : bc2_start + BARCODE_LENGTH])
+        assert_that(bc2_quality).is_not_equal_to(r1_qual[bc2_start:bc2_end])
+        assert_that(bc2_quality[-1]).is_equal_to(r1_qual[bc2_end])
+
+    def test_write_read_emits_the_fixed_declared_width_for_an_indel_lengthened_span(
+        self, writer: ScrnaWriter, chemistry: ChemistryBase
+    ) -> None:
+        """Test that an 11bp recorded BC2 span still emits a full-width record.
+
+        The mirror of the shortened case: an insertion leaves the matcher's best window
+        one base long, so slicing quality out to the matched span's end would stretch
+        the record to 39bp. The declared length has to win in this direction too, which
+        means the quality character at the recorded span's own last position is
+        deliberately dropped rather than emitted - asserted here by its absence from the
+        record, which is meaningful because this read's quality characters are all
+        distinct.
+        """
+        bc3_seq = "G" * BARCODE_LENGTH
+        bc1_seq = "T" * BARCODE_LENGTH
+        umi_seq = "A" * UMI_LENGTH
+        bc2_observed_seq = CORRECTED_BC2 + "T"
+        assert_that(bc2_observed_seq).is_length(BARCODE_LENGTH + 1)
+
+        annotation, r1_seq, r1_qual = build_indel_corrected_scrna_read(
+            read_id="read-indel-lengthened-bc2",
+            bc3_seq=bc3_seq,
+            bc2_observed_seq=bc2_observed_seq,
+            bc2_corrected_seq=CORRECTED_BC2,
+            bc1_seq=bc1_seq,
+            umi_seq=umi_seq,
+            polyg_run_length=3,
+            insert_seq="TATAGCCT",
+        )
+        bc2_start, bc2_end = parse_span(annotation.get(position_key("BC2")))
+        assert_that(bc2_end - bc2_start).is_equal_to(BARCODE_LENGTH + 1)
+
+        header, seq, qual = write_barcodes_record(writer, annotation, r1_seq, r1_qual)
+
+        assert_that(header).is_equal_to(annotation.read_id)
+        assert_that(seq).is_length(FIXED_BARCODES_RECORD_LENGTH)
+        assert_that(qual).is_length(FIXED_BARCODES_RECORD_LENGTH)
+        assert_that(seq).is_equal_to(
+            chemistry.construct_full_barcode(
+                {"BC3": bc3_seq, "BC2": CORRECTED_BC2, "BC1": bc1_seq}
+            )
+            + umi_seq
+        )
+
+        bc2_quality = qual[BARCODE_LENGTH : 2 * BARCODE_LENGTH]
+        assert_that(bc2_quality).is_equal_to(r1_qual[bc2_start : bc2_start + BARCODE_LENGTH])
+        assert_that(bc2_quality).is_not_equal_to(r1_qual[bc2_start:bc2_end])
+        assert_that(qual).does_not_contain(r1_qual[bc2_end - 1])
+
+    def test_write_read_never_fabricates_bases_or_quality(self, writer: ScrnaWriter) -> None:
+        """Test that every emitted base and quality character came from somewhere real.
+
+        Padding the record out to a fixed width with invented bases or invented quality
+        was considered and rejected: a fixed width is worth having, but not at the price
+        of data nobody sequenced. The indel-shortened read is the case where a padding
+        implementation would be tempted, so it is the one used here. Every emitted
+        quality character is checked against the exact ``r1_qual`` index it should have
+        come from, and every emitted base against the annotation value it should have
+        come from, which together leave no room for a filler character to hide anywhere
+        in the record.
+        """
+        bc3_seq = "G" * BARCODE_LENGTH
+        bc1_seq = "T" * BARCODE_LENGTH
+        umi_seq = "A" * UMI_LENGTH
+
+        annotation, r1_seq, r1_qual = build_indel_corrected_scrna_read(
+            read_id="read-no-fabrication",
+            bc3_seq=bc3_seq,
+            bc2_observed_seq=CORRECTED_BC2[:-1],
+            bc2_corrected_seq=CORRECTED_BC2,
+            bc1_seq=bc1_seq,
+            umi_seq=umi_seq,
+            polyg_run_length=3,
+            insert_seq="TATAGCCTAC",
+        )
+
+        source_indices: list[int] = []
+        for name in BARCODE_NAMES_IN_STRUCTURE_ORDER:
+            start = parse_span(annotation.get(position_key(name)))[0]
+            source_indices.extend(range(start, start + BARCODE_LENGTH))
+        umi_start = parse_span(annotation.get(position_key("UMI")))[0]
+        source_indices.extend(range(umi_start, umi_start + UMI_LENGTH))
+
+        header, seq, qual = write_barcodes_record(writer, annotation, r1_seq, r1_qual)
+
+        assert_that(header).is_equal_to(annotation.read_id)
+        assert_that(qual).is_length(len(source_indices))
+        for offset, index in enumerate(source_indices):
+            assert_that(qual[offset]).is_equal_to(r1_qual[index])
+        assert_that(set(qual) - set(r1_qual)).is_empty()
+
+        assert_that(seq).is_equal_to(
+            annotation.get("BC3")
+            + annotation.get("BC2")
+            + annotation.get("BC1")
+            + annotation.get("UMI")
+        )
+        assert_that(set(seq) - set("ACGT")).is_empty()
+        assert_that(seq).is_length(FIXED_BARCODES_RECORD_LENGTH)
+
+
 # Barcode component names for the fabricated chemistry double below, deliberately
 # chosen so that neither a hardcoded BC3/BC2/BC1 assumption nor an accidental
 # alphabetical-sort bug could reproduce this declared order: sorting these three
@@ -507,11 +956,18 @@ class FabricatedChemistry:
 
     ``ScrnaWriter.__init__`` and ``write_read`` never touch whitelists, matching
     tolerances, or any other ``ChemistryBase`` validation machinery: the only
-    surface they actually use is ``umi_component()``, ``umi_right_anchor()``, and
-    ``read_structure``. This double supplies exactly those three, so a test can
-    drive ``ScrnaWriter`` against a read structure the real, registered
-    chemistries would never produce, without needing whitelist files or
-    ``ChemistryBase.__post_init__`` validation to pass first.
+    surface they actually use is ``umi_component()``, ``umi_right_anchor()``,
+    ``read_structure``, and ``construct_full_barcode()``. This double supplies
+    exactly those four, so a test can drive ``ScrnaWriter`` against a read
+    structure the real, registered chemistries would never produce, without
+    needing whitelist files or ``ChemistryBase.__post_init__`` validation to
+    pass first.
+
+    ``construct_full_barcode`` here is a real implementation rather than a
+    canned string, and derives its order the same way ``ChemistryBase``'s does -
+    by walking this double's own read structure - precisely because the test it
+    serves is about concatenation order. A double that returned a hardcoded
+    order would decide the answer the test is asking for.
     """
 
     def __init__(self, read_structure: ReadStructure) -> None:
@@ -535,15 +991,45 @@ class FabricatedChemistry:
         """
         return None
 
+    def construct_full_barcode(self, barcodes: dict[str, str]) -> str:
+        """Concatenate the given barcode values in this chemistry's own declared order.
+
+        Mirrors ``ChemistryBase.construct_full_barcode``, including its refusal
+        to guess at a missing component, but derives the order from this
+        double's own ``read_structure`` so the fabricated ZETA/ALPHA/GAMMA
+        layout is honoured rather than overridden.
+
+        Args:
+            barcodes: Barcode component name to sequence value.
+
+        Returns:
+            The declared barcode components' values joined in read-structure order.
+
+        Raises:
+            ValueError: If ``barcodes`` omits a declared barcode component.
+        """
+        parts = []
+        for comp in self.read_structure.get_components_by_type(ReadComponentType.BARCODE):
+            value = barcodes.get(comp.name)
+            if value is None:
+                raise ValueError(
+                    f"Missing barcode component '{comp.name}' for full barcode construction."
+                )
+            parts.append(value)
+        return "".join(parts)
+
 
 class TestScrnaWriterBarcodeOrderIsStructural:
     """Guards against the barcode-concatenation order ever hardcoding BC3/BC2/BC1.
 
-    ``ScrnaWriter.__init__`` derives ``self.barcode_position_keys`` generically,
-    by walking
+    ``ScrnaWriter.__init__`` derives ``self.barcode_components`` generically, by
+    walking
     ``chemistry.read_structure.get_components_by_type(ReadComponentType.BARCODE)``,
     rather than naming ``BC3``/``BC2``/``BC1`` anywhere in the writer itself; and
-    ``write_read`` concatenates barcode slices by walking that tuple in order.
+    ``write_read`` collects each component's corrected value and quality slice by
+    walking that tuple in order, handing the values to
+    ``chemistry.construct_full_barcode``, which independently derives the same
+    order from the same read structure.
     Every other test in this file exercises that mechanism only against the real
     ``carmack_custom_seq_1_0`` chemistry, whose barcodes happen to already be
     declared ``BC3``, ``BC2``, ``BC1`` in that order - so those tests alone
@@ -591,8 +1077,8 @@ class TestScrnaWriterBarcodeOrderIsStructural:
         chemistry = FabricatedChemistry(ReadStructure(components))
         writer = ScrnaWriter(chemistry)
 
-        assert_that(writer.barcode_position_keys).is_equal_to(
-            tuple(position_key(name) for name in FABRICATED_BARCODE_NAMES_IN_STRUCTURE_ORDER)
+        assert_that(tuple(comp.name for comp in writer.barcode_components)).is_equal_to(
+            FABRICATED_BARCODE_NAMES_IN_STRUCTURE_ORDER
         )
 
         zeta_start = 0
@@ -608,9 +1094,13 @@ class TestScrnaWriterBarcodeOrderIsStructural:
         r1_qual = "".join(chr(33 + (position % 50)) for position in range(len(r1_seq)))
 
         annotation = ReadAnnotation(read_id="read42")
+        annotation.set("ZETA", zeta_seq)
         annotation.set(position_key("ZETA"), format_span(zeta_start, zeta_end))
+        annotation.set("ALPHA", alpha_seq)
         annotation.set(position_key("ALPHA"), format_span(alpha_start, alpha_end))
+        annotation.set("GAMMA", gamma_seq)
         annotation.set(position_key("GAMMA"), format_span(gamma_start, gamma_end))
+        annotation.set("UMI", umi_seq)
         annotation.set(position_key("UMI"), format_span(umi_start, umi_end))
 
         r2_name = "read42"
@@ -709,9 +1199,15 @@ class TestScrnaWriterMissingPositionTag:
         r1_qual = "".join(chr(33 + (position % 50)) for position in range(len(r1_seq)))
 
         annotation = ReadAnnotation(read_id=read_id)
+        annotation.set("BC3", bc3_seq)
         annotation.set(position_key("BC3"), format_span(bc3_start, bc3_end))
+        annotation.set("BC2", bc2_seq)
         annotation.set(position_key("BC2"), format_span(bc2_start, bc2_end))
-        # BC1_POS is deliberately left unset: the one missing tag under test.
+        # BC1's value tag is set, and only its position tag is left unset: the one
+        # missing tag under test. Both halves of BC1 are read, for two different
+        # purposes, so leaving both out would no longer single out the position guard.
+        annotation.set("BC1", bc1_seq)
+        annotation.set("UMI", umi_seq)
         annotation.set(position_key("UMI"), format_span(umi_start, umi_end))
 
         r2_name = read_id
@@ -737,6 +1233,113 @@ class TestScrnaWriterMissingPositionTag:
         message = str(exc_info.value)
         assert_that(message).contains(read_id)
         assert_that(message).contains(position_key("BC1"))
+
+
+class TestScrnaWriterMissingValueTag:
+    """Guards write_read against a header carrying a component's position but not its value.
+
+    The position tags and the value tags are written side by side by the same line of
+    barcode extraction, so in practice a read has both or neither - but write_read now
+    reads them for two different purposes, and a read that lost only its value tags
+    fails in a far worse way than one that lost its position tags. A missing ``*_POS``
+    reaches ``parse_span(None)`` and dies with an AttributeError; a missing value tag
+    reaches string concatenation with ``None`` and dies with a TypeError naming neither
+    the read nor the tag, or worse, reaches ``construct_full_barcode``, whose own
+    ValueError names the component but has no idea which read it was looking at. Since
+    write_read is called once per read with no first-read validation pass to lean on,
+    the guard has to sit inside the call, the same way the position guard does.
+    """
+
+    @pytest.fixture
+    def chemistry(self) -> ChemistryBase:
+        """Provide the shipped chemistry write_read is exercised against.
+
+        Returns:
+            The registered ``carmack_custom_seq_1_0`` chemistry instance.
+        """
+        return ChemistryFactory.get_chemistry(CHEMISTRY)
+
+    @pytest.fixture
+    def writer(self, chemistry: ChemistryBase) -> ScrnaWriter:
+        """Provide a ScrnaWriter constructed against the shipped chemistry.
+
+        Returns:
+            A ``ScrnaWriter`` built from the ``carmack_custom_seq_1_0`` chemistry.
+        """
+        return ScrnaWriter(chemistry)
+
+    def test_write_read_missing_barcode_value_tag_raises_value_error_naming_read_and_tag(
+        self, writer: ScrnaWriter
+    ) -> None:
+        """Test that a header missing the BC1 value tag names the read and that tag.
+
+        The annotation is complete apart from BC1's value tag - BC1_POS is still there,
+        as are both halves of every other component - so the only thing that can fail
+        this call is the missing-value guard. The message must name the value tag that
+        was actually missing rather than the position tag beside it, since those two are
+        one character apart in a log line and lead to entirely different conclusions
+        about which stage went wrong.
+        """
+        read_id = "read-missing-bc1-value"
+        bc3_seq = "G" * BARCODE_LENGTH
+        bc2_seq = "C" * BARCODE_LENGTH
+        bc1_seq = "T" * BARCODE_LENGTH
+        umi_seq = "A" * UMI_LENGTH
+
+        annotation, r1_seq, r1_qual = build_scrna_read(
+            read_id=read_id,
+            bc3_seq=bc3_seq,
+            bc2_seq=bc2_seq,
+            bc1_seq=bc1_seq,
+            umi_seq=umi_seq,
+            polyg_run_length=4,
+            insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
+        )
+        del annotation.tags["BC1"]
+        assert_that(annotation.get("BC1")).is_none()
+        assert_that(annotation.get(position_key("BC1"))).is_not_none()
+
+        with pytest.raises(ValueError) as exc_info:
+            write_barcodes_record(writer, annotation, r1_seq, r1_qual)
+
+        message = str(exc_info.value)
+        assert_that(message).contains(read_id)
+        assert_that(message).contains("BC1")
+        assert_that(message).does_not_contain(position_key("BC1"))
+
+    def test_write_read_missing_umi_value_tag_raises_value_error_naming_read_and_tag(
+        self, writer: ScrnaWriter
+    ) -> None:
+        """Test that a header missing the UMI value tag fails the same way a barcode does.
+
+        The UMI's corrected value is read from its own tag exactly as each barcode's is,
+        and is the one component ``construct_full_barcode`` knows nothing about, so
+        nothing downstream would catch its absence on the writer's behalf. Guarding it
+        with the same check keeps a UMI-shaped failure from being reported as a bare
+        TypeError from a string concatenation.
+        """
+        read_id = "read-missing-umi-value"
+
+        annotation, r1_seq, r1_qual = build_scrna_read(
+            read_id=read_id,
+            bc3_seq="G" * BARCODE_LENGTH,
+            bc2_seq="C" * BARCODE_LENGTH,
+            bc1_seq="T" * BARCODE_LENGTH,
+            umi_seq="A" * UMI_LENGTH,
+            polyg_run_length=4,
+            insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
+        )
+        del annotation.tags["UMI"]
+        assert_that(annotation.get("UMI")).is_none()
+        assert_that(annotation.get(position_key("UMI"))).is_not_none()
+
+        with pytest.raises(ValueError) as exc_info:
+            write_barcodes_record(writer, annotation, r1_seq, r1_qual)
+
+        message = str(exc_info.value)
+        assert_that(message).contains(read_id)
+        assert_that(message).contains("UMI")
+        assert_that(message).does_not_contain(position_key("UMI"))
 
 
 class TestScrnaWriterGoldenGzipRoundTrip:
