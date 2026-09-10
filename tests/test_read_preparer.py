@@ -24,6 +24,7 @@ batches.
 
 import gzip
 import io
+import json
 import multiprocessing
 import os
 import re
@@ -1236,6 +1237,11 @@ def detected_targets_path(directory: Path, prefix: str) -> Path:
     return directory / f"{prefix}.detected_targets.txt"
 
 
+def prepare_stats_mqc_path(directory: Path, prefix: str) -> Path:
+    """Return the path of the MultiQC-readable stats JSON `prepare_reads` writes for `prefix`."""
+    return directory / f"{prefix}.prepare_stats_mqc.json"
+
+
 @pytest.fixture
 def build_full_run_preparer(tmp_path: Path) -> Callable[..., ReadPreparer]:
     """Return a factory that writes paired R1/R2 FASTQs and builds a `ReadPreparer` over them.
@@ -1961,6 +1967,7 @@ class TestReadPreparerOutputs:
                     f"{OUT_PREFIX}.none.barcodes.fastq.gz",
                     f"{OUT_PREFIX}.prepare_stats.txt",
                     f"{OUT_PREFIX}.detected_targets.txt",
+                    f"{OUT_PREFIX}.prepare_stats_mqc.json",
                 ]
             )
         )
@@ -1999,6 +2006,46 @@ class TestReadPreparerOutputs:
             prepare_stats_path(tmp_path, OUT_PREFIX).read_text()
         )
         assert_that(report_on_disk).is_equal_to(strip_report_run_details(stats.get_report()))
+
+    def test_prepare_stats_mqc_json_is_written_and_parses_with_the_expected_shape(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """The written `.prepare_stats_mqc.json` exists, parses, and carries both payloads.
+
+        The exact percentages and per-target counts this file carries are
+        already pinned, method by method, against `PrepareStats.to_mqc_general_stats`
+        and `PrepareStats.to_mqc_target_distribution` in `tests/test_prepare_reporting.py`.
+        This run-level assertion only confirms the wiring writes one real,
+        parseable file that carries recognisable shape from both, keyed by the
+        run's own prefix, rather than re-testing the payload internals here.
+        """
+        chemistry = ChemistryTwoTargets()
+        target_a, target_b = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        ids_and_targets = [
+            ("u1", None),
+            ("ma1", target_a),
+            ("mb1", target_b),
+        ]
+        r1_records, r2_records = make_prepare_records(ids_and_targets, anchor_length)
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        mqc_path = prepare_stats_mqc_path(tmp_path, OUT_PREFIX)
+        assert_that(mqc_path.exists()).is_true()
+
+        rendered = mqc_path.read_text()
+        payload = json.loads(rendered)
+
+        assert_that(payload).is_instance_of(dict)
+        assert_that(payload).is_not_empty()
+        # Loose, run-level shape checks only, format-agnostic to however the
+        # two payloads are nested together: the general stats percentages and
+        # the target distribution's bargraph both show up somewhere in the
+        # file, keyed by this run's own prefix.
+        assert_that(rendered).contains(f'"{OUT_PREFIX}"', "pct_unmatched", "pct_matched")
+        assert_that(rendered).contains("generalstats", "bargraph")
 
     def test_prefix_defaults_to_the_r1_input_filename(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
