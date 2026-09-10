@@ -16,7 +16,6 @@ import carmack
 from carmack.assign_targets.target_assigner import DEFAULT_MAX_WORKERS, TargetAssigner
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.cell_caller.cell_caller import CellCaller
-from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.split_reads.split_reads import BamSplitter
 from carmack.tag_dedup.tag_dedup import TagDedup
 from carmack.umi.umi_extractor import UmiExtractor
@@ -37,7 +36,6 @@ click.rich_click.COMMAND_GROUPS = {
                 "extract-barcodes",
                 "extract-umis",
                 "assign-targets",
-                "fastq-filter",
                 "bam-tag-deduplicate",
                 "call-cells",
             ],
@@ -106,7 +104,7 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
     """
     carmack provides helper tools for the analysis of single-cell mutli-omic data.
 
-    This python module enables the extraction of valid cell barcodes and can filter reads with valid barcodes from fastq files.
+    This python module enables the extraction of valid cell barcodes from fastq files.
     """
     # Set the base logger to output DEBUG
     log.setLevel(logging.DEBUG)
@@ -199,27 +197,6 @@ def assign_targets(r1_umi_fastq, chemistry, output_dir, prefix, cpu_count):
     log.info("Assigning target indices from UMI-annotated FASTQ file...")
     assigner = TargetAssigner(r1_umi_fastq, chemistry, n_workers=cpu_count)
     assigner.assign_targets(output_dir, prefix)
-
-
-@carmack_cli.command("fastq-filter")
-@click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
-@click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")
-@click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
-@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
-@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-@click.option("--trim-r1", required=False, type=int, default=0, show_default=True, help="Trim this many bases from start of read1 if matched.")
-@click.option("--trim-r2", required=False, type=int, default=0, show_default=True, help="Trim this many bases from start of read2 if matched.")
-def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix, trim_r1, trim_r2):
-    """
-    Filter fastq files for reads containing valid barcodes.
-
-    The total set of cell barcodes and valid cell barcodes are saved to separate files in the output directory.
-    Additional files containing barcode stats and counts are also saved to the output directory.
-    """
-
-    log.info("Filtering fastq files for valid barcodes...")
-    fastq_filter = FastqFilter(read1, read2)
-    fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix, trim_r1=trim_r1, trim_r2=trim_r2)
 
 
 @carmack_cli.command("bam-tag-deduplicate")
