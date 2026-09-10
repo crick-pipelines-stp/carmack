@@ -232,6 +232,13 @@ class ReadPreparer:
         a matched one. This stage never filters, so reads written always reconciles with
         reads read -- the invariant :class:`PrepareStats` states and checks.
 
+        Two plain-text files are written once the run is over: the ``prepare_stats.txt``
+        report, and a ``detected_targets.txt`` naming just the arms and buckets that
+        actually received a read. The second exists because the first tells a machine
+        nothing it can act on directly and the output directory tells it nothing at all:
+        every whitelisted target's bucket is opened below, so an absent target still
+        leaves a valid, empty bucket behind for a consumer to trip over.
+
         The output side opens a dynamic number of gzip writers: three fixed files plus
         one (R1, R2) pair per entry in the chemistry's target index whitelist, all of
         them held open for the whole run through a single :class:`~contextlib.ExitStack`
@@ -373,6 +380,12 @@ class ReadPreparer:
 
         with (output_path / f"{prefix}.prepare_stats.txt").open("w") as report_file:
             report_file.write(stats.get_report())
+
+        # Written unconditionally, even when it is empty: a consumer fanning out over
+        # this file has to be able to tell "no bucket received a read" from "the stage
+        # did not get far enough to say", and a missing file cannot say the first.
+        with (output_path / f"{prefix}.detected_targets.txt").open("w") as detected_file:
+            detected_file.write(stats.get_detected_targets())
 
         return stats
 

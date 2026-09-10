@@ -1231,6 +1231,11 @@ def prepare_stats_path(directory: Path, prefix: str) -> Path:
     return directory / f"{prefix}.prepare_stats.txt"
 
 
+def detected_targets_path(directory: Path, prefix: str) -> Path:
+    """Return the path of the detected-targets list `prepare_reads` writes for `prefix`."""
+    return directory / f"{prefix}.detected_targets.txt"
+
+
 @pytest.fixture
 def build_full_run_preparer(tmp_path: Path) -> Callable[..., ReadPreparer]:
     """Return a factory that writes paired R1/R2 FASTQs and builds a `ReadPreparer` over them.
@@ -1819,6 +1824,99 @@ class TestReadPreparerOutputs:
         assert_that(read_fastq(target_r1_path(tmp_path, OUT_PREFIX, target_b))).is_empty()
         assert_that(read_fastq(target_r2_path(tmp_path, OUT_PREFIX, target_b))).is_empty()
 
+    def test_detected_targets_omits_a_bucket_that_received_no_reads(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """The listed tokens name the arm and bucket that got reads, not the empty bucket.
+
+        The pair to the test above, and the reason this file exists at all: an
+        undetected target still leaves a valid, empty bucket on disk, so the
+        output directory cannot be globbed to learn which buckets a dataset
+        really has.
+        """
+        chemistry = ChemistryTwoTargets()
+        target_a, target_b = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        r1_records, r2_records = make_prepare_records(
+            [("u1", None), ("ma1", target_a)], anchor_length
+        )
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
+
+        assert_that(listed).is_equal_to([NO_TARGET, target_a])
+        assert_that(target_r1_path(tmp_path, OUT_PREFIX, target_b).exists()).is_true()
+
+    def test_detected_targets_lists_every_bucket_that_received_reads(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """Both arms and both filled buckets are named, each exactly once."""
+        chemistry = ChemistryTwoTargets()
+        target_a, target_b = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        ids_and_targets = [("u1", None), ("ma1", target_a), ("ma2", target_a), ("mb1", target_b)]
+        r1_records, r2_records = make_prepare_records(ids_and_targets, anchor_length)
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
+
+        assert_that(listed).is_equal_to([NO_TARGET, *sorted(TWO_TARGET_WHITELIST)])
+
+    def test_detected_targets_omits_the_unmatched_arm_when_every_read_matched(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """A run whose scRNA arm got nothing does not name it, though its files exist."""
+        chemistry = ChemistryTwoTargets()
+        target_a, _ = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        r1_records, r2_records = make_prepare_records([("ma1", target_a)], anchor_length)
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
+
+        assert_that(listed).is_equal_to([target_a])
+        assert_that(none_r1_path(tmp_path, OUT_PREFIX).exists()).is_true()
+
+    def test_detected_targets_on_disk_matches_the_returned_stats(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """The file written is exactly what the returned stats render, byte for byte."""
+        chemistry = ChemistryTwoTargets()
+        target_a, target_b = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        ids_and_targets = [("u1", None), ("ma1", target_a), ("mb1", target_b)]
+        r1_records, r2_records = make_prepare_records(ids_and_targets, anchor_length)
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        stats = preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_that(detected_targets_path(tmp_path, OUT_PREFIX).read_text()).is_equal_to(
+            stats.get_detected_targets()
+        )
+
+    def test_every_detected_token_names_the_unmatched_arm_or_a_whitelisted_target(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """Nothing but the NONE sentinel and real whitelist entries is ever listed."""
+        chemistry = ChemistryTwoTargets()
+        target_a, target_b = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        ids_and_targets = [("u1", None), ("ma1", target_a), ("mb1", target_b)]
+        r1_records, r2_records = make_prepare_records(ids_and_targets, anchor_length)
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
+
+        assert_that(set(listed)).is_subset_of({NO_TARGET, *chemistry.tgidx_whitelist()})
+
     def test_chemistry_without_target_assignment_writes_only_the_scrna_files(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
     ) -> None:
@@ -1847,6 +1945,9 @@ class TestReadPreparerOutputs:
         assert_that(none_r2_path(tmp_path, OUT_PREFIX).exists()).is_true()
         assert_that(none_barcodes_path(tmp_path, OUT_PREFIX).exists()).is_true()
         assert_that(prepare_stats_path(tmp_path, OUT_PREFIX).exists()).is_true()
+        assert_that(detected_targets_path(tmp_path, OUT_PREFIX).read_text()).is_equal_to(
+            f"{NO_TARGET}\n"
+        )
 
         input_names = {"input.r1.fastq.gz", "input.r2.fastq.gz"}
         produced_files = sorted(
@@ -1859,6 +1960,7 @@ class TestReadPreparerOutputs:
                     f"{OUT_PREFIX}.none.r2.fastq.gz",
                     f"{OUT_PREFIX}.none.barcodes.fastq.gz",
                     f"{OUT_PREFIX}.prepare_stats.txt",
+                    f"{OUT_PREFIX}.detected_targets.txt",
                 ]
             )
         )
@@ -1922,6 +2024,7 @@ class TestReadPreparerOutputs:
         assert_that(none_r2_path(tmp_path, expected_prefix).exists()).is_true()
         assert_that(none_barcodes_path(tmp_path, expected_prefix).exists()).is_true()
         assert_that(prepare_stats_path(tmp_path, expected_prefix).exists()).is_true()
+        assert_that(detected_targets_path(tmp_path, expected_prefix).exists()).is_true()
 
     def test_empty_input_writes_every_output_file_empty_and_a_zero_count_report(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
@@ -1945,6 +2048,11 @@ class TestReadPreparerOutputs:
         assert_that(prepare_stats_path(tmp_path, OUT_PREFIX).read_text()).contains(
             "Total reads: 0"
         )
+
+        # Written even with nothing to name, so a consumer can tell "no bucket
+        # received a read" from "the stage never got far enough to say".
+        assert_that(detected_targets_path(tmp_path, OUT_PREFIX).exists()).is_true()
+        assert_that(detected_targets_path(tmp_path, OUT_PREFIX).read_text()).is_equal_to("")
 
 
 PREPARE_POOL_WORKERS = 3
@@ -2312,11 +2420,12 @@ REAL_POOL_OUTPUTS = (
     f"{REAL_POOL_PREFIX}.{TGIDX_VALUE}.r1.fastq.gz",
     f"{REAL_POOL_PREFIX}.{TGIDX_VALUE}.r2.fastq.gz",
     f"{REAL_POOL_PREFIX}.prepare_stats.txt",
+    f"{REAL_POOL_PREFIX}.detected_targets.txt",
 )
 
-# The gzip FASTQ outputs among REAL_POOL_OUTPUTS, excluding the plain-text
-# stats report -- the five streamed writers whose pipe lifecycle this class
-# exercises.
+# The gzip FASTQ outputs among REAL_POOL_OUTPUTS, excluding the two plain-text
+# files written after the run -- the five streamed writers whose pipe lifecycle
+# this class exercises.
 REAL_POOL_GZIP_OUTPUTS = tuple(name for name in REAL_POOL_OUTPUTS if name.endswith(".fastq.gz"))
 
 
@@ -2892,3 +3001,19 @@ class TestReadPreparerMultiTargetGoldenEndToEnd:
             prepare_stats_path(tmp_path, OUT_PREFIX).read_text()
         )
         assert_that(report_on_disk).is_equal_to(strip_report_run_details(stats.get_report()))
+
+    def test_detected_targets_names_the_unmatched_arm_and_both_buckets(
+        self, preparer: ReadPreparer, tmp_path: Path
+    ) -> None:
+        """Read off a real annotated FASTQ pair, the file names all three filled outputs.
+
+        The one property the real single-entry whitelist cannot show: more than
+        one detected target listed, in sorted order, behind the sentinel.
+        """
+        target_a, target_b = TWO_TARGET_WHITELIST
+
+        preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
+
+        assert_that(listed).is_equal_to([NO_TARGET, *sorted([target_a, target_b])])

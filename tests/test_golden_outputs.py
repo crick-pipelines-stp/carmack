@@ -657,6 +657,18 @@ class PrepareReadsGoldenOutputChecks:
         """
         assert_report_output_matches_golden(golden_run, "prepare_stats.txt")
 
+    def test_detected_targets_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the detected-targets list matches the golden file verbatim.
+
+        Compared verbatim rather than normalised: this file carries no version or
+        timestamp line to strip, which is the point of it.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_text_output_matches_golden(golden_run, "detected_targets.txt")
+
 
 class TestCustomSeqSmallGoldenOutputs(
     BarcodeGoldenOutputChecks,

@@ -15,6 +15,13 @@ must keep working against, every section heading, the counts and their
 percentages, the literal statement of the reconciling invariant, and the
 per-target distribution sorted by target name.
 
+The same object renders ``detected_targets.txt``, the machine-readable list of
+the arms and buckets a run actually wrote a read into, and those tests pin what
+a downstream consumer of that file depends on: bare tokens and nothing else, the
+``NONE`` sentinel first and only when a read was unmatched, an undetected target
+omitted whether it is absent from the tallies or present with a zero count, and
+an ordering that agrees with the report's own distribution.
+
 ``PrepareCounts`` is the mutable accumulator that feeds it: one batch of reads
 is tallied into one of these, batches are folded together as they drain, and
 the run's totals are rendered as a frozen ``PrepareStats`` at the end. Its
@@ -33,6 +40,7 @@ import pytest
 from assertpy import assert_that
 
 from carmack import __version__ as carmack_version
+from carmack.assign_targets.target_assigner import NO_TARGET
 from carmack.prepare_reads.prepare_reporting import PrepareCounts, PrepareStats
 from tests.utils import strip_report_run_details
 
@@ -402,6 +410,95 @@ class TestPrepareStatsReportDistributions:
         section = report.split("# Target Distribution")[1]
 
         assert_that(section.strip()).is_equal_to("")
+
+
+class TestPrepareStatsDetectedTargets:
+    """The machine-readable list of arms and buckets that received reads."""
+
+    def test_every_seen_arm_and_target_is_listed_once(self) -> None:
+        """Test that the unmatched arm and each target seen appear exactly once each."""
+        lines = make_stats().get_detected_targets().splitlines()
+
+        assert_that(lines).is_equal_to([NO_TARGET, "targetA", "targetB", "targetC"])
+
+    def test_the_unmatched_arm_is_listed_first(self) -> None:
+        """Test that the scRNA arm's sentinel precedes every target bucket.
+
+        Pinned separately from the sorted order below because the sentinel does
+        not sort into the targets: it leads them regardless of how they are named.
+        """
+        lines = make_stats(target_written={"AAAA": 1}).get_detected_targets().splitlines()
+
+        assert_that(lines).is_equal_to([NO_TARGET, "AAAA"])
+
+    def test_targets_are_sorted_by_name_not_insertion_order(self) -> None:
+        """Test that targets render sorted, so two runs of one chemistry diff cleanly."""
+        lines = make_stats().get_detected_targets().splitlines()
+
+        assert_that(lines[1:]).is_equal_to(sorted(lines[1:]))
+
+    def test_target_order_agrees_with_the_report_distribution(self) -> None:
+        """Test that the two files order the same targets the same way, row for row."""
+        stats = make_stats()
+        detected = [
+            line for line in stats.get_detected_targets().splitlines() if line != NO_TARGET
+        ]
+        distribution = [
+            line.split("\t")[1]
+            for line in stats.get_report().split("# Target Distribution")[1].splitlines()
+            if line.startswith("\t")
+        ]
+
+        assert_that(detected).is_equal_to(distribution)
+
+    def test_unmatched_arm_omitted_when_every_read_matched(self) -> None:
+        """Test that a run with no unmatched read does not claim the scRNA arm."""
+        stats = make_stats(unmatched_written=0, total_reads=sum(TARGET_WRITTEN.values()))
+
+        assert_that(stats.get_detected_targets().splitlines()).does_not_contain(NO_TARGET)
+
+    def test_scrna_only_run_lists_the_unmatched_arm_alone(self) -> None:
+        """Test that a chemistry with no target index yields exactly the one sentinel."""
+        stats = make_stats(target_written={}, unmatched_written=TOTAL_READS)
+
+        assert_that(stats.get_detected_targets()).is_equal_to(f"{NO_TARGET}\n")
+
+    def test_zero_count_target_is_treated_as_undetected(self) -> None:
+        """Test that a target tallied at zero is omitted, like one absent altogether.
+
+        A bucket no read reached is undetected however it came to be recorded, so
+        an explicit zero must not name an empty output file as one worth fanning
+        out over.
+        """
+        stats = make_stats(target_written={"targetA": 3, "targetB": 0}, total_reads=7)
+
+        assert_that(stats.get_detected_targets().splitlines()).is_equal_to([NO_TARGET, "targetA"])
+
+    def test_a_run_that_wrote_nothing_renders_an_empty_string(self) -> None:
+        """Test that no read written means no token, rather than a placeholder line."""
+        assert_that(make_empty_stats().get_detected_targets()).is_equal_to("")
+
+    def test_every_line_is_a_bare_newline_terminated_token(self) -> None:
+        """Test that the file carries tokens only -- no header, comments, counts or blanks.
+
+        This is the whole contract a consumer reads the file under, so it is
+        asserted on the rendered text rather than inferred from the token list.
+        """
+        rendered = make_stats().get_detected_targets()
+
+        assert_that(rendered).ends_with("\n")
+        for line in rendered.splitlines():
+            assert_that(line).is_equal_to(line.strip())
+            assert_that(line).is_not_empty()
+            assert_that(line).does_not_contain("#", "\t", "%", " ")
+
+    def test_listed_tokens_are_the_sentinel_or_a_target_name(self) -> None:
+        """Test that nothing but the sentinel and the run's own target keys is emitted."""
+        stats = make_stats()
+
+        tokens = set(stats.get_detected_targets().splitlines())
+
+        assert_that(tokens).is_subset_of({NO_TARGET, *stats.target_written})
 
 
 class TestPrepareCountsConstruction:

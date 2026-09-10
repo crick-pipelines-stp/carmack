@@ -1,8 +1,10 @@
 """Prepare-reads stats value object and report rendering for the prepare-reads stage.
 
-Holds the tallies that summarise a prepare-reads run and render the plain-text
-``prepare_stats.txt`` report, mirroring the assign-targets and UMI modules'
-``assign_reporting``/``umi_reporting``. Unlike those stages, this stage never
+Holds the tallies that summarise a prepare-reads run and render both of the run's
+plain-text outputs, mirroring the assign-targets and UMI modules'
+``assign_reporting``/``umi_reporting``: the human-readable ``prepare_stats.txt``
+report, and the machine-readable ``detected_targets.txt`` list of the arms and
+buckets that actually received reads. Unlike those stages, this stage never
 filters: every input read is dispatched to exactly one output arm - the scRNA
 (``TGIDX=NONE``) arm, or one scTIP target bucket - so ``total_reads`` is the
 denominator throughout, including for the per-target distribution, rather than
@@ -18,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from carmack import __version__ as carmack_version
+from carmack.assign_targets.target_assigner import NO_TARGET
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,34 @@ class PrepareStats:
             count = self.target_written[target]
             section += f"\t{target}\t{count} ({self.fraction(count, self.total_reads):.2%})\n"
         return section
+
+    def get_detected_targets(self) -> str:
+        """Render the arms and buckets that actually received reads, one token per line.
+
+        This stage's machine-readable companion to :meth:`get_report`: bare tokens
+        with no header, no comment lines and no counts, each either ``NO_TARGET``
+        for the scRNA arm or a target index whitelist entry, and each naming an
+        output the run actually wrote a read into. A consumer fanning out over the
+        buckets a dataset really has reads this file rather than globbing the
+        output directory -- every whitelisted target's bucket is opened, and so
+        exists, whether or not a read ever landed in it -- or parsing the
+        human-readable distribution section for the same answer.
+
+        Targets are sorted by name, the order :meth:`target_section` renders them
+        in, so the two files line up row for row. A target carrying a zero count
+        is treated as undetected, exactly like one absent from ``target_written``
+        altogether: both describe a bucket no read reached.
+
+        Returns:
+            One newline-terminated token per detected arm or bucket, the scRNA
+            arm's ``NO_TARGET`` first when it received any read. Empty when the
+            run wrote no reads at all.
+        """
+        detected = [NO_TARGET] if self.unmatched_written else []
+        detected += [
+            target for target in sorted(self.target_written) if self.target_written[target]
+        ]
+        return "".join(f"{token}\n" for token in detected)
 
 
 @dataclass
