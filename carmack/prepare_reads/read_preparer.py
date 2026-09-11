@@ -37,6 +37,7 @@ from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.io.fastq_file import FastqFile
 from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
+from carmack.mqc_report import write_mqc_json
 from carmack.parallel import map_batches_in_order
 from carmack.prepare_reads.insert_locator import insert_start
 from carmack.prepare_reads.prepare_reporting import PrepareCounts, PrepareStats
@@ -232,12 +233,14 @@ class ReadPreparer:
         a matched one. This stage never filters, so reads written always reconciles with
         reads read -- the invariant :class:`PrepareStats` states and checks.
 
-        Two plain-text files are written once the run is over: the ``prepare_stats.txt``
-        report, and a ``detected_targets.txt`` naming just the arms and buckets that
-        actually received a read. The second exists because the first tells a machine
-        nothing it can act on directly and the output directory tells it nothing at all:
-        every whitelisted target's bucket is opened below, so an absent target still
-        leaves a valid, empty bucket behind for a consumer to trip over.
+        Three report files are written once the run is over: the ``prepare_stats.txt``
+        report, a ``detected_targets.txt`` naming just the arms and buckets that
+        actually received a read, and a ``prepare_stats_mqc.json`` carrying the same
+        tallies in a MultiQC-readable shape. The detected-targets file exists because
+        the stats report tells a machine nothing it can act on directly and the output
+        directory tells it nothing at all: every whitelisted target's bucket is opened
+        below, so an absent target still leaves a valid, empty bucket behind for a
+        consumer to trip over.
 
         The output side opens a dynamic number of gzip writers: three fixed files plus
         one (R1, R2) pair per entry in the chemistry's target index whitelist, all of
@@ -391,6 +394,12 @@ class ReadPreparer:
         # did not get far enough to say", and a missing file cannot say the first.
         with (output_path / f"{prefix}.detected_targets.txt").open("w") as detected_file:
             detected_file.write(stats.get_detected_targets())
+
+        mqc_payload = {
+            "general_stats": stats.to_mqc_general_stats(prefix),
+            "target_distribution": stats.to_mqc_target_distribution(prefix),
+        }
+        write_mqc_json(output_path / f"{prefix}.prepare_stats_mqc.json", mqc_payload)
 
         return stats
 

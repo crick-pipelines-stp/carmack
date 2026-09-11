@@ -22,6 +22,19 @@ a downstream consumer of that file depends on: bare tokens and nothing else, the
 omitted whether it is absent from the tallies or present with a zero count, and
 an ordering that agrees with the report's own distribution.
 
+The same value object also renders MultiQC custom content payloads for the run:
+``to_mqc_general_stats`` reduces the unmatched and matched counts to the two
+percentages of ``total_reads`` a generalstats table needs, reusing ``fraction``
+so those percentages can never drift from what ``get_report`` already prints;
+``to_mqc_target_distribution`` renders the same per-target distribution as a
+bargraph, adding the unmatched arm as one more category so every read the run
+saw is accounted for in one chart. Both are keyed by a caller-supplied prefix
+and carry the shared Carmack parent identifiers from ``carmack.mqc_report``.
+These tests pin the reuse of ``fraction``, the zero-reads edge case, the
+prefix keying, JSON-serializability, and -- for the distribution -- that no
+read is double-counted or dropped and that the target categories stay sorted
+by name.
+
 ``PrepareCounts`` is the mutable accumulator that feeds it: one batch of reads
 is tallied into one of these, batches are folded together as they drain, and
 the run's totals are rendered as a frozen ``PrepareStats`` at the end. Its
@@ -32,6 +45,7 @@ mapping and plain-dict rendering that ``to_stats`` performs.
 """
 
 import dataclasses
+import json
 from collections import Counter
 from collections.abc import Sequence
 from itertools import permutations
@@ -41,6 +55,7 @@ from assertpy import assert_that
 
 from carmack import __version__ as carmack_version
 from carmack.assign_targets.target_assigner import NO_TARGET
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 from carmack.prepare_reads.prepare_reporting import PrepareCounts, PrepareStats
 from tests.utils import strip_report_run_details
 
@@ -115,6 +130,14 @@ READ_PARTITIONS = [(10,), (1,) * 10, (5, 5), (2, 3, 5), (4, 0, 6), (3, 3, 4)]
 
 # The partition whose batches are folded in every possible order.
 PERMUTED_PARTITION = (3, 3, 4)
+
+# Two distinct prefixes, used to prove the mqc payloads key off whatever prefix
+# is passed in rather than a name the module hardcodes.
+MQC_PREFIX_A = "SK588"
+MQC_PREFIX_B = "SK661"
+
+GENERALSTATS_PLOT_TYPE = "generalstats"
+BARGRAPH_PLOT_TYPE = "bargraph"
 
 
 def make_stats(**overrides: object) -> PrepareStats:
@@ -499,6 +522,201 @@ class TestPrepareStatsDetectedTargets:
         tokens = set(stats.get_detected_targets().splitlines())
 
         assert_that(tokens).is_subset_of({NO_TARGET, *stats.target_written})
+
+
+class TestPrepareStatsMqcGeneralStats:
+    """to_mqc_general_stats: the generalstats payload reducing counts to two percentages."""
+
+    def test_plot_type_is_generalstats(self) -> None:
+        """Test that the payload declares itself a generalstats table."""
+        payload = make_stats().to_mqc_general_stats(MQC_PREFIX_A)
+
+        assert_that(payload["plot_type"]).is_equal_to(GENERALSTATS_PLOT_TYPE)
+
+    def test_payload_carries_the_shared_carmack_parent_identifiers(self) -> None:
+        """Test that the payload attaches to the shared Carmack parent module."""
+        payload = make_stats().to_mqc_general_stats(MQC_PREFIX_A)
+
+        assert_that(payload["parent_id"]).is_equal_to(CARMACK_PARENT_ID)
+        assert_that(payload["parent_name"]).is_equal_to(CARMACK_PARENT_NAME)
+
+    @pytest.mark.parametrize("prefix", [MQC_PREFIX_A, MQC_PREFIX_B])
+    def test_data_section_is_keyed_by_the_given_prefix(self, prefix: str) -> None:
+        """Test that the data section is keyed by whatever prefix is passed in, not a fixed name."""
+        payload = make_stats().to_mqc_general_stats(prefix)
+
+        assert_that(list(payload["data"].keys())).is_equal_to([prefix])
+
+    def test_data_section_contains_exactly_the_two_percentage_fields(self) -> None:
+        """Test that the per-prefix section carries pct_unmatched and pct_matched, and nothing else."""
+        payload = make_stats().to_mqc_general_stats(MQC_PREFIX_A)
+
+        assert_that(set(payload["data"][MQC_PREFIX_A].keys())).is_equal_to(
+            {"pct_unmatched", "pct_matched"}
+        )
+
+    def test_pct_unmatched_reuses_the_fraction_staticmethod(self) -> None:
+        """Test that pct_unmatched is unmatched_written / total_reads * 100, via fraction.
+
+        Computed independently here via the same staticmethod the design calls
+        for reuse of, so an implementation that reinvents the percentage math
+        cannot drift from it without this test catching the difference.
+        """
+        stats = make_stats()
+        expected = PrepareStats.fraction(stats.unmatched_written, stats.total_reads) * 100
+
+        payload = stats.to_mqc_general_stats(MQC_PREFIX_A)
+
+        assert_that(payload["data"][MQC_PREFIX_A]["pct_unmatched"]).is_equal_to(expected)
+
+    def test_pct_matched_reuses_the_fraction_staticmethod(self) -> None:
+        """Test that pct_matched is matched_written / total_reads * 100, via fraction."""
+        stats = make_stats()
+        expected = PrepareStats.fraction(stats.matched_written, stats.total_reads) * 100
+
+        payload = stats.to_mqc_general_stats(MQC_PREFIX_A)
+
+        assert_that(payload["data"][MQC_PREFIX_A]["pct_matched"]).is_equal_to(expected)
+
+    def test_percentages_reconcile_with_get_report_for_the_same_stats(self) -> None:
+        """Test that the payload's percentages are exactly what get_report() already prints.
+
+        Cross-checked against the report's own ``.2%``-formatted text, rather
+        than fraction() a second time, so a percentage that reuses fraction()
+        but scales it differently from get_report() would still be caught.
+        """
+        stats = make_stats()
+        payload = stats.to_mqc_general_stats(MQC_PREFIX_A)
+        report = stats.get_report()
+
+        unmatched_text = f"({payload['data'][MQC_PREFIX_A]['pct_unmatched']:.2f}%)"
+        matched_text = f"({payload['data'][MQC_PREFIX_A]['pct_matched']:.2f}%)"
+
+        assert_that(report).contains(unmatched_text)
+        assert_that(report).contains(matched_text)
+
+    def test_zero_reads_payload_does_not_raise_and_is_zero(self) -> None:
+        """Test that a run with no reads renders 0.0 percentages rather than raising."""
+        payload = make_empty_stats().to_mqc_general_stats(MQC_PREFIX_A)
+
+        assert_that(payload["data"][MQC_PREFIX_A]["pct_unmatched"]).is_equal_to(0.0)
+        assert_that(payload["data"][MQC_PREFIX_A]["pct_matched"]).is_equal_to(0.0)
+
+    def test_payload_is_json_serializable(self) -> None:
+        """Test that the payload round-trips through json.dumps with no lingering Counter or dataclass."""
+        payload = make_stats().to_mqc_general_stats(MQC_PREFIX_A)
+
+        reloaded = json.loads(json.dumps(payload))
+
+        assert_that(reloaded).is_equal_to(payload)
+
+
+class TestPrepareStatsMqcTargetDistribution:
+    """to_mqc_target_distribution: the bargraph payload over target_written plus the unmatched arm."""
+
+    def test_plot_type_is_bargraph(self) -> None:
+        """Test that the payload declares itself a bargraph."""
+        payload = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["plot_type"]).is_equal_to(BARGRAPH_PLOT_TYPE)
+
+    def test_payload_carries_the_shared_carmack_parent_identifiers(self) -> None:
+        """Test that the payload attaches to the shared Carmack parent module."""
+        payload = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["parent_id"]).is_equal_to(CARMACK_PARENT_ID)
+        assert_that(payload["parent_name"]).is_equal_to(CARMACK_PARENT_NAME)
+
+    @pytest.mark.parametrize("prefix", [MQC_PREFIX_A, MQC_PREFIX_B])
+    def test_data_section_is_keyed_by_the_given_prefix(self, prefix: str) -> None:
+        """Test that the data section is keyed by whatever prefix is passed in, not a fixed name."""
+        payload = make_stats().to_mqc_target_distribution(prefix)
+
+        assert_that(list(payload["data"].keys())).is_equal_to([prefix])
+
+    @pytest.mark.parametrize("target,expected_count", list(TARGET_WRITTEN.items()))
+    def test_per_target_counts_equal_target_written_exactly(
+        self, target: str, expected_count: int
+    ) -> None:
+        """Test that each target's category count in the payload matches target_written exactly.
+
+        TARGET_WRITTEN is supplied out of lexical order (C, A, B), so
+        parametrizing over it also exercises a payload built from an unsorted
+        target_written.
+        """
+        payload = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["data"][MQC_PREFIX_A][target]).is_equal_to(expected_count)
+
+    def test_unmatched_category_equals_unmatched_written_exactly(self) -> None:
+        """Test that the unmatched/scRNA-arm category equals unmatched_written exactly."""
+        payload = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["data"][MQC_PREFIX_A][NO_TARGET]).is_equal_to(UNMATCHED_WRITTEN)
+
+    def test_target_categories_are_sorted_by_name(self) -> None:
+        """Test that the per-target categories are ordered by name, not insertion order.
+
+        TARGET_WRITTEN is supplied out of lexical order (C, A, B); a payload
+        that merely echoed dict iteration order would fail this.
+        """
+        payload = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+        categories = payload["data"][MQC_PREFIX_A]
+
+        target_names = [name for name in categories if name != NO_TARGET]
+
+        assert_that(target_names).is_equal_to(sorted(TARGET_WRITTEN))
+
+    def test_sum_of_every_category_count_equals_total_reads(self) -> None:
+        """Test that no read is double-counted or dropped across the categories.
+
+        This stage never filters, so the categories must partition every read
+        the run saw exactly once.
+        """
+        stats = make_stats()
+
+        payload = stats.to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(sum(payload["data"][MQC_PREFIX_A].values())).is_equal_to(stats.total_reads)
+
+    def test_zero_count_target_is_still_included_as_a_category(self) -> None:
+        """Test that a target tallied at zero still gets its own category, at zero.
+
+        Unlike get_detected_targets, the bargraph mirrors target_section()'s
+        own undistinguishing sort: every key in target_written becomes a
+        category, whether or not any read landed in it.
+        """
+        stats = make_stats(
+            target_written={"targetA": 3, "targetB": 0}, unmatched_written=4, total_reads=7
+        )
+
+        payload = stats.to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["data"][MQC_PREFIX_A]).is_equal_to(
+            {"targetA": 3, "targetB": 0, NO_TARGET: 4}
+        )
+
+    def test_scrna_only_chemistry_yields_the_unmatched_category_alone(self) -> None:
+        """Test that a chemistry with no target index renders one category: the unmatched arm."""
+        stats = make_stats(target_written={}, unmatched_written=TOTAL_READS)
+
+        payload = stats.to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["data"][MQC_PREFIX_A]).is_equal_to({NO_TARGET: TOTAL_READS})
+
+    def test_zero_reads_payload_does_not_raise(self) -> None:
+        """Test that a run with no reads renders rather than raising."""
+        payload = make_empty_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["data"][MQC_PREFIX_A]).is_equal_to({NO_TARGET: 0})
+
+    def test_payload_is_json_serializable(self) -> None:
+        """Test that the payload round-trips through json.dumps with no lingering Counter or dataclass."""
+        payload = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+
+        reloaded = json.loads(json.dumps(payload))
+
+        assert_that(reloaded).is_equal_to(payload)
 
 
 class TestPrepareCountsConstruction:

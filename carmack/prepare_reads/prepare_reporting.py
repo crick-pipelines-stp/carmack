@@ -18,9 +18,11 @@ becomes once the run is over.
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from carmack import __version__ as carmack_version
 from carmack.assign_targets.target_assigner import NO_TARGET
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,61 @@ class PrepareStats:
             target for target in sorted(self.target_written) if self.target_written[target]
         ]
         return "".join(f"{token}\n" for token in detected)
+
+    def to_mqc_general_stats(self, prefix: str) -> dict[str, Any]:
+        """Render a MultiQC generalstats payload of the run's unmatched and matched percentages.
+
+        Reduces the run to the two percentages a generalstats table needs,
+        reusing :meth:`fraction` so these can never drift from the ones
+        :meth:`get_report` already prints.
+
+        Args:
+            prefix: Key the per-run section of ``data`` is filed under, so a
+                caller reporting several runs can tell them apart.
+
+        Returns:
+            A MultiQC custom content payload attached to the shared Carmack
+            parent module, carrying ``pct_unmatched`` and ``pct_matched`` as
+            percentages of ``total_reads``.
+        """
+        return {
+            "plot_type": "generalstats",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "data": {
+                prefix: {
+                    "pct_unmatched": self.fraction(self.unmatched_written, self.total_reads) * 100,
+                    "pct_matched": self.fraction(self.matched_written, self.total_reads) * 100,
+                }
+            },
+        }
+
+    def to_mqc_target_distribution(self, prefix: str) -> dict[str, Any]:
+        """Render a MultiQC bargraph payload of the per-target distribution.
+
+        Mirrors :meth:`target_section`'s own sort by target name, and adds the
+        unmatched (scRNA arm) count as one more category, so every read the
+        run saw is accounted for in one chart.
+
+        Args:
+            prefix: Key the per-run section of ``data`` is filed under, so a
+                caller reporting several runs can tell them apart.
+
+        Returns:
+            A MultiQC custom content payload attached to the shared Carmack
+            parent module, carrying one category per target in
+            ``target_written`` plus the unmatched arm, keyed by ``NO_TARGET``.
+        """
+        categories = {
+            target: self.target_written[target] for target in sorted(self.target_written)
+        }
+        categories[NO_TARGET] = self.unmatched_written
+        return {
+            "plot_type": "bargraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "data": {prefix: categories},
+        }
 
 
 @dataclass
