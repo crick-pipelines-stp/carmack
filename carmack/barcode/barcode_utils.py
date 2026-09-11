@@ -1,8 +1,10 @@
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.figure import Figure
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
 
 
 def hamming_distance(a: np.ndarray, b: np.ndarray) -> int:
@@ -88,8 +90,17 @@ def edit_distance(seq1, seq2, n_char="N", n_matches_any=True):
     return dp[m][n]
 
 
-def make_barcode_rank_plot(barcode_counts: Mapping[str, int]) -> Figure:
-    """Create a barcode-rank plot from full-barcode counts."""
+def make_barcode_rank_plot(barcode_counts: Mapping[str, int]) -> "Figure":
+    """Create a barcode-rank plot from full-barcode counts.
+
+    matplotlib is imported here rather than at module scope because it is the single heaviest
+    import in the package -- around half a second -- and this is the only function in the
+    module that needs it. Everything else here is small pure-sequence arithmetic that the
+    matchers and the chemistry definitions depend on, and those sit on the import path of
+    every command, including the ones that draw nothing.
+    """
+    import matplotlib.pyplot as plt
+
     counts = sorted((count for count in barcode_counts.values() if count > 0), reverse=True)
 
     fig, ax = plt.subplots(figsize=(10, 6))

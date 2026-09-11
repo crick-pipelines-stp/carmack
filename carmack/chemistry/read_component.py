@@ -29,8 +29,6 @@ class ReadComponent:
         sequence: Optional known sequence for this component (e.g., primer
             sequence). Should be None for barcode components (since they are
             loaded from a whitelist).
-        length_tolerance: Symmetric jitter, in bases, allowed around ``length``
-            for variable components such as UMIs. Zero means a fixed length.
         homopolymer_base: For homopolymer components, the single repeated base
             (one of A, C, G, T).
         min_run: For homopolymer components, the minimum run length that anchors
@@ -45,7 +43,6 @@ class ReadComponent:
     type: ReadComponentType = ReadComponentType.OTHER
     length: int | None = None
     sequence: str | None = None
-    length_tolerance: int = 0
     homopolymer_base: str | None = None
     min_run: int | None = None
     start: int | None = field(init=False, default=None)
@@ -69,9 +66,6 @@ class ReadComponent:
         if self.type is ReadComponentType.BARCODE and self.sequence is not None:
             raise ValueError("Barcode components should not be instantiated with a sequence.")
 
-        if self.type is ReadComponentType.UMI and self.length_tolerance < 0:
-            raise ValueError("UMI components require a non-negative length_tolerance.")
-
     @property
     def position_key(self) -> str:
         """Return the annotation header key for this component's position."""
@@ -93,19 +87,24 @@ class ReadComponent:
     @property
     def is_variable_length(self) -> bool:
         """Return whether the occupied length is not a single fixed value."""
-        return (
-            self.length is None
-            or self.length_tolerance > 0
-            or self.type is ReadComponentType.HOMOPOLYMER
-        )
+        return self.length is None or self.type is ReadComponentType.HOMOPOLYMER
 
     @property
-    def min_length(self) -> int | None:
-        """Return the minimum number of bases this component occupies."""
-        if self.type is ReadComponentType.HOMOPOLYMER:
-            return self.min_run
-        if self.length is None:
-            return None
-        if self.length_tolerance > 0:
-            return self.length - self.length_tolerance
-        return self.length
+    def records_position(self) -> bool:
+        """Return whether barcode extraction writes this component's position down.
+
+        Barcode extraction is the first stage to run and writes a ``<NAME>`` and
+        a ``<NAME>_POS`` tag for each barcode and for nothing else, so a barcode
+        span is the only coordinate a read carries that every later stage can
+        rely on. Narrower than "some stage records this": UMI extraction also
+        writes a ``UMI_POS``, and that span is deliberately excluded here,
+        because a stage that anchored on it would be made to depend on UMI
+        extraction having run first.
+
+        This is deliberately separate from :attr:`is_anchor`, and neither implies
+        the other -- an anchor is a component that *can* be located within a
+        read, while this says the position it was found at is written down early
+        enough to be read back. A primer anchors a neighbour perfectly well and
+        records nothing.
+        """
+        return self.type is ReadComponentType.BARCODE

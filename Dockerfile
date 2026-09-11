@@ -5,18 +5,17 @@
 ########################################################################
 FROM mambaorg/micromamba:2.9.0-debian13 AS base
 
-# umi_tools publishes no wheels, and its sdist bootstraps setuptools through the
-# long-dead ez_setup.py, which fails under modern build isolation. That makes the
-# whole dependency set uninstallable by pip alone, so the image is built on a conda
-# base rather than python:3.12. pigz is what keeps compression off the critical path
-# of every stage that writes .gz; without it those stages fall back to single-threaded
-# gzip. The compiled scientific stack is taken from conda too, so that editing the
-# source never rebuilds it.
+# The compiled scientific stack is taken from conda so that editing the source never
+# rebuilds it, and pigz comes from the same place: it is what keeps compression off the
+# critical path of every stage that writes .gz, and without it those stages fall back to
+# single-threaded gzip. Nothing here is now uninstallable by pip alone -- the dependency
+# that forced a conda base, umi_tools, is gone -- so this is a build-time choice rather
+# than a requirement, and the image could move to python:3.12 plus an apt pigz if the
+# rebuild cost were ever worth trading away.
 RUN micromamba install -y -n base -c conda-forge -c bioconda \
         python=3.12 \
         pip \
         pigz \
-        umi_tools=1.1.6 \
         pysam \
         numpy \
         scipy \
@@ -56,7 +55,7 @@ COPY --chown=$MAMBA_USER:$MAMBA_USER pyproject.toml README.md ./
 COPY --chown=$MAMBA_USER:$MAMBA_USER carmack ./carmack
 
 # pip resolves only the pure-python remainder here: conda has already satisfied
-# umi_tools, pysam, numpy, scipy and matplotlib.
+# pysam, numpy, scipy and matplotlib.
 RUN sed -i "s/^version = .*/version = \"${CARMACK_VERSION}\"/" pyproject.toml \
     && pip install --no-cache-dir . \
     && rm -rf build carmack.egg-info \

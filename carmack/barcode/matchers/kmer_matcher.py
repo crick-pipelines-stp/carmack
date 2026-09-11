@@ -1,10 +1,9 @@
 import logging
 from collections import defaultdict
-from typing import ClassVar
+from typing import ClassVar, Literal
 
-from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
-from carmack.barcode.matchers.matcher_base import MatcherBase
+from carmack.barcode.matchers.matcher_base import MatcherBase, best_window
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.read_structure import ReadComponent, ReadComponentType
 
@@ -91,6 +90,10 @@ class KmerMatcher(MatcherBase):
         """
         Extend a seed match and verify the full barcode alignment.
 
+        The seed fixes where the barcode is thought to begin; choosing the window to report
+        from there is shared with the other searching matcher via ``best_window``, so the two
+        cannot disagree about a component's extent in the read.
+
         Args:
             read: The read sequence
             read_kmer_pos: Position of k-mer match in read
@@ -98,46 +101,11 @@ class KmerMatcher(MatcherBase):
             bc_kmer_pos: Position of k-mer in barcode
 
         Returns:
-            (is_valid, start_pos, end_pos, edit_distance) tuple
+            (is_valid, start_pos, end_pos, edit_distance) tuple. Among the windows that tie at
+            the minimum edit distance, the one reported is the window whose length equals the
+            barcode's, and then the one whose start is nearest the seed's implied start.
         """
-        bc_len = len(barcode)
-        expected_start = read_kmer_pos - bc_kmer_pos
-
-        # Search within a small band around expected start
-        min_start = max(0, expected_start - self.max_errors)
-        max_start = min(len(read) - 1, expected_start + self.max_errors)
-
-        # Only consider window sizes where |win_len - bc_len| <= max_errors
-        # This is the key pruning: window length alone must allow <= max_errors
-        min_len = max(1, bc_len - self.max_errors)
-        max_len = min(len(read), bc_len + self.max_errors)
-
-        best_dist = self.max_errors + 1
-        best_span = (-1, -1)
-
-        for start in range(min_start, max_start + 1):
-            max_len_at_start = min(max_len, len(read) - start)
-            if max_len_at_start < min_len:
-                continue
-
-            # Only iterate window lengths within feasible range
-            for win_len in range(min_len, max_len_at_start + 1):
-                read_window = read[start : start + win_len]
-
-                dist = edit_distance(read_window, barcode, "N", True)
-
-                if dist < best_dist:
-                    best_dist = dist
-                    best_span = (start, start + win_len)
-
-                    # Early exit: perfect match found
-                    if best_dist == 0:
-                        return (True, best_span[0], best_span[1], best_dist)
-
-        if best_dist <= self.max_errors:
-            return (True, best_span[0], best_span[1], best_dist)
-
-        return (False, -1, -1, best_dist)
+        return best_window(read, barcode, read_kmer_pos - bc_kmer_pos, self.max_errors)
 
     def collect_candidates(self, read: str, start_idx: int = 0) -> list[KmerCandidate]:
         """
@@ -148,6 +116,11 @@ class KmerMatcher(MatcherBase):
         them — no best-score filter is applied here — so the near misses that resolution is about
         to discard remain visible to a caller that wants them.
 
+        Candidates verified outside the region the declared layout could have moved this
+        component into are discarded, so a whitelist entry found somewhere the structure
+        cannot put this component -- a neighbouring barcode's position, the UMI, the anchor or
+        the insert -- is never a candidate for it. See ``MatcherBase.component_window``.
+
         Args:
             read: The sequencing read to search.
             start_idx: A floor on where a seed k-mer may begin, not on where a candidate may
@@ -155,7 +128,8 @@ class KmerMatcher(MatcherBase):
                 still span back before it. Defaults to 0, which imposes no bound.
 
         Returns:
-            Every verified candidate, in the order it was verified. Empty if nothing verified.
+            Every verified candidate inside the component's window, in the order it was
+            verified. Empty if nothing verified there.
 
         Raises:
             ValueError: If the read is shorter than the seed k-mer length.
@@ -165,9 +139,27 @@ class KmerMatcher(MatcherBase):
                 f"Read segment too short for k-mer matching: read length {len(read)}, k={self.k}"
             )
 
+        # How far the declared layout can have moved this component, which is the whole of
+        # where a candidate for it may sit. Seeds are still scanned over the whole read from
+        # start_idx, so the seed floor keeps its documented meaning; what the window bounds is
+        # where a *verified* candidate may end up. Without it a whitelist entry lying anywhere
+        # in the read is a candidate: a rotation of a neighbouring component's entry, found in
+        # that neighbour's region on every read of a library using it, or a chance lookalike
+        # in the insert. Either matches exactly while this component's own damaged window is an
+        # edit out, so it wins on edit distance outright -- no tie to break, no spacer
+        # consulted, and a cell barcode read off sequence that is not the barcode.
+        window_low, window_high = self.component_window(read, self.max_errors)
+
         candidates: list[KmerCandidate] = []
         # To avoid redundant verification of same (barcode, position)
-        candidates_seen: set[tuple[str, int]] = set()
+        seeds_seen: set[tuple[str, int]] = set()
+        # Distinct verified candidates, by entry and the span it verified at. Two seeds in the
+        # same entry can imply different starts and still converge on one best window, so
+        # skipping repeated seeds is not enough to keep the collection distinct. A duplicate is
+        # not harmless: resolution separates a tie by finding exactly one candidate carrying
+        # spacer evidence, and the same candidate counted twice never is exactly one, so a read
+        # that the spacers do resolve gets reported as unresolvable instead.
+        verified_seen: set[tuple[str, int, int]] = set()
 
         # Scan read for seed k-mers
         for i in range(start_idx, len(read) - self.k + 1):
@@ -176,17 +168,21 @@ class KmerMatcher(MatcherBase):
             if read_kmer in self.kmer_index:
                 for bc, bc_kmer_pos in self.kmer_index[read_kmer]:
                     expected_start = i - bc_kmer_pos
-                    candidate_key = (bc, expected_start)
+                    seed_key = (bc, expected_start)
 
-                    if candidate_key in candidates_seen:
+                    if seed_key in seeds_seen:
                         continue
-                    candidates_seen.add(candidate_key)
+                    seeds_seen.add(seed_key)
 
                     is_valid, start, end, edit_dist = self.extend_and_verify(
                         read, i, bc, bc_kmer_pos
                     )
 
-                    if is_valid:
+                    if not is_valid or start < window_low or end > window_high:
+                        continue
+
+                    if (bc, start, end) not in verified_seen:
+                        verified_seen.add((bc, start, end))
                         candidates.append((bc, start, end, edit_dist))
 
         return candidates
@@ -198,11 +194,32 @@ class KmerMatcher(MatcherBase):
         Choose between collected candidates and report the outcome as match attempts.
 
         This is the resolution half of ``match``. Candidates are first filtered to the best edit
-        distance, since choosing between them is what resolution is for. A lone survivor is
-        reported directly with no spacer validation at all, because spacers serve only as a
-        tie-break and there is no tie to break. A tie is broken first by requiring at least one
-        adjacent spacer, and then, if several candidates still stand, by preferring the single
+        distance, since choosing between them is what resolution is for. What happens next
+        depends on how many survive, and the two cases ask the spacers different questions.
+
+        Several survivors are a tie, and the spacers separate them: first by requiring at
+        least one adjacent spacer, then, if several still stand, by preferring the single
         candidate flanked by two. If neither rung separates them the matcher declines to guess.
+
+        A lone survivor is not a tie, and it is not thereby correct either. What it owes is set
+        out on ``MatcherBase.requires_spacer_evidence``: a candidate the declared layout can
+        account for is corroborated by its position and is assigned as it stands, while one
+        further out has to bring a flanking spacer or be declined. Assigning a lone survivor
+        unexamined -- which this once did, and recorded as a design choice -- is what read cell
+        barcodes off the insert, and it was reachable on nearly every read, because this
+        matcher runs first and a successful lone assignment here is terminal.
+
+        The spacers are consulted only when the answer turns on them, never on the corroborated
+        path. That is partly the hot path, taken by nearly every read of a healthy library; but
+        mostly it is that the spacer fields are rendered into the annotated read name and into
+        the per-run spacer statistics, so recording evidence on every lone match would move
+        nearly every output line to describe a decision the spacers took no part in.
+
+        A declined lone candidate comes back as exactly one bare matchless attempt, the same
+        shape as finding nothing at all. One attempt is what keeps the read non-terminal so it
+        escalates to the alignment matcher, which applies the same rule and may recover it on
+        evidence of its own. Several attempts would latch an ambiguity verdict and block that
+        escalation, and ambiguity is the wrong verdict anyway: the candidates never tied.
 
         Args:
             read: The sequencing read the candidates were collected from, used both to slice out
@@ -230,10 +247,24 @@ class KmerMatcher(MatcherBase):
 
         if len(best_candidates) == 1:
             best_bc, start, end, edit_dist = best_candidates[0]
+
+            lone_spacers: dict[Literal["upstream", "downstream"], str | None] = {}
+            if self.requires_spacer_evidence((start, end), self.max_errors):
+                lone_spacers = self.check_spacers(read, (start, end))
+                if not any(lone_spacers.values()):
+                    log.debug(
+                        f"Sole kmer candidate {best_bc} at {start}-{end} is further from the "
+                        f"expected start of {self.component.name} than the layout allows and "
+                        "has no adjacent spacer evidence. Marking as no match."
+                    )
+                    return [result]
+
             result.match = best_bc
             result.candidate = read[start:end]
             result.read_idx = (start, end)
             result.edit_distance = edit_dist
+            result.spacer_upstream = lone_spacers.get("upstream")
+            result.spacer_downstream = lone_spacers.get("downstream")
             log.debug(
                 f"Kmer match found: {best_bc} at position {start}-{end} with edit distance {edit_dist}"
             )
@@ -266,6 +297,16 @@ class KmerMatcher(MatcherBase):
                 if len(best_candidates_with_two_spacers) == 1:
                     best_bc, start, end, edit_dist, spacers_check = (
                         best_candidates_with_two_spacers[0]
+                    )
+                elif len({vc[0] for vc in validated_candidates}) == 1:
+                    # Several spans of one whitelist entry, not several entries. The barcode is
+                    # determined even though its exact extent is not, so this is not the
+                    # ambiguity the contract is about: reporting it as one would throw the read
+                    # away over a boundary that no downstream consumer disagrees about. The
+                    # entry's own best span is taken, ranked as everywhere else.
+                    best_bc, start, end, edit_dist, spacers_check = min(
+                        validated_candidates,
+                        key=lambda vc: (abs(vc[2] - vc[1] - len(vc[0])), vc[1]),
                     )
                 else:
                     log.debug(

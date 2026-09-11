@@ -19,7 +19,6 @@ dependencies = [
     "scipy",
     "kneed",
     "biopython",
-    "umi_tools>=1.1.0",
 ]
 scripts = { "carmack" = "carmack.__main__:run_carmack" }
 
@@ -48,9 +47,8 @@ carmack = ["data/**/*"]
 [tool.setuptools.packages.find]
 # Without this the default namespace discovery sweeps in every directory that is not
 # excluded by name, so the wheel shipped a top-level "tests" package into site-packages.
-# Namespace discovery itself has to stay on: carmack/cell_caller, carmack/fastq_tools,
-# carmack/split_reads and carmack/tag_dedup carry no __init__.py, and are only found
-# that way.
+# Namespace discovery itself has to stay on: carmack/cell_caller, carmack/split_reads
+# and carmack/tag_dedup carry no __init__.py, and are only found that way.
 include = ["carmack*"]
 
 [tool.pytest.ini_options]

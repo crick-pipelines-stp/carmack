@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from carmack import __version__ as carmack_version
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 
 
 @dataclass(frozen=True)
@@ -40,7 +41,7 @@ class AssignStats:
             tie between targets: it arises either from two whitelist entries or
             from one entry matching at two offsets, so a counter named for
             ambiguity would mostly not be measuring ambiguity between targets.
-        unmatched_no_umi_pos: Reads whose header carried no UMI position tag, so
+        unmatched_no_left_anchor_pos: Reads whose header carried no anchor position tag, so
             no anchor run end and no window could be derived. Counted and
             annotated ``NONE`` rather than raised on, to conserve read count.
         unmatched_short_window: Reads whose window was shorter than the floor the
@@ -56,7 +57,7 @@ class AssignStats:
             index which itself opens with anchor bases includes those bases,
             because at that boundary they are indistinguishable from the run.
 
-    By construction ``matched + unmatched_no_match + unmatched_no_umi_pos +
+    By construction ``matched + unmatched_no_match + unmatched_no_left_anchor_pos +
     unmatched_short_window`` always equals ``total_reads``. Uniquely to this
     stage, ``total_reads`` also equals the number of reads **written**: no read
     is ever dropped, so reads written equals reads read.
@@ -65,7 +66,7 @@ class AssignStats:
     total_reads: int
     matched: int
     unmatched_no_match: int
-    unmatched_no_umi_pos: int
+    unmatched_no_left_anchor_pos: int
     unmatched_short_window: int
     target_counts: dict[str, int]
     edit_distance_counts: dict[int, int]
@@ -84,7 +85,7 @@ class AssignStats:
         Derived from the run-length counter rather than stored alongside it, so
         the two cannot drift apart and the outcome invariant gains no extra term.
         It is the denominator of the run-length distribution: a read only reaches
-        the forward scan once its UMI position tag is in hand, so the reads
+        the forward scan once its anchor position tag is in hand, so the reads
         counted here are a subset of ``total_reads``.
         """
         return sum(self.homopolymer_run_counts.values())
@@ -112,8 +113,8 @@ class AssignStats:
             f"({self.fraction(self.unmatched_no_match, self.total_reads):.2%})\n"
         )
         report += (
-            f"Unmatched (no_umi_pos): {self.unmatched_no_umi_pos} "
-            f"({self.fraction(self.unmatched_no_umi_pos, self.total_reads):.2%})\n"
+            f"Unmatched (no_left_anchor_pos): {self.unmatched_no_left_anchor_pos} "
+            f"({self.fraction(self.unmatched_no_left_anchor_pos, self.total_reads):.2%})\n"
         )
         report += (
             f"Unmatched (short_window): {self.unmatched_short_window} "
@@ -129,17 +130,17 @@ class AssignStats:
         """Render the caveat that qualifies every count below it.
 
         The stage reads ``{prefix}.r1_umi.fastq.gz``, which ``extract-umis`` has
-        already subset: a read with no anchor run inside the UMI length window
-        never arrives here at all. ``total_reads`` is therefore not the run's
-        read count and the matched fraction is not the scTIP fraction of the
-        library. The note is emitted before the counts so the caveat is read
-        before the number it qualifies; without it someone will read the target
-        index rate as a modality fraction of the library.
+        already subset: a read whose anchor was never recorded, or which ends
+        before its UMI does, never arrives here at all. ``total_reads`` is
+        therefore not the run's read count and the matched fraction is not the
+        scTIP fraction of the library. The note is emitted before the counts so
+        the caveat is read before the number it qualifies; without it someone
+        will read the target index rate as a modality fraction of the library.
         """
         note = "# Input is {prefix}.r1_umi.fastq.gz, which extract-umis has already subset:\n"
-        note += "# reads with no anchor run inside the UMI length window never arrive here,\n"
-        note += "# so the matched fraction below is not the scTIP fraction of the library.\n"
-        note += "# See the matching .umi_stats.txt for the run's total read count.\n"
+        note += "# a read whose anchor was never recorded, or which ends inside its UMI, does\n"
+        note += "# not arrive here, so the matched fraction below is not the scTIP fraction of\n"
+        note += "# the library. See the matching .umi_stats.txt for the run's total read count.\n"
         return note
 
     def target_section(self) -> str:
@@ -185,6 +186,215 @@ class AssignStats:
             section += f"\t{run_length}\t{count} ({self.fraction(count, measured):.2%})\n"
         return section
 
+    def to_mqc_general_stats(self, prefix: str) -> dict[str, object]:
+        """Build a MultiQC "generalstats" custom-content payload summarising this run.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with a single row of headline percentages
+            (matched, no_match, no_left_anchor_pos, short_window) for this sample.
+        """
+        pct_matched = 100 * self.fraction(self.matched, self.total_reads)
+        pct_no_match = 100 * self.fraction(self.unmatched_no_match, self.total_reads)
+        pct_no_left_anchor_pos = 100 * self.fraction(
+            self.unmatched_no_left_anchor_pos, self.total_reads
+        )
+        pct_short_window = 100 * self.fraction(self.unmatched_short_window, self.total_reads)
+
+        return {
+            "id": "carmack_tgidx_general_stats",
+            "plot_type": "generalstats",
+            "pconfig": [
+                {
+                    "pct_matched": {
+                        "title": "% Matched",
+                        "description": "Percentage of reads whose window resolved to a single whitelist entry.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "RdYlGn",
+                    }
+                },
+                {
+                    "pct_no_match": {
+                        "title": "% No Match",
+                        "description": "Percentage of reads whose window was searched and yielded no usable answer.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+                {
+                    "pct_no_left_anchor_pos": {
+                        "title": "% No Anchor Pos",
+                        "description": "Percentage of reads whose header carried no anchor position tag, so no window could be derived.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+                {
+                    "pct_short_window": {
+                        "title": "% Short Window",
+                        "description": "Percentage of reads whose window was shorter than the floor the matcher needs.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+            ],
+            "data": {
+                prefix: {
+                    "pct_matched": pct_matched,
+                    "pct_no_match": pct_no_match,
+                    "pct_no_left_anchor_pos": pct_no_left_anchor_pos,
+                    "pct_short_window": pct_short_window,
+                }
+            },
+        }
+
+    def to_mqc_breakdown(self, prefix: str) -> dict[str, object]:
+        """Build a MultiQC "bargraph" custom-content payload of raw outcome counts.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload nested under carmack's shared parent section,
+            with one bar per sample split into matched/no_match/no_left_anchor_pos/
+            short_window read counts.
+        """
+        return {
+            "id": "carmack_tgidx_breakdown",
+            "plot_type": "bargraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Target Index Assignment Breakdown",
+            "description": "Read counts broken down by target index assignment outcome.",
+            "pconfig": {
+                "id": "carmack_tgidx_breakdown_plot",
+                "title": "Target Index Assignment: Outcomes",
+                "ylab": "Reads",
+            },
+            "data": {
+                prefix: {
+                    "matched": self.matched,
+                    "no_match": self.unmatched_no_match,
+                    "no_left_anchor_pos": self.unmatched_no_left_anchor_pos,
+                    "short_window": self.unmatched_short_window,
+                }
+            },
+        }
+
+    def to_mqc_target_distribution(self, prefix: str) -> dict[str, object]:
+        """Build a MultiQC "bargraph" custom-content payload of the per-target distribution.
+
+        Unlike :meth:`to_mqc_edit_distance` and :meth:`to_mqc_anchor_run`, this is
+        never suppressed: an empty run still gets a plot with an empty ``data``
+        mapping, because a cross-target hopping signal absent from a run is itself
+        worth showing rather than omitting.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload carrying ``target_counts`` verbatim,
+            with no filtering or sorting applied. This is the cross-target hopping
+            signal: a read assigned to a target other than the one expected for
+            this sample is the highest-value diagnostic this stage produces.
+        """
+        return {
+            "id": "carmack_tgidx_target_distribution",
+            "plot_type": "bargraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Target Index Distribution",
+            "description": (
+                "Per-target read counts among matched reads. This is the cross-target "
+                "hopping signal: reads assigned to a target other than the one expected "
+                "for this sample indicate index hopping or misassignment, making it the "
+                "highest-value plot this stage produces."
+            ),
+            "pconfig": {
+                "id": "carmack_tgidx_target_distribution_plot",
+                "title": "Target Index Assignment: Target Distribution",
+                "ylab": "Reads",
+            },
+            "data": {prefix: dict(self.target_counts)},
+        }
+
+    def to_mqc_edit_distance(self, prefix: str) -> dict[str, object] | None:
+        """Build a MultiQC "linegraph" custom-content payload of the edit distance distribution.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with the edit distance distribution over
+            matched reads, or ``None`` if no read was ever matched.
+        """
+        if not self.edit_distance_counts:
+            return None
+
+        return {
+            "id": "carmack_tgidx_edit_distance",
+            "plot_type": "linegraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Target Index Edit Distance",
+            "description": "Distribution of edit distances for matched target index reads.",
+            "pconfig": {
+                "id": "carmack_tgidx_edit_distance_plot",
+                "title": "Target Index Assignment: Edit Distance Distribution",
+                "xlab": "Edit distance",
+                "ylab": "Reads",
+            },
+            "data": {prefix: dict(self.edit_distance_counts)},
+        }
+
+    def to_mqc_anchor_run(self, prefix: str) -> dict[str, object] | None:
+        """Build a MultiQC "linegraph" custom-content payload of the anchor run distribution.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with the anchor homopolymer run-length
+            distribution, or ``None`` when no run was ever measured. Independent of
+            :meth:`to_mqc_edit_distance`: a run with no matched reads can still have
+            measured anchor runs, and vice versa.
+        """
+        if not self.homopolymer_run_counts:
+            return None
+
+        return {
+            "id": "carmack_tgidx_anchor_run",
+            "plot_type": "linegraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Target Index Anchor Run Length",
+            "description": (
+                "Distribution of the observed anchor homopolymer run length ahead of the "
+                "target index."
+            ),
+            "pconfig": {
+                "id": "carmack_tgidx_anchor_run_plot",
+                "title": "Target Index Assignment: Anchor Run Length Distribution",
+                "xlab": "Run length",
+                "ylab": "Reads",
+            },
+            "data": {prefix: dict(self.homopolymer_run_counts)},
+        }
+
 
 @dataclass
 class AssignCounts:
@@ -200,7 +410,7 @@ class AssignCounts:
     Attributes:
         total: Reads tallied.
         matched: Reads whose window resolved to a single whitelist entry.
-        no_umi_pos: Reads whose header carried no UMI position tag, so no window
+        no_left_anchor_pos: Reads whose header carried no anchor position tag, so no window
             could be derived.
         short_window: Reads whose window was shorter than the floor the matcher
             needs.
@@ -212,7 +422,7 @@ class AssignCounts:
 
     total: int = 0
     matched: int = 0
-    no_umi_pos: int = 0
+    no_left_anchor_pos: int = 0
     short_window: int = 0
     no_match: int = 0
     target_counts: Counter[str] = field(default_factory=Counter)
@@ -228,7 +438,7 @@ class AssignCounts:
         """
         self.total += other.total
         self.matched += other.matched
-        self.no_umi_pos += other.no_umi_pos
+        self.no_left_anchor_pos += other.no_left_anchor_pos
         self.short_window += other.short_window
         self.no_match += other.no_match
         # Counter.update ADDS counts, where dict.update would overwrite them.
@@ -255,7 +465,7 @@ class AssignCounts:
             total_reads=self.total,
             matched=self.matched,
             unmatched_no_match=self.no_match,
-            unmatched_no_umi_pos=self.no_umi_pos,
+            unmatched_no_left_anchor_pos=self.no_left_anchor_pos,
             unmatched_short_window=self.short_window,
             target_counts=dict(self.target_counts),
             edit_distance_counts=dict(self.edit_distance_counts),

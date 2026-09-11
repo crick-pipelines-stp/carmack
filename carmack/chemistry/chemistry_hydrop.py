@@ -8,7 +8,12 @@ BC3 (10bp) -> SPACER_1 (10bp) -> BC2 (10bp) -> SPACER_2 (10bp) -> BC1 (10bp) -> 
 from functools import cached_property
 from importlib.resources import files
 
-from carmack.chemistry.chemistry_base import ChemistryBase, MatchErrors, WhitelistSource
+from carmack.chemistry.chemistry_base import (
+    ChemistryBase,
+    MatchErrors,
+    WhitelistDistancePolicy,
+    WhitelistSource,
+)
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
@@ -63,6 +68,21 @@ class ChemistryHydrop(ChemistryBase):
     def max_errors(self) -> MatchErrors:
         """Return the maximum allowed errors for barcode matching."""
         return MatchErrors(barcode=2, spacer=1)
+
+    def whitelist_distance_policy(self) -> WhitelistDistancePolicy:
+        """Report whitelist distance violations for HyDrop rather than refusing to construct.
+
+        HyDrop's barcode sets come from its published protocol, and at a barcode budget of two
+        they carry pairs well inside that budget -- they share their 10bp cores with the
+        custom_seq sets, which carry the same pairs at half the budget. Retiring an entry is
+        not ours to do, so refusing to construct would only make the chemistry unusable while
+        leaving the risk exactly where it was. The violation is warned about on every run
+        instead, which is the whole of what this project can do about someone else's design.
+
+        Returns:
+            A reporting-only policy.
+        """
+        return WhitelistDistancePolicy(enforce=False)
 
     def whitelist_sources(self) -> dict[str, WhitelistSource]:
         """Return the packaged whitelist file for each barcode component.
