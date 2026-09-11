@@ -2829,12 +2829,12 @@ COMMAND_NAME = "assign-targets"
 FASTQ_METAVAR = "<r1_umi_fastq>"
 
 # The help group the command belongs to and the two commands it sits between.
-# The stage runs after extract-umis and before fastq-filter, and the grouped
+# The stage runs after extract-umis and before bam-tag-deduplicate, and the grouped
 # help listing is the only place a user reads that order off, so the position is
 # part of the contract and not a cosmetic detail.
 USER_COMMAND_GROUP = "Commands for users"
 PRECEDING_COMMAND = "extract-umis"
-FOLLOWING_COMMAND = "fastq-filter"
+FOLLOWING_COMMAND = "bam-tag-deduplicate"
 
 # The committed 200-read golden input and the prefix every stage of the
 # end-to-end run writes under. It is the smallest input carrying the full
@@ -3011,7 +3011,7 @@ class TestAssignTargetsCli:
         assert_that(result.exit_code).is_equal_to(0)
         assert_that(result.output).contains(COMMAND_NAME)
 
-    def test_command_group_places_it_between_extract_umis_and_fastq_filter(self) -> None:
+    def test_command_group_places_it_between_extract_umis_and_bam_tag_deduplicate(self) -> None:
         commands = user_command_names()
 
         assert_that(commands).contains(COMMAND_NAME)
