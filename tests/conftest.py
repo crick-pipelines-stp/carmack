@@ -27,13 +27,26 @@ class WideSpacedChemistry(ChemistryBase):
     """
     A chemistry whose middle barcode has an unusually wide search window.
 
-    ``AlignmentMatcher`` bounds its search to a component's own inter-barcode interval, and the
-    shipped chemistries space their barcodes too closely for two complete
-    spacer-barcode-spacer arrangements to fit inside one interval. That tightness is the point
-    of the bound, but it leaves the spacer tie-break rungs -- which by definition need two
-    candidates inside one component's window -- with nowhere to be exercised. This layout puts
-    a long unsequenced gap between BC2 and BC1 so that BC2's window is wide, while keeping the
-    10bp spacers immediately flanking BC2 that the rungs actually test.
+    A matcher bounds its search to the region the declared layout could have moved a component
+    into: the component's own extent widened by the errors everything ahead of it may carry,
+    plus the budget it is matched with. Every shipped chemistry keeps that region far too
+    tight for two complete spacer-barcode-spacer arrangements to fit inside it, which is the
+    point of the bound and is exactly what the misassignment it prevents relied on. It does
+    leave the spacer tie-break rungs -- which by definition need two candidates inside one
+    component's window -- with nowhere to be exercised.
+
+    This double buys that room by declaring a spacer budget far larger than any real
+    chemistry would: a wide window is a claim that the layout is very uncertain about where a
+    component sits, and a component's error budget is where that claim is made. Widening the
+    read layout instead does nothing, because drift accumulates over the budgets of the
+    components ahead of a barcode rather than over the bases between them -- the same room
+    could be bought by declaring many more components upstream, but one large budget says what
+    the fixture is for far more plainly than a wall of filler would.
+
+    The 10bp spacers immediately flanking BC2 are kept because the tie-break rungs read them.
+    The 60bp gap behind BC2 is kept only so the layout still has three barcodes to space out;
+    it sits 3' of BC2 and so contributes nothing to BC2's own window, and no test currently
+    matches against this double's BC1.
 
     It is deliberately not registered with ``ChemistryFactory``: it is a test double describing
     a read layout, not a chemistry anything is run with.
@@ -70,8 +83,14 @@ class WideSpacedChemistry(ChemistryBase):
 
     @cached_property
     def max_errors(self) -> MatchErrors:
-        """Return HyDrop's barcode budget, so the tie-break tests keep their tolerances."""
-        return MatchErrors(barcode=2, spacer=1)
+        """Return HyDrop's barcode budget over a deliberately enormous spacer budget.
+
+        The barcode budget stays at HyDrop's two so the tie-break tests keep the tolerances
+        they were written against. The spacer budget is what widens BC2's window, and it is
+        set well past anything a real chemistry would declare so that two spacer-flanked
+        candidates fit inside that window with room to spare.
+        """
+        return MatchErrors(barcode=2, spacer=30)
 
     @cached_property
     def whitelists(self) -> dict[str, tuple[str, ...]]:

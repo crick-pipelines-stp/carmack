@@ -2143,3 +2143,126 @@ class TestWhitelistDistanceValidation:
         assert_that(messages).is_length(3)
         for message in messages:
             assert_that(message).contains("within its error budget of 2")
+
+
+class TestDriftTolerance:
+    """Tests for how far the declared layout permits a component to have moved.
+
+    Drift is displacement, not matchability. A component is pushed off its nominal start by
+    every error each component ahead of it is allowed to carry, and it is pushed just as far
+    by a primer nobody can check as by one whose sequence is known. That makes this a
+    different question from ``match_errors_for``, which answers only whether a component is
+    compared against a whitelist at all, and it is why the two cannot share a walk.
+
+    The quantity matters because it is the only thing in the read structure that bounds where
+    a component may honestly be looked for. Bounding the search by the gap to a neighbouring
+    barcode instead leaves the last barcode of every shipped chemistry searched across the
+    UMI, the anchor, the target index and the whole insert, where a 96-entry whitelist finds
+    a chance exact match often enough to fabricate cell barcodes.
+    """
+
+    # Drift tolerance of each barcode in each shipped chemistry, read straight off the
+    # declared layout: the running total of the budgets of everything ahead of it. primd's
+    # are two higher throughout because it prepends a primer, and nothing is hardcoded per
+    # chemistry -- prepending that primer is the whole of the difference.
+    EXPECTED_BARCODE_DRIFT = {
+        "carmack_custom_seq_1_0": {"BC3": 0, "BC2": 3, "BC1": 6},
+        "carmack_custom_seq_1_0_primd": {"BC3": 2, "BC2": 5, "BC1": 8},
+        "hydrop": {"BC3": 0, "BC2": 3, "BC1": 6},
+    }
+
+    @pytest.mark.parametrize("chemistry_name", REGISTERED_CHEMISTRY_NAMES)
+    def test_drift_tolerances_match_the_declared_layout(self, chemistry_name: str):
+        """Every shipped chemistry reports the drift its own layout implies.
+
+        custom_seq_1_0 spends one on BC3 and two on each primer, so BC2 may have moved three
+        bases and BC1 six. HyDrop spends two on a barcode and one on a spacer and arrives at
+        the same pair by a different route, which is the point: the numbers come from the
+        declared layout rather than from anything written per chemistry.
+        """
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+        expected = self.EXPECTED_BARCODE_DRIFT[chemistry_name]
+
+        from_mapping = {name: chemistry.drift_tolerances[name] for name in expected}
+        from_lookup = {
+            name: chemistry.drift_tolerance(chemistry.read_structure.get_component_by_name(name))
+            for name in expected
+        }
+
+        assert_that(from_mapping).is_equal_to(expected)
+        assert_that(from_lookup).is_equal_to(expected)
+
+    @pytest.mark.parametrize(
+        "chemistry_name", ["carmack_custom_seq_1_0", "carmack_custom_seq_1_0_primd"]
+    )
+    def test_drift_tolerance_is_none_after_a_variable_length_component(self, chemistry_name: str):
+        """A homopolymer ends the walk for everything behind it, but not for itself.
+
+        The poly-G run is reached by counting fixed lengths, so the layout still predicts
+        where it starts and how far it may have slid. What the layout cannot predict is where
+        it ends, so the target index behind it gets no prediction at all.
+        Reporting a number for those would invite a matcher to bound its search by an offset
+        the read never promised.
+        """
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+        structure = chemistry.read_structure
+
+        polyg = chemistry.drift_tolerance(structure.get_component_by_name("POLYG"))
+
+        assert_that(polyg).is_not_none()
+        assert_that(chemistry.drift_tolerance(structure.get_component_by_name("TGIDX"))).is_none()
+
+    @pytest.mark.parametrize("chemistry_name", REGISTERED_CHEMISTRY_NAMES)
+    def test_drift_tolerance_none_set_equals_unresolved_start_set(self, chemistry_name: str):
+        """Having no drift prediction and having no resolved start are one fact, not two.
+
+        Both fall out of the same forward walk stopping at the first variable-length
+        component, so they can never disagree. Asserting the correspondence keeps it a fact
+        callers may rely on; branching on one of them instead would let the two drift apart
+        the first time either walk was edited alone.
+        """
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+
+        unresolved_starts = {
+            component.name for component in chemistry.read_structure if component.start is None
+        }
+        unresolved_drift = {
+            name for name, value in chemistry.drift_tolerances.items() if value is None
+        }
+
+        assert_that(unresolved_drift).is_equal_to(unresolved_starts)
+
+    def test_drift_tolerance_counts_a_sequenceless_primer(self):
+        """A primer nobody can check still displaces everything behind it.
+
+        primd's PRIMER_D ships without a sequence, so it can never be spacer-checked and
+        ``match_errors_for`` reports no budget for it at all. It occupies 22 bases of the read
+        regardless, and errors inside it move every component after it exactly as any other
+        primer's would. Drift is displacement, not matchability, which is why this walk cannot
+        be expressed in terms of ``match_errors_for``: BC3 is nailed to zero in the chemistry
+        without the primer and allowed two bases in the chemistry with it.
+        """
+        plain = ChemistryCarmackCustomSeq10()
+        with_primer = ChemistryCarmackCustomSeq10PrimD()
+        primer_d = with_primer.read_structure.get_component_by_name("PRIMER_D")
+
+        assert_that(primer_d.sequence).is_none()
+        assert_that(with_primer.match_errors_for(primer_d)).is_none()
+        assert_that(plain.drift_tolerances["BC3"]).is_equal_to(0)
+        assert_that(with_primer.drift_tolerances["BC3"]).is_equal_to(2)
+
+    def test_drift_tolerance_rejects_a_foreign_component(self):
+        """A component from outside this structure gets an error, not a silent zero.
+
+        The lookup is by name, so an unrelated component would otherwise read as absent and
+        be indistinguishable from one the layout genuinely places at the read start. A matcher
+        handed the wrong chemistry would then search a plausible-looking window built from a
+        layout the read was never generated under.
+        """
+        chemistry = ChemistryCarmackCustomSeq10()
+        foreign = ReadComponent(name="BC_ELSEWHERE", type=ReadComponentType.BARCODE, length=10)
+
+        with pytest.raises(ValueError) as exc_info:
+            chemistry.drift_tolerance(foreign)
+
+        assert_that(str(exc_info.value)).contains("BC_ELSEWHERE")
