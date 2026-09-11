@@ -2,11 +2,10 @@
 # Overall Barcode Extraction Stats
 Total reads: 2000
 Perfect matches: 1735 (86.75%)
-Corrected matches: 168 (8.40%)
-Failed matches: 97 (4.85%)
+Corrected matches: 162 (8.10%)
+Failed matches: 103 (5.15%)
 Top 10 barcode fractions:
 	TGACCGTACTTTAGTTGGACTGTAGCAAGT	0.95
-	TGACCGTACTTTAGTTGGACTACCTAGATC	0.002
 
 # Per-Barcode Component Stats
 
@@ -20,17 +19,17 @@ Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: KMERMATCH
 Reads checked: 135
-Successful matches: 64 (47.41%)
-Failed matches: 71 (52.59%)
+Successful matches: 47 (34.81%)
+Failed matches: 88 (65.19%)
 Edit distance distribution (distance - count):
-	0	26 (40.62%)
-	1	38 (59.38%)
+	0	24 (51.06%)
+	1	23 (48.94%)
 Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: ALIGNMATCH
-Reads checked: 71
+Reads checked: 88
 Successful matches: 0 (0.00%)
-Failed matches: 71 (100.00%)
+Failed matches: 88 (100.00%)
 Ambiguous matches (reads): 0 (0.00%)
 
 ## BC2
@@ -43,18 +42,21 @@ Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: KMERMATCH
 Reads checked: 163
-Successful matches: 91 (55.83%)
-Failed matches: 72 (44.17%)
+Successful matches: 69 (42.33%)
+Failed matches: 94 (57.67%)
 Edit distance distribution (distance - count):
-	0	45 (49.45%)
-	1	46 (50.55%)
+	0	41 (59.42%)
+	1	28 (40.58%)
 Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: ALIGNMATCH
-Reads checked: 72
-Successful matches: 0 (0.00%)
-Failed matches: 72 (100.00%)
-Ambiguous matches (reads): 3 (4.17%)
+Reads checked: 94
+Successful matches: 1 (1.06%)
+Failed matches: 93 (98.94%)
+Edit distance distribution (distance - count):
+	1	1 (100.00%)
+Ambiguous matches (reads): 0 (0.00%)
+Matches with spacers present: 1
 
 ## BC1
 
@@ -66,18 +68,15 @@ Ambiguous matches (reads): 0 (0.00%)
 
 Matching method: KMERMATCH
 Reads checked: 232
-Successful matches: 171 (73.71%)
-Failed matches: 61 (26.29%)
+Successful matches: 143 (61.64%)
+Failed matches: 89 (38.36%)
 Edit distance distribution (distance - count):
-	0	95 (55.56%)
-	1	76 (44.44%)
+	0	95 (66.43%)
+	1	48 (33.57%)
 Ambiguous matches (reads): 0 (0.00%)
-Matches with spacers present: 9
 
 Matching method: ALIGNMATCH
-Reads checked: 61
-Successful matches: 2 (3.28%)
-Failed matches: 59 (96.72%)
-Edit distance distribution (distance - count):
-	0	2 (100.00%)
-Ambiguous matches (reads): 13 (21.31%)
+Reads checked: 89
+Successful matches: 0 (0.00%)
+Failed matches: 89 (100.00%)
+Ambiguous matches (reads): 0 (0.00%)
