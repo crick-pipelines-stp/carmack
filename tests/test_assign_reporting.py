@@ -2,7 +2,7 @@
 
 ``AssignStats`` is the reconciling value object for a target-index assignment
 run: every input read lands in exactly one of ``matched``,
-``unmatched_no_match``, ``unmatched_no_umi_pos`` or ``unmatched_short_window``,
+``unmatched_no_match``, ``unmatched_no_left_anchor_pos`` or ``unmatched_short_window``,
 and the same object renders the plain-text ``tgidx_stats.txt`` report. These
 tests pin the value object's contract (frozen, safe division, the derived
 run-length denominator) and the report's shape: the volatile run-detail header
@@ -31,6 +31,7 @@ from assertpy import assert_that
 
 from carmack import __version__ as carmack_version
 from carmack.assign_targets.assign_reporting import AssignCounts, AssignStats
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 from tests.utils import strip_report_run_details
 
 # A whitelist entry seen three times, one seen twice, one seen once. They are
@@ -57,7 +58,7 @@ FIRST_COUNT_LINE = "Total reads:"
 ANCHOR_BASE = "G"
 
 # The five scalar tallies the fold has to sum termwise.
-SCALAR_FIELD_NAMES = ("total", "matched", "no_umi_pos", "short_window", "no_match")
+SCALAR_FIELD_NAMES = ("total", "matched", "no_left_anchor_pos", "short_window", "no_match")
 
 # One legal key per counter, so a test that writes into a counter writes a key of that
 # counter's own type rather than one key forced to stand for all three.
@@ -74,7 +75,7 @@ STATS_FIELD_NAMES = {
     "total": "total_reads",
     "matched": "matched",
     "no_match": "unmatched_no_match",
-    "no_umi_pos": "unmatched_no_umi_pos",
+    "no_left_anchor_pos": "unmatched_no_left_anchor_pos",
     "short_window": "unmatched_short_window",
     "target_counts": "target_counts",
     "edit_distance_counts": "edit_distance_counts",
@@ -88,7 +89,7 @@ STATS_DICT_FIELD_NAMES = ("target_counts", "edit_distance_counts", "homopolymer_
 
 # One read's contribution to a batch's tallies: its outcome, then the whitelist entry
 # and edit distance a matched read was called at, and the anchor run length measured
-# for any read whose UMI position tag was present.
+# for any read whose anchor position tag was present.
 type ReadOutcome = tuple[str, str | None, int | None, int | None]
 
 # A read set covering all four outcomes, with every counter key seen more than once and
@@ -96,7 +97,7 @@ type ReadOutcome = tuple[str, str | None, int | None, int | None]
 READS: list[ReadOutcome] = [
     ("matched", "ACGTACGT", 0, 3),
     ("matched", "GGGGCCCC", 1, 4),
-    ("no_umi_pos", None, None, None),
+    ("no_left_anchor_pos", None, None, None),
     ("matched", "ACGTACGT", 1, 3),
     ("short_window", None, None, 5),
     ("no_match", None, None, 4),
@@ -139,7 +140,7 @@ def make_stats(**overrides: object) -> AssignStats:
         "total_reads": 10,
         "matched": 6,
         "unmatched_no_match": 2,
-        "unmatched_no_umi_pos": 1,
+        "unmatched_no_left_anchor_pos": 1,
         "unmatched_short_window": 1,
         "target_counts": dict(TARGET_COUNTS),
         "edit_distance_counts": dict(EDIT_DISTANCE_COUNTS),
@@ -156,7 +157,7 @@ def make_empty_stats() -> AssignStats:
         total_reads=0,
         matched=0,
         unmatched_no_match=0,
-        unmatched_no_umi_pos=0,
+        unmatched_no_left_anchor_pos=0,
         unmatched_short_window=0,
         target_counts={},
         edit_distance_counts={},
@@ -212,7 +213,7 @@ def outcome_sum(counts: AssignCounts) -> int:
     Returns:
         The sum of the matched and the three unmatched tallies.
     """
-    return counts.matched + counts.no_match + counts.no_umi_pos + counts.short_window
+    return counts.matched + counts.no_match + counts.no_left_anchor_pos + counts.short_window
 
 
 class TestAssignStatsValueObject:
@@ -280,7 +281,7 @@ class TestAssignStatsValueObject:
         assert_that(
             stats.matched
             + stats.unmatched_no_match
-            + stats.unmatched_no_umi_pos
+            + stats.unmatched_no_left_anchor_pos
             + stats.unmatched_short_window
         ).is_equal_to(stats.total_reads)
 
@@ -371,7 +372,7 @@ class TestAssignStatsReportCounts:
             "Total reads: 10",
             "Matched: 6 (60.00%)",
             "Unmatched (no_match): 2 (20.00%)",
-            "Unmatched (no_umi_pos): 1 (10.00%)",
+            "Unmatched (no_left_anchor_pos): 1 (10.00%)",
             "Unmatched (short_window): 1 (10.00%)",
         ],
     )
@@ -455,6 +456,162 @@ class TestAssignStatsReportDistributions:
 
         assert_that(report).contains("# Anchor homopolymer-run Length Distribution")
         assert_that(report).does_not_contain("None-run")
+
+
+class TestAssignStatsMqcReporting:
+    """MultiQC custom-content payloads: general stats, breakdown, target
+    distribution, edit distance and anchor run.
+
+    ``to_mqc_target_distribution`` is the odd one out among the three
+    distribution payloads: it is never suppressed, so an empty run still gets a
+    plot with an empty ``data`` mapping, where ``to_mqc_edit_distance`` and
+    ``to_mqc_anchor_run`` return ``None`` on an empty counter. Those two ``None``
+    checks are independent of one another, which the dedicated tests below pin
+    directly rather than leaving to be inferred from the single-field defaults.
+    """
+
+    SAMPLE_PREFIX = "SK123"
+
+    # ===== to_mqc_general_stats =====
+
+    def test_to_mqc_general_stats_has_generalstats_plot_type_and_id(self) -> None:
+        """Test that to_mqc_general_stats returns a generalstats payload with the expected id."""
+        payload = make_stats().to_mqc_general_stats(self.SAMPLE_PREFIX)
+
+        assert_that(payload["plot_type"]).is_equal_to("generalstats")
+        assert_that(payload["id"]).is_equal_to("carmack_tgidx_general_stats")
+
+    def test_to_mqc_general_stats_computes_percentages(self) -> None:
+        """Test that total_reads=10, matched=6, no_match=2, no_left_anchor_pos=1, short_window=1 render as 60/20/10/10."""
+        payload = make_stats().to_mqc_general_stats(self.SAMPLE_PREFIX)
+        data = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(data["pct_matched"]).is_equal_to(60.0)
+        assert_that(data["pct_no_match"]).is_equal_to(20.0)
+        assert_that(data["pct_no_left_anchor_pos"]).is_equal_to(10.0)
+        assert_that(data["pct_short_window"]).is_equal_to(10.0)
+
+    def test_to_mqc_general_stats_on_zero_reads_returns_zero_percentages(self) -> None:
+        """Test that the zero-guarded fraction() helper keeps a zero-read run from raising."""
+        payload = make_empty_stats().to_mqc_general_stats(self.SAMPLE_PREFIX)
+        data = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(data["pct_matched"]).is_equal_to(0.0)
+        assert_that(data["pct_no_match"]).is_equal_to(0.0)
+        assert_that(data["pct_no_left_anchor_pos"]).is_equal_to(0.0)
+        assert_that(data["pct_short_window"]).is_equal_to(0.0)
+
+    # ===== to_mqc_breakdown =====
+
+    def test_to_mqc_breakdown_has_bargraph_plot_type_and_parent(self) -> None:
+        """Test that to_mqc_breakdown returns a bargraph payload naming carmack's shared parent section."""
+        payload = make_stats().to_mqc_breakdown(self.SAMPLE_PREFIX)
+
+        assert_that(payload["plot_type"]).is_equal_to("bargraph")
+        assert_that(payload["parent_id"]).is_equal_to(CARMACK_PARENT_ID)
+        assert_that(payload["parent_name"]).is_equal_to(CARMACK_PARENT_NAME)
+
+    def test_to_mqc_breakdown_data_matches_outcome_counts(self) -> None:
+        """Test that the breakdown data holds the raw matched/unmatched counts for the prefix."""
+        payload = make_stats().to_mqc_breakdown(self.SAMPLE_PREFIX)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(
+            {"matched": 6, "no_match": 2, "no_left_anchor_pos": 1, "short_window": 1}
+        )
+
+    # ===== to_mqc_target_distribution =====
+
+    def test_to_mqc_target_distribution_has_bargraph_plot_type(self) -> None:
+        """Test that to_mqc_target_distribution returns a bargraph payload."""
+        payload = make_stats().to_mqc_target_distribution(self.SAMPLE_PREFIX)
+
+        assert_that(payload["plot_type"]).is_equal_to("bargraph")
+
+    def test_to_mqc_target_distribution_data_matches_target_counts_exactly(self) -> None:
+        """Test that the payload mirrors target_counts verbatim, with no filtering or sorting applied."""
+        payload = make_stats().to_mqc_target_distribution(self.SAMPLE_PREFIX)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(dict(TARGET_COUNTS))
+
+    def test_to_mqc_target_distribution_is_never_none_even_when_empty(self) -> None:
+        """Test that an empty run still gets a target-distribution plot, unlike edit distance and anchor run."""
+        payload = make_empty_stats().to_mqc_target_distribution(self.SAMPLE_PREFIX)
+
+        assert_that(payload).is_not_none()
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to({})
+
+    # ===== to_mqc_edit_distance =====
+
+    def test_to_mqc_edit_distance_has_linegraph_plot_type(self) -> None:
+        """Test that to_mqc_edit_distance returns a linegraph payload when a distribution exists."""
+        payload = make_stats().to_mqc_edit_distance(self.SAMPLE_PREFIX)
+
+        assert_that(payload).is_not_none()
+        assert_that(payload["plot_type"]).is_equal_to("linegraph")
+
+    def test_to_mqc_edit_distance_data_matches_edit_distance_counts(self) -> None:
+        """Test that the edit-distance data holds the plain dict as-is, with no Counter-summing needed."""
+        payload = make_stats().to_mqc_edit_distance(self.SAMPLE_PREFIX)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(dict(EDIT_DISTANCE_COUNTS))
+
+    def test_to_mqc_edit_distance_returns_none_when_empty(self) -> None:
+        """Test that a run with no edit-distance data returns None rather than an empty plot."""
+        assert_that(make_empty_stats().to_mqc_edit_distance(self.SAMPLE_PREFIX)).is_none()
+
+    # ===== to_mqc_anchor_run =====
+
+    def test_to_mqc_anchor_run_has_linegraph_plot_type(self) -> None:
+        """Test that to_mqc_anchor_run returns a linegraph payload when a run distribution exists."""
+        payload = make_stats().to_mqc_anchor_run(self.SAMPLE_PREFIX)
+
+        assert_that(payload).is_not_none()
+        assert_that(payload["plot_type"]).is_equal_to("linegraph")
+
+    def test_to_mqc_anchor_run_data_matches_run_counts(self) -> None:
+        """Test that the anchor-run data holds the run-length distribution for the prefix."""
+        payload = make_stats().to_mqc_anchor_run(self.SAMPLE_PREFIX)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(dict(RUN_COUNTS))
+
+    def test_to_mqc_anchor_run_returns_none_when_run_counts_are_empty(self) -> None:
+        """Test that make_empty_stats' default homopolymer_run_counts ({}) yields None."""
+        assert_that(make_empty_stats().to_mqc_anchor_run(self.SAMPLE_PREFIX)).is_none()
+
+    # ===== Independence of the edit-distance and anchor-run None-checks =====
+
+    def test_edit_distance_none_does_not_suppress_a_populated_anchor_run(self) -> None:
+        """Test that an empty edit-distance counter does not blank out a populated anchor-run counter."""
+        stats = make_stats(edit_distance_counts={}, homopolymer_run_counts=RUN_COUNTS)
+
+        assert_that(stats.to_mqc_edit_distance(self.SAMPLE_PREFIX)).is_none()
+        assert_that(stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)).is_not_none()
+
+    def test_anchor_run_none_does_not_suppress_a_populated_edit_distance(self) -> None:
+        """Test that an empty anchor-run counter does not blank out a populated edit-distance counter."""
+        stats = make_stats(edit_distance_counts=EDIT_DISTANCE_COUNTS, homopolymer_run_counts={})
+
+        assert_that(stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)).is_none()
+        assert_that(stats.to_mqc_edit_distance(self.SAMPLE_PREFIX)).is_not_none()
+
+    # ===== Shared prefix-keying contract =====
+
+    @pytest.mark.parametrize("prefix", ["SK123", "another_sample_prefix"])
+    def test_mqc_payloads_are_keyed_by_the_given_prefix(self, prefix: str) -> None:
+        """Test that every to_mqc_* payload's data dict is keyed by exactly the prefix supplied."""
+        stats = make_stats()
+
+        general_stats_payload = stats.to_mqc_general_stats(prefix)
+        breakdown_payload = stats.to_mqc_breakdown(prefix)
+        target_distribution_payload = stats.to_mqc_target_distribution(prefix)
+        edit_distance_payload = stats.to_mqc_edit_distance(prefix)
+        anchor_run_payload = stats.to_mqc_anchor_run(prefix)
+
+        assert_that(list(general_stats_payload["data"].keys())).is_equal_to([prefix])
+        assert_that(list(breakdown_payload["data"].keys())).is_equal_to([prefix])
+        assert_that(list(target_distribution_payload["data"].keys())).is_equal_to([prefix])
+        assert_that(list(edit_distance_payload["data"].keys())).is_equal_to([prefix])
+        assert_that(list(anchor_run_payload["data"].keys())).is_equal_to([prefix])
 
 
 class TestAssignCountsDefaults:

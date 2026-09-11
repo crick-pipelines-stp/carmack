@@ -3,6 +3,7 @@ Tests for barcode extraction pipeline: HybridExtractor, dataclasses, and utility
 """
 
 import gzip
+import json
 import multiprocessing
 import os
 import signal
@@ -461,8 +462,18 @@ class TestBarcodeExtractor:
             "test.bc_stats.txt",
         ):
             assert_that((tmp_path / name).exists()).is_true()
-        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 3))
-        assert_that(write_progress.update_calls).is_length(3)
+        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 4))
+        assert_that(write_progress.update_calls).is_length(4)
+
+        # This fixture's single result is an all-exact-match success, so every
+        # edit_distance_dist stays empty: the general MultiQC report is always written,
+        # but the edit-distance report is skipped entirely.
+        assert_that((tmp_path / "test.extraction_stats_mqc.json").exists()).is_true()
+        with (tmp_path / "test.extraction_stats_mqc.json").open() as f:
+            mqc_stats_payload = json.load(f)
+        assert_that(mqc_stats_payload).contains_key("general_stats")
+        assert_that(mqc_stats_payload).contains_key("breakdown")
+        assert_that((tmp_path / "test.extraction_edit_distance_mqc.json").exists()).is_false()
 
         # bc_all / bc_valid are written as gzip; decompressed contents must match
         # the plain-text annotated read name exactly (one line for the single read).
@@ -484,6 +495,124 @@ class TestBarcodeExtractor:
         assert_that(annotated_lines[1]).is_equal_to(result.read)
         assert_that(annotated_lines[2]).is_equal_to("+")
         assert_that(annotated_lines[3]).is_equal_to(result.qual)
+
+    def test_extract_barcodes_writes_edit_distance_mqc_json_when_corrections_occur(
+        self,
+        tmp_path,
+        monkeypatch,
+        barcode_extractor: BarcodeExtractor,
+        hydrop_chemistry: ChemistryHydrop,
+    ) -> None:
+        """When at least one barcode component required KMERMATCH correction, extract_barcodes
+        writes a linegraph extraction_edit_distance_mqc.json alongside the general stats file.
+
+        This mirrors test_extract_barcodes_produces_all_output_files's monkeypatch pattern
+        exactly, but with a result carrying a non-empty edit_distance_dist, so the branch that
+        writes the edit-distance MultiQC payload runs in-process where coverage can see it."""
+        import carmack.barcode.barcode_extractor as barcode_extractor_module
+
+        result = ReadMatchResult(
+            read_name="read1",
+            read="A" * 50,
+            qual="I" * 50,
+            chemistry=hydrop_chemistry,
+            bc_results=[
+                self.make_kmer_history("BC3", "CAGTGTGGAA", edit_dist=1),
+                self._make_successful_history("BC2", "ACGGTGGACT"),
+                self._make_successful_history("BC1", "GAACAGTAGT"),
+            ],
+        )
+
+        class DummyFuture:
+            def result(self):
+                return [result], 1
+
+        class DummyExecutor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, func, batch):
+                return DummyFuture()
+
+        class DummyProgress:
+            def __init__(self):
+                self.add_task_calls = []
+                self.update_calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def add_task(self, description, total):
+                self.add_task_calls.append((description, total))
+                return description
+
+            def update(self, task, advance):
+                self.update_calls.append((task, advance))
+
+        read_progress = DummyProgress()
+        write_progress = DummyProgress()
+        progress_bars = iter([read_progress, write_progress])
+
+        monkeypatch.setattr(
+            barcode_extractor, "iter_batches", lambda: iter([[("read1", "A", "I")]])
+        )
+        monkeypatch.setattr(
+            barcode_extractor_module, "ProcessPoolExecutor", lambda max_workers: DummyExecutor()
+        )
+        monkeypatch.setattr(
+            barcode_extractor_module, "progress_bar", lambda unit: next(progress_bars)
+        )
+
+        prefix = "edit_dist_test"
+        barcode_extractor.extract_barcodes(output_dir=str(tmp_path), prefix=prefix)
+
+        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 5))
+        assert_that(write_progress.update_calls).is_length(5)
+
+        edit_distance_path = tmp_path / f"{prefix}.extraction_edit_distance_mqc.json"
+        assert_that(edit_distance_path.exists()).is_true()
+        with edit_distance_path.open() as f:
+            edit_distance_payload = json.load(f)
+        assert_that(edit_distance_payload["plot_type"]).is_equal_to("linegraph")
+        assert_that(edit_distance_payload["data"][prefix]).is_not_empty()
+
+    def test_extract_barcodes_real_run_writes_mqc_stats_json(self, tmp_path) -> None:
+        """A real, non-monkeypatched extraction writes a parseable extraction_stats_mqc.json
+        alongside the existing legacy outputs.
+
+        The full R1_PATH fixture takes minutes to extract for real once the alignment tier
+        is exercised across all ten thousand of its reads, so this test trims it down first
+        with write_fastq_head and drives the trimmed copy through
+        run_extraction_in_process_group, exactly as TestBarcodeExtractorRealProcessPool does
+        for its own real-pool coverage -- that keeps this a genuine, unmocked run while
+        staying fast.
+        """
+        small_fastq = tmp_path / "small_R1.fastq.gz"
+        write_fastq_head(R1_PATH, small_fastq, REAL_POOL_READS)
+        prefix = "mqc_test"
+
+        run_extraction_in_process_group(
+            str(small_fastq),
+            tmp_path,
+            prefix,
+            chemistry_name="hydrop",
+            n_workers=1,
+            fast=False,
+        )
+
+        files = self.get_output_files(tmp_path, prefix)
+        self.check_output_files(files)
+
+        with files["mqc_stats"].open() as f:
+            mqc_stats_payload = json.load(f)
+        assert_that(mqc_stats_payload).contains_key("general_stats")
+        assert_that(mqc_stats_payload).contains_key("breakdown")
 
     def test_extract_barcodes_writes_annotated_r1_fastq(
         self,
@@ -723,6 +852,48 @@ class TestBarcodeExtractor:
         history.record_attempt(attempt, success=True)
         return history
 
+    def make_kmer_history(
+        self, bc_name: str, barcode: str, edit_dist: int = 1
+    ) -> BarcodeMatchHistory:
+        """Helper to create a BarcodeMatchHistory that fails EXACTMATCH then succeeds at
+        KMERMATCH with a recorded edit distance, so the accumulator populates a non-empty
+        edit_distance_dist for this barcode component."""
+        history = BarcodeMatchHistory(bc_name=bc_name)
+        attempt1 = BarcodeMatchAttempt(
+            candidate=barcode,
+            method=MatchMethod.EXACTMATCH,
+        )
+        history.record_attempt(attempt1, success=False)
+        attempt2 = BarcodeMatchAttempt(
+            candidate=barcode,
+            method=MatchMethod.KMERMATCH,
+            match=barcode,
+            read_idx=(0, len(barcode)),
+            edit_distance=edit_dist,
+        )
+        history.record_attempt(attempt2, success=True)
+        return history
+
+    def get_output_files(self, out_dir, prefix: str) -> dict[str, Path]:
+        """Map descriptive names to the extract_barcodes output paths written on every run."""
+        out_dir = Path(out_dir)
+        return {
+            "bc_all": out_dir / f"{prefix}.bc_all.txt.gz",
+            "bc_valid": out_dir / f"{prefix}.bc_valid.txt.gz",
+            "r1_annotated": out_dir / f"{prefix}.r1_annotated.fastq.gz",
+            "bc_counts": out_dir / f"{prefix}.bc_counts.csv",
+            "bc_rank_plot": out_dir / f"{prefix}.bc_rank.png",
+            "bc_stats": out_dir / f"{prefix}.bc_stats.txt",
+            "mqc_stats": out_dir / f"{prefix}.extraction_stats_mqc.json",
+        }
+
+    def check_output_files(self, file_dict: dict[str, Path]) -> None:
+        """Assert that every path in file_dict exists."""
+        for name, path in file_dict.items():
+            assert_that(Path(path).exists()).described_as(
+                f"missing output file: {name} ({path})"
+            ).is_true()
+
 
 class TestBarcodeExtractorDataclasses:
     """Tests for barcode extraction dataclasses: MatchMethod, BarcodeMatchAttempt, BarcodeMatchHistory, ReadMatchResult."""
@@ -817,37 +988,6 @@ class TestBarcodeExtractorDataclasses:
 
         assert_that(history.succeeded_at).is_none()
 
-    def test_barcode_match_history_ambiguous_matches_no_duplicates(self) -> None:
-        """Test that ambiguous_matches reports False when each method appears once."""
-        history = BarcodeMatchHistory(bc_name="BC1")
-        attempt1 = BarcodeMatchAttempt(
-            candidate="ACGTACGTAC", method=MatchMethod.EXACTMATCH, match="ACGTACGTAC"
-        )
-        attempt2 = BarcodeMatchAttempt(
-            candidate="ACGTACGTAC", method=MatchMethod.KMERMATCH, match="ACGTACGTAC"
-        )
-        history.record_attempt(attempt1, success=False)
-        history.record_attempt(attempt2, success=True)
-
-        ambiguous = history.ambiguous_matches
-        assert_that(ambiguous.get(MatchMethod.EXACTMATCH, False)).is_false()
-        assert_that(ambiguous.get(MatchMethod.KMERMATCH, False)).is_false()
-
-    def test_barcode_match_history_ambiguous_matches_with_duplicates(self) -> None:
-        """Test that ambiguous_matches reports True when a method appears multiple times."""
-        history = BarcodeMatchHistory(bc_name="BC1")
-        attempt1 = BarcodeMatchAttempt(
-            candidate="ACGTACGTAC", method=MatchMethod.KMERMATCH, match="ACGTACGTAC"
-        )
-        attempt2 = BarcodeMatchAttempt(
-            candidate="TGCATGCATG", method=MatchMethod.KMERMATCH, match="TGCATGCATG"
-        )
-        history.record_attempt(attempt1, success=False)
-        history.record_attempt(attempt2, success=True)
-
-        ambiguous = history.ambiguous_matches
-        assert_that(ambiguous[MatchMethod.KMERMATCH]).is_true()
-
     @pytest.mark.parametrize(
         "attempts_data, expected_status",
         [
@@ -906,6 +1046,30 @@ class TestBarcodeExtractorDataclasses:
                 spacer_downstream=sp_down,
             )
             history.record_attempt(attempt, success=(match is not None))
+
+        assert_that(history.to_status_string()).is_equal_to(expected_status)
+
+    @pytest.mark.parametrize(
+        "method, expected_status",
+        [
+            (MatchMethod.KMERMATCH, "BC1:KMERMATCH-AMBIG"),
+            (MatchMethod.ALIGNMATCH, "BC1:ALIGNMATCH-AMBIG"),
+        ],
+    )
+    def test_barcode_match_history_to_status_string_names_the_ambiguous_method(
+        self, method: MatchMethod, expected_status: str
+    ) -> None:
+        """Test that an ambiguity verdict is rendered, and attributed to the stage that made it.
+
+        An unresolvable component and a component with no candidate at all used to render the
+        same ``NOMATCH`` token, so a run could not report how often it declined versus how
+        often it simply found nothing.
+        """
+        history = BarcodeMatchHistory(bc_name="BC1")
+        for candidate in ("AACCAACTTA", "CACCAACCTA"):
+            history.record_attempt(
+                BarcodeMatchAttempt(candidate=candidate, method=method), ambiguous=True
+            )
 
         assert_that(history.to_status_string()).is_equal_to(expected_status)
 

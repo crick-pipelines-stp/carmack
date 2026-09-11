@@ -16,7 +16,6 @@ import carmack
 from carmack.assign_targets.target_assigner import DEFAULT_MAX_WORKERS, TargetAssigner
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.cell_caller.cell_caller import CellCaller
-from carmack.fastq_tools.fastq_filter import FastqFilter
 from carmack.prepare_reads.read_preparer import DEFAULT_MAX_WORKERS as PREPARE_READS_DEFAULT_MAX_WORKERS
 from carmack.prepare_reads.read_preparer import ReadPreparer
 from carmack.split_reads.split_reads import BamSplitter
@@ -40,7 +39,6 @@ click.rich_click.COMMAND_GROUPS = {
                 "extract-umis",
                 "assign-targets",
                 "prepare-reads",
-                "fastq-filter",
                 "bam-tag-deduplicate",
                 "call-cells",
             ],
@@ -109,7 +107,7 @@ def carmack_cli(ctx, verbose, hide_progress, log_file):
     """
     carmack provides helper tools for the analysis of single-cell mutli-omic data.
 
-    This python module enables the extraction of valid cell barcodes and can filter reads with valid barcodes from fastq files.
+    This python module enables the extraction of valid cell barcodes from fastq files.
     """
     # Set the base logger to output DEBUG
     log.setLevel(logging.DEBUG)
@@ -165,22 +163,20 @@ def extract_barcodes(fastq, chemistry, output_dir, prefix, cpu_count, fast):
 @click.option("-c", "--chemistry", required=True, type=str, help="Chemistry name for UMI layout")
 @click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
 @click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-@click.option("--raw", is_flag=True, default=False, help="Stop after raw extraction; do not correct UMIs.")
-@click.option("--temp-dir", required=False, type=click.Path(exists=True, file_okay=False, writable=True), default=None, help="Directory UMI correction spills its shard files to (default: system temp, which may be RAM-backed tmpfs). The spill takes roughly 100 bytes per accepted read (~36 GB at 400M reads), so size the volume before the run.")
-@click.option("--shard-count", required=False, type=click.IntRange(1, 1024), default=256, show_default=True, help="Number of shards UMI correction spreads reads over; more shards means lower peak memory, though past about 256 the peak stops improving. Each shard costs an open file descriptor, so a count near the cap needs a raised ulimit.")
-def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix, raw, temp_dir, shard_count):
+def extract_umis(r1_annotated_fastq, chemistry, output_dir, prefix):
     """
-    Extract raw UMIs from an annotated R1 FASTQ.
+    Extract fixed-length UMIs from an annotated R1 FASTQ.
 
-    For each annotated read the raw UMI is extracted between its left anchor (BC1, read from the
-    header) and the downstream poly-G run, then annotated onto the read with UMI / UMI_POS tags. The
-    UMI length distribution is written to a stats report. With --raw this is the terminal step; UMI
-    correction is not performed.
+    The UMI is the fixed number of bases the chemistry declares, taken immediately after its left
+    anchor (BC1, whose position is read from the header), and annotated onto the read with UMI and
+    UMI_POS tags. Nothing is searched for and nothing is corrected, so a read is skipped only when its anchor was
+    never recorded or when the read ends before the UMI does. The stats report carries the anchor
+    homopolymer run length observed just after the UMI, as a check that the layout is holding.
     """
 
     log.info("Extracting UMIs from annotated FASTQ file...")
     extractor = UmiExtractor(r1_annotated_fastq, chemistry)
-    extractor.extract_umis(output_dir, prefix, raw=raw, temp_dir=temp_dir, shard_count=shard_count)
+    extractor.extract_umis(output_dir, prefix)
 
 
 @carmack_cli.command("assign-targets")
@@ -193,8 +189,9 @@ def assign_targets(r1_umi_fastq, chemistry, output_dir, prefix, cpu_count):
     """
     Assign target indices from a UMI-annotated R1 FASTQ.
 
-    For each annotated read a bounded window is taken off the end of the poly-G run recorded by UMI
-    extraction, and the target index inside that window is matched against the chemistry whitelist.
+    For each annotated read the poly-G run is located from the chemistry layout and the barcode
+    position tag on the header, a bounded window is taken off the end of that run, and the target
+    index inside the window is matched against the chemistry whitelist.
     Every read is re-emitted carrying a TGIDX tag: either a whitelist entry with its TGIDX_POS span,
     or NONE. An unassigned read is an expected outcome rather than a failure - in a mixed library
     NONE is the correct answer for every scRNA read.
@@ -259,27 +256,6 @@ def prepare_reads(r1_annotated_fastq, r2_fastq, chemistry, output_dir, prefix, c
     log.info("Preparing reads from annotated FASTQ file...")
     preparer = ReadPreparer(r1_annotated_fastq, r2_fastq, chemistry, n_workers=cpu_count)
     preparer.prepare_reads(output_dir, prefix)
-
-
-@carmack_cli.command("fastq-filter")
-@click.argument("read1", required=True, nargs=1, type=click.Path(exists=True), metavar="<read1>")
-@click.argument("read2", required=True, nargs=1, type=click.Path(exists=True), metavar="<read2>")
-@click.argument("valid_barcodes", required=True, nargs=1, type=click.Path(exists=True), metavar="<valid_barcodes>")
-@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
-@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
-@click.option("--trim-r1", required=False, type=int, default=0, show_default=True, help="Trim this many bases from start of read1 if matched.")
-@click.option("--trim-r2", required=False, type=int, default=0, show_default=True, help="Trim this many bases from start of read2 if matched.")
-def fastq_filter(read1, read2, valid_barcodes, output_dir, prefix, trim_r1, trim_r2):
-    """
-    Filter fastq files for reads containing valid barcodes.
-
-    The total set of cell barcodes and valid cell barcodes are saved to separate files in the output directory.
-    Additional files containing barcode stats and counts are also saved to the output directory.
-    """
-
-    log.info("Filtering fastq files for valid barcodes...")
-    fastq_filter = FastqFilter(read1, read2)
-    fastq_filter.filter_valid_reads(valid_barcodes, output_dir, prefix, trim_r1=trim_r1, trim_r2=trim_r2)
 
 
 @carmack_cli.command("bam-tag-deduplicate")

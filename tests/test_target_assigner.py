@@ -36,6 +36,7 @@ UMI extraction and target assignment over a committed golden input.
 
 import gzip
 import importlib.util
+import json
 import multiprocessing
 import os
 import pickle
@@ -72,6 +73,7 @@ from carmack.assign_targets.target_assigner import (
 )
 from carmack.assign_targets.tgidx_locator import locate_tgidx_window
 from carmack.barcode.barcode_extractor import BarcodeExtractor
+from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.chemistry.annotation import format_span, parse_span, position_key
 from carmack.chemistry.chemistry_base import ChemistryBase
@@ -93,11 +95,17 @@ CHEMISTRY = "carmack_custom_seq_1_0"
 # The constructor only wraps this path in a FastqFile, it never reads it.
 DUMMY_FASTQ = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
 
-# Header vocabulary shared with the upstream extract-umis stage and with every
-# downstream consumer, so it is pinned literally rather than derived from the
-# chemistry: a rename here is a breaking change, not a chemistry detail.
+# Header vocabulary shared with the upstream stages and with every downstream
+# consumer, so it is pinned literally rather than derived from the chemistry: a
+# rename here is a breaking change, not a chemistry detail. The stage reads the
+# barcode position tag, which barcode extraction writes, and derives the anchor
+# run start from it; it does not read anything extract-umis writes.
 TGIDX_NAME = "TGIDX"
-UMI_POS_KEY = "UMI_POS"
+ANCHOR_POS_KEY = "BC1_POS"
+
+# Bases the chemistry places between the anchor's end and the run's start, which
+# for the shipped layout is the fixed-length UMI.
+RUN_OFFSET = 8
 
 # The seed length the matcher defaults to, read from its own signature so this
 # file states the assigner takes that default rather than restating its value.
@@ -108,7 +116,6 @@ DEFAULT_MATCHER_K = signature(KmerMatcher.__init__).parameters["k"].default
 # relationship each chemistry exists to break.
 BC_LENGTH = 10
 UMI_LENGTH = 8
-UMI_LENGTH_TOLERANCE = 1
 ANCHOR_BASE = "G"
 ANCHOR_MIN_RUN = 3
 TGIDX_LENGTH = 8
@@ -121,6 +128,8 @@ EMPTY_WHITELIST_CHEMISTRY = "custom_seq_empty_target_whitelist"
 LINKER_ANCHOR_CHEMISTRY = "custom_seq_linker_between_umi_and_anchor"
 NO_RIGHT_ANCHOR_CHEMISTRY = "custom_seq_umi_without_right_anchor"
 NO_UMI_CHEMISTRY = "custom_seq_without_umi"
+VARIABLE_BEFORE_ANCHOR_CHEMISTRY = "custom_seq_variable_before_anchor"
+UNRECORDED_ANCHOR_CHEMISTRY = "custom_seq_unrecorded_anchor_only"
 
 
 def build_umi_component() -> ReadComponent:
@@ -129,7 +138,6 @@ def build_umi_component() -> ReadComponent:
         name="UMI",
         type=ReadComponentType.UMI,
         length=UMI_LENGTH,
-        length_tolerance=UMI_LENGTH_TOLERANCE,
     )
 
 
@@ -237,6 +245,63 @@ class ChemistryWithoutUmi(ChemistryCarmackCustomSeq10):
         return build_read_structure([])
 
 
+class ChemistryVariableBeforeAnchor(ChemistryCarmackCustomSeq10):
+    """Chemistry with a variable-length component between the barcode and the anchor."""
+
+    @cached_property
+    def name(self) -> str:
+        """Return the identifier this chemistry is requested under."""
+        return VARIABLE_BEFORE_ANCHOR_CHEMISTRY
+
+    @cached_property
+    def read_structure(self) -> ReadStructure:
+        """Return a layout carrying a second homopolymer ahead of the index anchor."""
+        return build_read_structure(
+            [
+                ReadComponent(
+                    name="POLYA",
+                    type=ReadComponentType.HOMOPOLYMER,
+                    homopolymer_base="A",
+                    min_run=ANCHOR_MIN_RUN,
+                ),
+            ]
+        )
+
+
+class ChemistryUnrecordedAnchorOnly(ChemistryCarmackCustomSeq10):
+    """Chemistry whose only component 5' of the anchor never has its position written.
+
+    A primer anchors a neighbour perfectly well, but barcode extraction writes a
+    position tag for barcodes alone, so there is no span to measure from.
+    """
+
+    @cached_property
+    def name(self) -> str:
+        """Return the identifier this chemistry is requested under."""
+        return UNRECORDED_ANCHOR_CHEMISTRY
+
+    @cached_property
+    def read_structure(self) -> ReadStructure:
+        """Return a layout whose leading component is a primer rather than a barcode."""
+        return ReadStructure(
+            [
+                ReadComponent(
+                    name="PRIMER_A",
+                    type=ReadComponentType.PRIMER,
+                    length=len(LINKER_SEQUENCE),
+                    sequence=LINKER_SEQUENCE,
+                ),
+                ReadComponent(
+                    name="POLYG",
+                    type=ReadComponentType.HOMOPOLYMER,
+                    homopolymer_base=ANCHOR_BASE,
+                    min_run=ANCHOR_MIN_RUN,
+                ),
+                ReadComponent(name=TGIDX_NAME, type=ReadComponentType.TGIDX, length=TGIDX_LENGTH),
+            ]
+        )
+
+
 def patch_chemistry(chemistry: ChemistryBase):
     """Return a patcher making the factory answer with the supplied chemistry.
 
@@ -268,7 +333,9 @@ class TestTargetAssignerConstruction:
         assigner = TargetAssigner(DUMMY_FASTQ, CHEMISTRY)
 
         assert_that(assigner.tgidx_name).is_equal_to(TGIDX_NAME)
-        assert_that(assigner.umi_pos_key).is_equal_to(UMI_POS_KEY)
+        assert_that(assigner.anchor_pos_key).is_equal_to(ANCHOR_POS_KEY)
+        assert_that(assigner.run_offset).is_equal_to(RUN_OFFSET)
+        assert_that(assigner.anchor_min_run).is_equal_to(chemistry.tgidx_anchor().min_run)
         assert_that(assigner.tgidx_length).is_equal_to(chemistry.tgidx_component().length)
         assert_that(assigner.anchor_base).is_equal_to(chemistry.tgidx_anchor().homopolymer_base)
         assert_that(assigner.max_errors).is_equal_to(chemistry.max_errors.tgidx)
@@ -333,38 +400,58 @@ class TestTargetAssignerConstruction:
         ):
             TargetAssigner(DUMMY_FASTQ, EMPTY_WHITELIST_CHEMISTRY)
 
-    def test_umi_right_anchor_other_than_the_index_anchor_raises(self) -> None:
-        """Pin that the UMI's right anchor must be the index's own anchor run.
+    @pytest.mark.parametrize(
+        "chemistry_class,chemistry_name,expected_offset",
+        [
+            (ChemistryLinkerAfterUmi, LINKER_ANCHOR_CHEMISTRY, UMI_LENGTH + len(LINKER_SEQUENCE)),
+            (
+                ChemistryUmiWithoutRightAnchor,
+                NO_RIGHT_ANCHOR_CHEMISTRY,
+                UMI_LENGTH + len(LINKER_SEQUENCE),
+            ),
+            (ChemistryWithoutUmi, NO_UMI_CHEMISTRY, 0),
+        ],
+    )
+    def test_any_fixed_distance_from_the_anchor_is_supported(
+        self, chemistry_class: type[ChemistryBase], chemistry_name: str, expected_offset: int
+    ) -> None:
+        """Layouts the old coordinate scheme rejected now work, and give the right offset.
 
-        The anchor run's start is read from the end of the UMI span, which is
-        only the run's start when the component following the UMI is that same
-        homopolymer. Where they diverge every window would be cut off arbitrary
-        sequence, so the mismatch has to be fatal at construction rather than
-        silently mis-assigning reads.
+        All three used to be fatal, because the run start was read off the end of
+        the UMI span and so had to have the anchor run as the UMI's immediate
+        neighbour. Deriving the coordinate from the chemistry instead means the
+        UMI is no longer special: what matters is only that the distance between
+        the recorded anchor and the run is fixed. A linker in between is simply
+        crossed, whatever its type, and a chemistry with no UMI at all puts the
+        run directly on the barcode.
         """
-        chemistry = ChemistryLinkerAfterUmi()
+        chemistry = chemistry_class()
 
-        assert_that(chemistry.supports_target_assignment()).is_true()
-        assert_that(chemistry.umi_right_anchor().name).is_not_equal_to(
-            chemistry.tgidx_anchor().name
-        )
+        with patch_chemistry(chemistry):
+            assigner = TargetAssigner(DUMMY_FASTQ, chemistry_name)
 
-        with (
-            patch_chemistry(chemistry),
-            pytest.raises(ValueError, match=LINKER_ANCHOR_CHEMISTRY),
-        ):
-            TargetAssigner(DUMMY_FASTQ, LINKER_ANCHOR_CHEMISTRY)
+        assert_that(assigner.anchor_pos_key).is_equal_to(ANCHOR_POS_KEY)
+        assert_that(assigner.run_offset).is_equal_to(expected_offset)
 
     @pytest.mark.parametrize(
         "chemistry_class,chemistry_name",
         [
-            (ChemistryUmiWithoutRightAnchor, NO_RIGHT_ANCHOR_CHEMISTRY),
-            (ChemistryWithoutUmi, NO_UMI_CHEMISTRY),
+            (ChemistryVariableBeforeAnchor, VARIABLE_BEFORE_ANCHOR_CHEMISTRY),
+            (ChemistryUnrecordedAnchorOnly, UNRECORDED_ANCHOR_CHEMISTRY),
         ],
     )
     def test_chemistry_that_cannot_locate_the_anchor_run_raises(
         self, chemistry_class: type[ChemistryBase], chemistry_name: str
     ) -> None:
+        """A run whose distance from a recorded anchor is not fixed is fatal.
+
+        These are the two ways the derivation can genuinely fail: a
+        variable-length component in between, so there is no fixed distance to
+        add; and nothing to the left whose position was ever written down, so
+        there is no coordinate to add it to. Either would have every window cut
+        off a coordinate belonging to some other component, with no downstream
+        symptom to catch it by.
+        """
         chemistry = chemistry_class()
 
         with patch_chemistry(chemistry), pytest.raises(ValueError, match=chemistry_name):
@@ -376,7 +463,7 @@ class TestTargetAssignerConstruction:
 
 
 class TestTargetAssignerHeaderValidation:
-    """The annotated header must carry the UMI position tag the stage reads."""
+    """The annotated header must carry the barcode position tag the stage reads."""
 
     @pytest.fixture
     def assigner(self) -> TargetAssigner:
@@ -399,16 +486,16 @@ class TestTargetAssignerHeaderValidation:
         ],
         ids=["no_tags", "other_tags_only"],
     )
-    def test_missing_umi_position_tag_raises(
+    def test_missing_anchor_position_tag_raises(
         self, assigner: TargetAssigner, tags: dict[str, str]
     ) -> None:
         with pytest.raises(ValueError) as excinfo:
             assigner.validate_header(self.make_annotation(tags))
 
-        assert_that(str(excinfo.value)).contains(UMI_POS_KEY, "extract-umis")
+        assert_that(str(excinfo.value)).contains(ANCHOR_POS_KEY, "extract-barcodes")
 
-    def test_present_umi_position_tag_returns_none(self, assigner: TargetAssigner) -> None:
-        ann = self.make_annotation({UMI_POS_KEY: format_span(20, 28)})
+    def test_present_anchor_position_tag_returns_none(self, assigner: TargetAssigner) -> None:
+        ann = self.make_annotation({ANCHOR_POS_KEY: format_span(20, 28)})
 
         assert_that(assigner.validate_header(ann)).is_none()
 
@@ -499,13 +586,14 @@ def make_annotated_read(
     tail: str = TAIL,
     umi: str = UMI_SEQ,
     umi_start: int = UMI_START,
-    with_umi_pos: bool = True,
+    with_anchor_pos: bool = True,
 ) -> tuple[str, str, str]:
     """Build a synthetic ``(header, seq, qual)`` UMI-annotated read.
 
     The sequence is ``A * umi_start`` + ``umi`` + the anchor run + ``index`` +
-    ``tail``, so the anchor run begins exactly at ``umi_start + len(umi)`` and
-    the header's UMI span ends on that same coordinate.
+    ``tail``, so the anchor run begins exactly at ``umi_start + len(umi)``. The
+    header carries the barcode span ending at ``umi_start``, from which the stage
+    recomputes that same coordinate by adding the chemistry's fixed offset.
 
     Args:
         read_id: Identifier written as the header's first token.
@@ -515,7 +603,7 @@ def make_annotated_read(
         tail: Sequence written after ``index``.
         umi: UMI sequence written immediately before the anchor run.
         umi_start: 0-based index at which the UMI begins.
-        with_umi_pos: Whether to write the UMI position tag the stage reads.
+        with_anchor_pos: Whether to write the barcode position tag the stage reads.
 
     Returns:
         The rendered header, the read sequence and a matching quality string.
@@ -523,8 +611,8 @@ def make_annotated_read(
     seq = "A" * umi_start + umi + ANCHOR_BASE * run_length + index + tail
     ann = ReadAnnotation(read_id=read_id)
     ann.set(UMI_NAME, umi)
-    if with_umi_pos:
-        ann.set(UMI_POS_KEY, format_span(umi_start, umi_start + len(umi)))
+    if with_anchor_pos:
+        ann.set(ANCHOR_POS_KEY, format_span(umi_start - BC_LENGTH, umi_start))
     return ann.render(), seq, "I" * len(seq)
 
 
@@ -574,6 +662,21 @@ def tgidx_fastq(directory: Path, prefix: str = OUT_PREFIX) -> Path:
 def tgidx_stats(directory: Path, prefix: str = OUT_PREFIX) -> Path:
     """Return the path of the stats report the stage writes for ``prefix``."""
     return directory / f"{prefix}.tgidx_stats.txt"
+
+
+def tgidx_stats_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
+    """Return the path of the MultiQC stats payload the stage writes for ``prefix``."""
+    return directory / f"{prefix}.tgidx_stats_mqc.json"
+
+
+def tgidx_edit_distance_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
+    """Return the path of the MultiQC edit-distance payload the stage writes for ``prefix``."""
+    return directory / f"{prefix}.tgidx_edit_distance_mqc.json"
+
+
+def tgidx_anchor_run_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
+    """Return the path of the MultiQC anchor-run payload the stage writes for ``prefix``."""
+    return directory / f"{prefix}.tgidx_anchor_run_mqc.json"
 
 
 @pytest.fixture
@@ -643,15 +746,29 @@ class TestAssignTargetsMatching:
         [SUBSTITUTED_TARGET, DELETED_TARGET],
         ids=["substitution", "deletion"],
     )
-    def test_one_error_index_is_matched_and_span_is_the_observed_slice(
+    def test_one_error_index_is_matched_and_span_is_the_entrys_own_length(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path, observed: str
     ) -> None:
-        """Pin that the recorded span bounds the read, not the entry it verified against.
+        """Pin that the recorded span bounds the read, at the entry's own length.
 
-        ``read_idx`` bounds the sequence found in the read while ``match`` is the
-        whitelist entry it verified against, so the two coincide only at edit
-        distance zero. Slicing the span back must therefore return the observed
-        sequence.
+        ``read_idx`` bounds the sequence found in the read while ``match`` is the whitelist
+        entry it verified against, so the two coincide only at edit distance zero; slicing the
+        span back returns the read, not the entry.
+
+        Among the windows that tie at the minimum edit distance, the one reported is the window
+        whose length equals the entry's. For a substitution that is simply the observed
+        sequence. For a deletion it is one base longer than what was planted, and that is
+        deliberate rather than sloppy: a read carrying a deletion and a read carrying a
+        substitution at the entry's last base are *byte-identical* over this window -- both read
+        ``TATAGCTT`` here -- so no rule can tell them apart from the sequence alone, and both
+        the 7bp and the 8bp window sit at edit distance one. Preferring the entry's length is
+        what stops a component's reported 3' boundary drifting inwards, which is what sent the
+        adjacent-spacer check a base early and shifted the UMI off the end of the barcode
+        before it. The cost is this one borrowed base on a genuine deletion.
+
+        Nothing downstream measures off the target index -- it is the last component, and the
+        poly-G anchor is taken from the UMI span -- so the borrowed base is reported and not
+        acted upon.
         """
         assigner = build_assigner([make_annotated_read("oneerror", index=observed)])
 
@@ -665,7 +782,77 @@ class TestAssignTargetsMatching:
         ann = read_annotations(tgidx_fastq(tmp_path))[0]
         assert_that(ann.get(TGIDX_NAME)).is_equal_to(TARGET_SEQ)
         start, end = parse_span(ann.get(position_key(TGIDX_NAME)))
-        assert_that(seq[start:end]).is_equal_to(observed)
+
+        assert_that(end - start).is_equal_to(len(TARGET_SEQ))
+        assert_that(seq[start:end]).starts_with(observed[: len(TARGET_SEQ) - 1])
+        assert_that(edit_distance(seq[start:end], TARGET_SEQ)).is_equal_to(1)
+
+    def test_run_starting_one_base_early_gives_the_same_target_and_span(
+        self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
+    ) -> None:
+        """A run beginning one base before the layout predicts is indistinguishable.
+
+        This is the common case -- roughly a fifth of a real library, where the
+        UMI's last base happens to be the anchor base, so the run genuinely spans
+        one base more than the layout says. The extra base sits before the derived
+        start, and counting forward from there reaches the same run end, so the
+        window, the target, its span and even the measured run length all match
+        the exact read's exactly. That equivalence is what lets the coordinate be
+        asserted from the chemistry rather than found in the read.
+        """
+        early_umi = UMI_SEQ[:-1] + ANCHOR_BASE
+        assigner = build_assigner(
+            [make_annotated_read("early", umi=early_umi), make_annotated_read("exact")]
+        )
+
+        stats = assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_that(stats.matched).is_equal_to(2)
+        assert_that(stats.target_counts).is_equal_to({TARGET_SEQ: 2})
+        spans = {
+            ann.get(position_key(TGIDX_NAME)) for ann in read_annotations(tgidx_fastq(tmp_path))
+        }
+        assert_that(spans).is_length(1)
+        assert_that(stats.homopolymer_run_counts).is_equal_to({RUN_LENGTH: 2})
+
+    def test_run_starting_late_is_recovered_by_the_forward_search(
+        self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
+    ) -> None:
+        """A read carrying an insertion before the run is still matched.
+
+        This is the case the derived coordinate cannot absorb on its own: the
+        count stops immediately and the window would be cut short of the index.
+        The bounded forward search is what recovers it, and it is the tolerance
+        the extractor's old window search used to provide.
+        """
+        late_umi = UMI_SEQ + "C"
+        assigner = build_assigner([make_annotated_read("late", umi=late_umi)])
+
+        stats = assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_that(stats.matched).is_equal_to(1)
+        assert_that(stats.target_counts).is_equal_to({TARGET_SEQ: 1})
+        assert_that(stats.homopolymer_run_counts).is_equal_to({RUN_LENGTH: 1})
+
+    def test_runs_without_extract_umis_having_written_anything(
+        self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
+    ) -> None:
+        """The stage needs only the barcode position tag, not the UMI tag.
+
+        Deriving the run start from the chemistry removed the last thing this
+        stage read from extract-umis. The canonical pipeline order still puts UMI
+        extraction first, because that is what carries the UMI onto the read, but
+        it is no longer a coordinate dependency.
+        """
+        header, seq, qual = make_annotated_read("nobcumi")
+        ann = ReadAnnotation.parse(header)
+        ann.tags.pop(UMI_NAME, None)
+        assigner = build_assigner([(ann.render(), seq, qual)])
+
+        stats = assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_that(stats.matched).is_equal_to(1)
+        assert_that(stats.target_counts).is_equal_to({TARGET_SEQ: 1})
 
     def test_two_error_index_is_not_matched(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
@@ -837,7 +1024,7 @@ class TestAssignTargetsOutcomes:
         assert_that(ann.get(TGIDX_NAME)).is_equal_to(target_assigner.NO_TARGET)
         assert_that(ann.get(position_key(TGIDX_NAME))).is_none()
 
-    def test_mid_stream_read_without_umi_position_is_counted_and_emitted(
+    def test_mid_stream_read_without_anchor_position_is_counted_and_emitted(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
     ) -> None:
         """Pin that only the first read's header is fatal, and the rest are counted.
@@ -848,14 +1035,14 @@ class TestAssignTargetsOutcomes:
         """
         records = [
             make_annotated_read("first"),
-            make_annotated_read("second", with_umi_pos=False),
+            make_annotated_read("second", with_anchor_pos=False),
         ]
         assigner = build_assigner(records)
 
         stats = assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
 
         assert_that(stats.total_reads).is_equal_to(2)
-        assert_that(stats.unmatched_no_umi_pos).is_equal_to(1)
+        assert_that(stats.unmatched_no_left_anchor_pos).is_equal_to(1)
         assert_that(stats.matched).is_equal_to(1)
 
         annotations = read_annotations(tgidx_fastq(tmp_path))
@@ -895,7 +1082,7 @@ class TestAssignTargetsOutputs:
     ) -> None:
         records = [
             make_annotated_read("matched"),
-            make_annotated_read("noumipos", with_umi_pos=False),
+            make_annotated_read("noumipos", with_anchor_pos=False),
             make_annotated_read("nomatch", index="", tail=NO_INDEX_TAIL),
             make_annotated_read("shortwindow", index="", tail=""),
         ]
@@ -905,12 +1092,12 @@ class TestAssignTargetsOutputs:
 
         assert_that(stats.matched).is_equal_to(1)
         assert_that(stats.unmatched_no_match).is_equal_to(1)
-        assert_that(stats.unmatched_no_umi_pos).is_equal_to(1)
+        assert_that(stats.unmatched_no_left_anchor_pos).is_equal_to(1)
         assert_that(stats.unmatched_short_window).is_equal_to(1)
         assert_that(
             stats.matched
             + stats.unmatched_no_match
-            + stats.unmatched_no_umi_pos
+            + stats.unmatched_no_left_anchor_pos
             + stats.unmatched_short_window
         ).is_equal_to(stats.total_reads)
         assert_that(read_fastq(tgidx_fastq(tmp_path))).is_length(stats.total_reads)
@@ -920,7 +1107,7 @@ class TestAssignTargetsOutputs:
     ) -> None:
         records = [
             make_annotated_read("matched"),
-            make_annotated_read("noumipos", with_umi_pos=False),
+            make_annotated_read("noumipos", with_anchor_pos=False),
             make_annotated_read("nomatch", index="", tail=NO_INDEX_TAIL),
             make_annotated_read("shortwindow", index="", tail=""),
         ]
@@ -933,9 +1120,42 @@ class TestAssignTargetsOutputs:
         assert_that(report).contains("Total reads: 4")
         assert_that(report).contains("Matched: 1")
         assert_that(report).contains("Unmatched (no_match): 1")
-        assert_that(report).contains("Unmatched (no_umi_pos): 1")
+        assert_that(report).contains("Unmatched (no_left_anchor_pos): 1")
         assert_that(report).contains("Unmatched (short_window): 1")
         assert_that(report).contains(f"\t{TARGET_SEQ}\t1")
+
+    def test_mqc_stats_json_is_written_and_parses_with_the_expected_top_level_keys(
+        self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
+    ) -> None:
+        """A real assignment with at least one matched read produces a parseable
+        ``{prefix}.tgidx_stats_mqc.json`` carrying the general stats, breakdown
+        and target distribution payloads, plus the conditional edit-distance and
+        anchor-run payloads this fixture's matched and anchor-measured reads
+        genuinely populate. This is a wiring check, not an arithmetic one -- the
+        payload contents are pinned in detail against ``AssignStats`` directly in
+        ``tests/test_assign_reporting.py``.
+        """
+        records = [
+            make_annotated_read("matched"),
+            make_annotated_read("noumipos", with_anchor_pos=False),
+            make_annotated_read("nomatch", index="", tail=NO_INDEX_TAIL),
+            make_annotated_read("shortwindow", index="", tail=""),
+        ]
+        assigner = build_assigner(records)
+
+        stats = assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_that(stats.matched).is_greater_than(0)
+        mqc_stats_path = tgidx_stats_mqc(tmp_path)
+        assert_that(mqc_stats_path.exists()).is_true()
+
+        payload = json.loads(mqc_stats_path.read_text())
+        assert_that(payload).contains_key("general_stats")
+        assert_that(payload).contains_key("breakdown")
+        assert_that(payload).contains_key("target_distribution")
+
+        assert_that(tgidx_edit_distance_mqc(tmp_path).exists()).is_true()
+        assert_that(tgidx_anchor_run_mqc(tmp_path).exists()).is_true()
 
     def test_prefix_defaults_to_the_input_filename(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
@@ -966,16 +1186,16 @@ class TestAssignTargetsOutputs:
         assert_that(read_fastq(tgidx_fastq(tmp_path))).is_empty()
         assert_that(tgidx_stats(tmp_path).read_text()).contains("Total reads: 0")
 
-    def test_first_read_without_umi_position_raises_before_any_output_is_written(
+    def test_first_read_without_anchor_position_raises_before_any_output_is_written(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
     ) -> None:
         records = [
-            make_annotated_read("first", with_umi_pos=False),
+            make_annotated_read("first", with_anchor_pos=False),
             make_annotated_read("second"),
         ]
         assigner = build_assigner(records)
 
-        with pytest.raises(ValueError, match=UMI_POS_KEY):
+        with pytest.raises(ValueError, match=ANCHOR_POS_KEY):
             assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
 
         assert_that(tgidx_fastq(tmp_path).exists()).is_false()
@@ -1007,7 +1227,7 @@ class TestAssignTargetsOutputs:
 MATCHED_RUN_LENGTH = 4
 NO_MATCH_RUN_LENGTH = 6
 SHORT_WINDOW_RUN_LENGTH = 3
-NO_UMI_POS_RUN_LENGTH = 7
+NO_ANCHOR_POS_RUN_LENGTH = 7
 
 MATCHED_READ = make_annotated_read("matched", run_length=MATCHED_RUN_LENGTH)
 
@@ -1020,13 +1240,13 @@ UNASSIGNED_READS = {
     "short_window": make_annotated_read(
         "shortwindow", index="", tail="", run_length=SHORT_WINDOW_RUN_LENGTH
     ),
-    "no_umi_pos": make_annotated_read(
-        "noumipos", with_umi_pos=False, run_length=NO_UMI_POS_RUN_LENGTH
+    "no_left_anchor_pos": make_annotated_read(
+        "noumipos", with_anchor_pos=False, run_length=NO_ANCHOR_POS_RUN_LENGTH
     ),
 }
 
 # All four mutually exclusive outcomes, matched first so the reads double as a
-# whole-stage input whose first read carries the UMI position tag the header
+# whole-stage input whose first read carries the anchor position tag the header
 # check demands of it.
 OUTCOME_READS = {"matched": MATCHED_READ, **UNASSIGNED_READS}
 OUTCOME_TALLIES = tuple(OUTCOME_READS)
@@ -1224,7 +1444,7 @@ class TestAssignReadCounts:
     ) -> None:
         """Pin the denominator of the anchor run-length distribution.
 
-        A read whose header carries no UMI position tag never reaches the
+        A read whose header carries no anchor position tag never reaches the
         forward scan, so it has no run length to place in any bin. Recording one
         for it would mean counting a run from a coordinate the read does not
         carry, and ``reads_with_measured_run`` would stop being the number of
@@ -1244,7 +1464,7 @@ class TestAssignReadCounts:
                 SHORT_WINDOW_RUN_LENGTH: 1,
             }
         )
-        assert_that(counts.run_counts).does_not_contain_key(NO_UMI_POS_RUN_LENGTH)
+        assert_that(counts.run_counts).does_not_contain_key(NO_ANCHOR_POS_RUN_LENGTH)
 
     def test_assign_read_accumulates_into_the_counts_it_is_handed(
         self, build_assigner: Callable[..., TargetAssigner]
@@ -2171,7 +2391,7 @@ class TestAssignTargetsPoolWiring:
 
         assert_that(stats).is_equal_to(expected.to_stats(assigner.anchor_base))
 
-    def test_first_read_without_umi_position_raises_before_the_pool_is_created(
+    def test_first_read_without_anchor_position_raises_before_the_pool_is_created(
         self,
         build_assigner: Callable[..., TargetAssigner],
         pool_harness: PoolHarness,
@@ -2184,12 +2404,12 @@ class TestAssignTargetsPoolWiring:
         truncated outputs nor worker processes behind.
         """
         assigner = build_assigner(
-            [make_annotated_read("first", with_umi_pos=False), MATCHED_READ],
+            [make_annotated_read("first", with_anchor_pos=False), MATCHED_READ],
             n_workers=POOL_WORKERS,
             batch_size=POOL_BATCH_SIZE,
         )
 
-        with pytest.raises(ValueError, match=UMI_POS_KEY):
+        with pytest.raises(ValueError, match=ANCHOR_POS_KEY):
             assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
 
         assert_that(pool_harness.executors).is_empty()
@@ -2249,14 +2469,14 @@ STATS_PICKLE_NAME = "assign_stats.pickle"
 
 # Read shapes the real-pool input cycles through, so every outcome, both edit
 # distances and two anchor run lengths are represented. The first shape carries
-# the UMI position tag, since the first read of the file is the one the header
+# the anchor position tag, since the first read of the file is the one the header
 # check is made against.
 REAL_POOL_READ_SHAPES = (
     {},
     {"index": SUBSTITUTED_TARGET},
     {"index": "", "tail": NO_INDEX_TAIL},
     {"index": "", "tail": ""},
-    {"with_umi_pos": False},
+    {"with_anchor_pos": False},
     {"run_length": 7},
 )
 
@@ -2515,7 +2735,9 @@ class TestAssignTargetsWorkerCountEquivalence:
             assert_that(stats.total_reads).described_as(described).is_equal_to(REAL_POOL_READS)
             assert_that(stats.matched).described_as(described).is_greater_than(0)
             assert_that(stats.unmatched_no_match).described_as(described).is_greater_than(0)
-            assert_that(stats.unmatched_no_umi_pos).described_as(described).is_greater_than(0)
+            assert_that(stats.unmatched_no_left_anchor_pos).described_as(
+                described
+            ).is_greater_than(0)
             assert_that(stats.unmatched_short_window).described_as(described).is_greater_than(0)
             assert_that(stats.homopolymer_run_counts).described_as(described).is_not_empty()
 
@@ -3063,7 +3285,7 @@ class TestAssignTargetsEndToEnd:
         assert_that(
             stats.matched
             + stats.unmatched_no_match
-            + stats.unmatched_no_umi_pos
+            + stats.unmatched_no_left_anchor_pos
             + stats.unmatched_short_window
         ).is_equal_to(stats.total_reads)
 

@@ -8,7 +8,7 @@ module holds that answer as one function, dispatching purely on the anchor compo
 or chemistry constant, so neither arm needs its own copy of the arithmetic.
 """
 
-from carmack.assign_targets.tgidx_locator import homopolymer_run_end
+from carmack.assign_targets.tgidx_locator import locate_anchor_run
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 
 
@@ -21,7 +21,7 @@ def insert_start(reference: int, anchor: ReadComponent | None, seq: str) -> int:
     anchor sits between ``reference`` and the insert: no anchor means there is nothing
     to trim past, so ``reference`` already is the answer; a homopolymer anchor's real
     extent varies read to read with polymerase slippage, so it is read off ``seq`` by
-    delegating to :func:`homopolymer_run_end`; every other anchor type has a length
+    delegating to :func:`locate_anchor_run`; every other anchor type has a length
     fixed by the chemistry, so the answer is plain addition with no need, or reason, to
     consult ``seq`` at all.
 
@@ -38,5 +38,5 @@ def insert_start(reference: int, anchor: ReadComponent | None, seq: str) -> int:
     if anchor is None:
         return reference
     if anchor.type is ReadComponentType.HOMOPOLYMER:
-        return homopolymer_run_end(seq, reference, anchor.homopolymer_base)
+        return locate_anchor_run(seq, reference, anchor.homopolymer_base, anchor.min_run).end
     return reference + anchor.length

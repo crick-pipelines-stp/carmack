@@ -1,27 +1,17 @@
 # UMI Extraction Stats
-Total reads: 193
-Accepted: 190 (98.45%)
+# The UMI is the fixed 8 bases following the left anchor, so its
+# length is not a measurement and no length distribution is reported.
+Total reads: 190
+Accepted: 190 (100.00%)
 Rejected (missing_left_anchor): 0 (0.00%)
-Rejected (no_polyg_anchor): 3 (1.55%)
-
-# UMI Length Distribution
-	7	35 (18.42%)
-	8	155 (81.58%)
+Rejected (truncated): 0 (0.00%)
 
 # Anchor G-run Length Distribution
-	3	25 (13.16%)
-	4	11 (5.79%)
-	5	8 (4.21%)
-	6	95 (50.00%)
-	7	50 (26.32%)
+# Measured from the first base after the UMI, over accepted reads. A zero is a
+# read whose anchor run does not begin where the chemistry says it does.
+	3	29 (15.26%)
+	4	7 (3.68%)
+	5	12 (6.32%)
+	6	118 (62.11%)
+	7	23 (12.11%)
 	8	1 (0.53%)
-
-# UMI Correction Stats
-Cell barcodes (groups): 1
-Reads assigned UB: 190 (100.00% of accepted)
-Corrections applied (UB != raw): 6 (3.16% of assigned)
-Dropped (raw_N): 0 (0.00%)
-Dropped (off_length): 0 (0.00%)
-Distinct corrected UMIs: 121
-Mean reads per UMI: 1.57
-UMI collapses: 6

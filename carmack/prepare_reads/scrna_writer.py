@@ -3,9 +3,25 @@
 A ``TGIDX=NONE`` read carries no target index, so nothing anchors an insert past a
 homopolymer run: the read is scRNA cDNA rather than TGIDX-tagged genomic material. This
 arm trims R1 down to that cDNA insert, passes R2 through untouched, and synthesizes a
-third barcodes FASTQ by slicing the original untrimmed R1 at each barcode and UMI
-component's own recorded ``*_POS`` span - the shape STARsolo expects for its own
-barcode/UMI-plus-cDNA read pair.
+third barcodes FASTQ carrying that read's barcode and UMI - the shape STARsolo expects
+for its own barcode/UMI-plus-cDNA read pair.
+
+The two halves of that synthesized record come from two different sources. Its sequence
+is read out of the header annotation's own value tags and is never re-sliced out of the
+raw read: barcode extraction already wrote the corrected whitelist entry into the same
+annotation the position came from, the scTIP arm already emits exactly those corrected
+values in its own header, and because this is a multiome experiment the two arms are
+joined downstream by barcode - so a raw slice here would present one physical cell under
+two different barcodes and split its data in half whenever a sequencing error had been
+corrected. Its quality has no such source, because a header carries no quality
+information, so it is sliced out of the read's own quality string at each component's
+recorded start, for that component's own declared length, never out to the matched
+span's end. Slicing by the declared length is what keeps the record at one fixed total
+width even when a corrected indel left a recorded span a base narrower or wider than the
+component really is. The rare cost, accepted deliberately rather than chased for more
+precision, is that one quality position inside that fixed window can really belong to
+the neighbouring component - the same approximation CellRanger's CB/CY tag convention
+already makes.
 """
 
 from carmack.chemistry.annotation import parse_span, position_key
@@ -24,7 +40,11 @@ class ScrnaWriter:
 
         Everything resolved here is fixed for the lifetime of the writer and is never
         re-derived per read, so a mistake made here would silently and consistently
-        corrupt every read the writer ever processes.
+        corrupt every read the writer ever processes. The chemistry itself is kept
+        alongside the components unpacked from it, because building the barcodes
+        record's sequence goes through ``chemistry.construct_full_barcode`` - the same
+        helper the scTIP arm's header rendering uses, which is what makes both arms of
+        one multiome experiment spell a full barcode identically.
 
         Args:
             chemistry: The already-resolved chemistry describing the read layout.
@@ -42,13 +62,31 @@ class ScrnaWriter:
                 "cannot locate the UMI span it needs to build the barcodes FASTQ"
             )
 
+        self.chemistry = chemistry
         self.umi = umi
         self.umi_position_key = position_key(self.umi.name)
         self.umi_right_anchor = chemistry.umi_right_anchor()
-        self.barcode_position_keys = tuple(
-            position_key(comp.name)
-            for comp in chemistry.read_structure.get_components_by_type(ReadComponentType.BARCODE)
+        self.barcode_components = tuple(
+            chemistry.read_structure.get_components_by_type(ReadComponentType.BARCODE)
         )
+
+    def read_value(self, ann: ReadAnnotation, key: str) -> str:
+        """Read one component's recorded value off an annotation, guarding a missing tag.
+
+        Args:
+            ann: The parsed annotation header of the read.
+            key: The value tag key to read, which is the component's own name.
+
+        Returns:
+            The value recorded under ``key``.
+
+        Raises:
+            ValueError: If the annotation carries no value under ``key``.
+        """
+        value = ann.get(key)
+        if value is None:
+            raise ValueError(f"Read '{ann.read_id}' is missing the expected '{key}' tag")
+        return value
 
     def read_span(self, ann: ReadAnnotation, key: str) -> tuple[int, int]:
         """Read and parse one component's span off an annotation, guarding a missing tag.
@@ -67,10 +105,7 @@ class ScrnaWriter:
         Raises:
             ValueError: If the annotation carries no value under ``key``.
         """
-        value = ann.get(key)
-        if value is None:
-            raise ValueError(f"Read '{ann.read_id}' is missing the expected '{key}' tag")
-        return parse_span(value)
+        return parse_span(self.read_value(ann, key))
 
     def write_read(
         self,
@@ -91,6 +126,22 @@ class ScrnaWriter:
         ``r2_name`` rather than reused from ``ann``, since validating that R1 and R2
         actually pair up is a later driver's job, not this method's.
 
+        The barcodes record's sequence is taken from the annotation's value tags alone -
+        the corrected whitelist barcodes barcode extraction already wrote there, joined
+        in read-structure order by ``construct_full_barcode``, then the UMI's own tag
+        value - and never re-sliced out of ``r1_seq``. The scTIP arm emits exactly those
+        corrected values, and the two arms of one multiome experiment are joined
+        downstream by barcode, so re-deriving raw bases here would fragment one physical
+        cell into two apparent cells whenever a sequencing error had been corrected. Its
+        quality has to come from the read, because a header carries no quality
+        information, and is taken from each component's recorded start for that
+        component's own declared length rather than out to the matched span's end, which
+        is what holds the record at one fixed total width across every read. The
+        accepted limitation is that a corrected indel can leave one quality position in
+        that fixed window really belonging to the neighbouring component; this is the
+        same approximation CellRanger's CB/CY tag convention makes, and is not worth
+        more precision.
+
         Args:
             ann: The parsed annotation header of the R1 read.
             r1_seq: The full, untrimmed R1 sequence.
@@ -101,6 +152,10 @@ class ScrnaWriter:
             r1_stream: Output stream for the trimmed R1 insert FASTQ.
             r2_stream: Output stream for the passthrough R2 FASTQ.
             barcodes_stream: Output stream for the synthesized barcodes FASTQ.
+
+        Raises:
+            ValueError: If the annotation is missing any barcode or UMI component's
+                value tag or ``*_POS`` tag.
         """
         umi_start, umi_end = self.read_span(ann, self.umi_position_key)
         cut = insert_start(reference=umi_end, anchor=self.umi_right_anchor, seq=r1_seq)
@@ -109,11 +164,18 @@ class ScrnaWriter:
         r2_read_id = ReadAnnotation.parse(r2_name).read_id
         FastqFile.write_read(r2_stream, r2_read_id, r2_seq, r2_qual)
 
+        barcode_values: dict[str, str] = {}
+        quality_parts: list[str] = []
+        for comp in self.barcode_components:
+            barcode_values[comp.name] = self.read_value(ann, comp.name)
+            start = self.read_span(ann, comp.position_key)[0]
+            quality_parts.append(r1_qual[start : start + comp.length])
+
         # The UMI's own span was already parsed above for the R1 cut point, so it is
         # reused here rather than re-derived from self.umi_position_key, keeping the
-        # UMI slice appended last, after every barcode segment, in read-structure order.
-        spans = [self.read_span(ann, key) for key in self.barcode_position_keys]
-        spans.append((umi_start, umi_end))
-        barcodes_seq = "".join(r1_seq[start:end] for start, end in spans)
-        barcodes_qual = "".join(r1_qual[start:end] for start, end in spans)
-        FastqFile.write_read(barcodes_stream, ann.read_id, barcodes_seq, barcodes_qual)
+        # UMI appended last, after every barcode segment, in read-structure order.
+        umi_value = self.read_value(ann, self.umi.name)
+        quality_parts.append(r1_qual[umi_start : umi_start + self.umi.length])
+
+        barcodes_seq = self.chemistry.construct_full_barcode(barcode_values) + umi_value
+        FastqFile.write_read(barcodes_stream, ann.read_id, barcodes_seq, "".join(quality_parts))

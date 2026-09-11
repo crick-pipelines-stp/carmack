@@ -8,7 +8,7 @@ there is nothing between it and the insert to trim past. When the next component
 homopolymer, its real extent can only be read off the actual read, because polymerase
 slippage means the run present in any given read is longer or shorter than any nominal
 length the chemistry could declare; that scan already exists and is already tested as
-``homopolymer_run_end`` in ``carmack.assign_targets.tgidx_locator``, so this module must
+``locate_anchor_run`` in ``carmack.assign_targets.tgidx_locator``, so this module must
 reuse it rather than reimplement it. Every other anchor type has a length fixed by the
 chemistry, so no read inspection is needed or wanted — consulting the read in that case
 would be actively wrong, and one test below is built specifically to fail if the two
@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 from assertpy import assert_that
 
-from carmack.assign_targets.tgidx_locator import homopolymer_run_end
+from carmack.assign_targets.tgidx_locator import locate_anchor_run
 from carmack.chemistry.annotation import format_span, parse_span, position_key
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ME
 from carmack.chemistry.chemistry_factory import ChemistryFactory
@@ -92,12 +92,12 @@ class TestInsertStartWithHomopolymerAnchor:
     """Tests for the branch reached when the next component is a homopolymer run."""
 
     @pytest.mark.parametrize("run_length", [2, 3, 5, 9])
-    def test_insert_start_delegates_to_homopolymer_run_end(self, run_length: int) -> None:
+    def test_insert_start_delegates_to_locate_anchor_run(self, run_length: int) -> None:
         """Test that a homopolymer anchor's real run length, not any nominal one, decides the answer.
 
         Polymerase slippage means the run actually present in the read is the only
         source of truth for where it ends, so this asserts both the concrete expected
-        offset and, equivalently, agreement with calling ``homopolymer_run_end``
+        offset and, equivalently, agreement with calling ``locate_anchor_run``
         directly. Every run length used is at least 2 so the scan is genuinely
         exercised, not merely returning its input unchanged by coincidence.
         """
@@ -115,7 +115,7 @@ class TestInsertStartWithHomopolymerAnchor:
 
         assert_that(result).is_equal_to(reference + run_length)
         assert_that(result).is_equal_to(
-            homopolymer_run_end(seq, reference, anchor.homopolymer_base)
+            locate_anchor_run(seq, reference, anchor.homopolymer_base, anchor.min_run).end
         )
 
 
@@ -154,12 +154,12 @@ class TestInsertStartWithFixedLengthAnchor:
     ) -> None:
         """Test that the fixed-length branch never consults seq, not even to bound its answer.
 
-        ``homopolymer_run_end`` clamps its result to ``len(seq)``, so if insert_start's
-        fixed-length branch mistakenly called it instead of doing plain arithmetic, the
-        result could never exceed ``len(seq)``. Making seq three bases shorter than
-        ``reference + anchor.length`` turns that clamp into a ceiling the wrong branch
-        could not cross, so this fails if the dispatch is ever broken, regardless of
-        seq's content.
+        ``locate_anchor_run`` never reports a run end past ``len(seq)`` for a reference
+        inside the read, so if insert_start's fixed-length branch mistakenly called it
+        instead of doing plain arithmetic, the result could never exceed ``len(seq)``.
+        Making seq three bases shorter than ``reference + anchor.length`` turns that
+        into a ceiling the wrong branch could not cross, so this fails if the dispatch
+        is ever broken, regardless of seq's content.
         """
         reference = 20
         anchor = ReadComponent(

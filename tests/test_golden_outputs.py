@@ -25,9 +25,11 @@ component nor a target index.
 No real R2 was ever collected alongside either committed ``carmack_custom_seq_1_0`` R1
 input, so the ``carmack_custom_seq_1_0`` cases pair a synthesized R2 golden fixture (see
 ``tests/data_generators/golden.py`` for its provenance) with the target-annotated R1
-target assignment produced, subset down to that R1's own surviving read ids and order,
-before handing both to ``ReadPreparer``. HyDrop supports neither UMI extraction nor
-target assignment, so it never reaches prepare-reads and has no R2 fixture at all.
+target assignment produced, and hand both to ``ReadPreparer`` as they stand. The fixture
+goes in whole: barcode and UMI extraction have already dropped reads from that R1, so the
+R2 reads with no R1 half left are exactly what a real run carries, and pairing them is
+``ReadPreparer``'s job rather than the harness's. HyDrop supports neither UMI extraction
+nor target assignment, so it never reaches prepare-reads and has no R2 fixture at all.
 
 Determinism
 -----------
@@ -82,7 +84,6 @@ whole 46-test tier. Always run pytest from the repo root, or a stale non-editabl
 Review the resulting diff before committing it.
 """
 
-import gzip
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,7 +93,6 @@ from assertpy import assert_that
 from carmack.assign_targets.target_assigner import TargetAssigner
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.chemistry.chemistry_factory import ChemistryFactory
-from carmack.io.read_annotation import ReadAnnotation
 from carmack.prepare_reads.read_preparer import ReadPreparer
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.utils import get_prefix
@@ -174,72 +174,6 @@ class GoldenRun:
         return GOLDEN_EXPECTED_DIR / f"{self.prefix}.{suffix}"
 
 
-def r1_read_ids(fastq: Path) -> list[str]:
-    """
-    Read the read ids (each header's first whitespace token) off a gzipped FASTQ.
-
-    Args:
-        fastq: Path to the gzipped FASTQ to read headers from.
-
-    Returns:
-        The read ids, in file order.
-    """
-    with gzip.open(fastq, "rt") as handle:
-        return [
-            ReadAnnotation.parse(line[1:].rstrip("\n")).read_id
-            for index, line in enumerate(handle)
-            if index % 4 == 0
-        ]
-
-
-def build_prepare_r2(
-    tmp_path_factory: pytest.TempPathFactory, prefix: str, r1_fastq: Path, full_r2_fastq: Path
-) -> Path:
-    """
-    Subset a full R2 golden fixture down to the reads that survive to a target-annotated R1.
-
-    ``r1_fastq`` -- the target-annotated R1 ``ReadPreparer`` actually consumes -- is a
-    strict, order-preserving subsequence of the raw R1 input every committed R2 golden
-    fixture is paired with one-for-one: barcode and UMI extraction drop reads earlier in
-    the chain but never reorder the survivors, and target assignment never filters at all.
-    Filtering the full R2 fixture down to just the surviving read ids, while preserving its
-    own file order (which already matches the raw R1's order the fixture was built from),
-    reproduces exactly the paired stream a real pipeline's own R1/R2 sync step would hand
-    ``ReadPreparer``, without needing one committed R2 fixture per downstream drop rate.
-
-    Args:
-        tmp_path_factory: Session-scoped factory supplying the subset file's directory.
-        prefix: Prefix used to name the subset R2 file.
-        r1_fastq: The target-annotated R1 FASTQ whose surviving read ids and order the
-            subset R2 must match.
-        full_r2_fastq: The committed, full R2 golden fixture to subset.
-
-    Returns:
-        Path to the subset R2 FASTQ, gzip-compressed.
-    """
-    surviving_ids = set(r1_read_ids(r1_fastq))
-    output_dir = tmp_path_factory.mktemp(f"{prefix}_r2_subset")
-    subset_fastq = output_dir / f"{prefix}.r2_subset.fastq.gz"
-
-    with (
-        gzip.open(full_r2_fastq, "rt") as source,
-        gzip.open(subset_fastq, "wt") as destination,
-    ):
-        while True:
-            header = source.readline()
-            if not header:
-                break
-            seq, plus, qual = source.readline(), source.readline(), source.readline()
-            read_id = ReadAnnotation.parse(header[1:].rstrip("\n")).read_id
-            if read_id in surviving_ids:
-                destination.write(header)
-                destination.write(seq)
-                destination.write(plus)
-                destination.write(qual)
-
-    return subset_fastq
-
-
 def execute_golden_run(
     tmp_path_factory: pytest.TempPathFactory,
     input_name: str,
@@ -261,8 +195,9 @@ def execute_golden_run(
         r2_input_name: File name of a committed R2 golden fixture under the golden input
             directory, or ``None``. When given -- and only once both ``extract_umis`` and
             ``assign_targets`` are true -- prepare-reads is chained onto the target-annotated
-            R1 output, paired with this R2 fixture subset down to that R1's own surviving
-            read ids (see ``build_prepare_r2``).
+            R1 output, paired with this R2 fixture exactly as committed: whole, unfiltered
+            and still carrying every read the earlier stages dropped from R1, which is the
+            shape a real pipeline hands ``ReadPreparer`` too.
 
     Returns:
         The completed run, locating its outputs and goldens.
@@ -291,13 +226,10 @@ def execute_golden_run(
         if r2_input_name is not None:
             tgidx_fastq = output_dir / f"{prefix}.r1_tgidx.fastq.gz"
             full_r2_fastq = GOLDEN_INPUT_DIR / r2_input_name
-            subset_r2_fastq = build_prepare_r2(
-                tmp_path_factory, prefix, tgidx_fastq, full_r2_fastq
-            )
 
             preparer = ReadPreparer(
                 str(tgidx_fastq),
-                str(subset_r2_fastq),
+                str(full_r2_fastq),
                 chemistry_name,
                 n_workers=GOLDEN_WORKERS,
                 batch_size=GOLDEN_PREPARE_BATCH_SIZE,
@@ -520,7 +452,7 @@ class BarcodeGoldenOutputChecks:
 
 class UmiGoldenOutputChecks:
     """
-    Per-file golden checks for the three UMI extraction outputs.
+    Per-file golden checks for the two UMI extraction outputs.
 
     Only chemistries defining a UMI component reach this stage, so HyDrop test classes do
     not inherit it. This class is not collected itself: it has no Test prefix.
@@ -543,15 +475,6 @@ class UmiGoldenOutputChecks:
             golden_run: The extraction run under test.
         """
         assert_report_output_matches_golden(golden_run, "umi_stats.txt")
-
-    def test_umi_map_matches_golden(self, golden_run: GoldenRun) -> None:
-        """
-        Test that the raw-to-corrected UMI map matches the golden file.
-
-        Args:
-            golden_run: The extraction run under test.
-        """
-        assert_text_output_matches_golden(golden_run, "umi_map.tsv")
 
 
 class TargetGoldenOutputChecks:

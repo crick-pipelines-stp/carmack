@@ -9,7 +9,6 @@ from click.testing import CliRunner
 import carmack.__main__
 
 R1_PATH = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
-R2_PATH = "tests/data/hydrop_scatac_1_S1_R3_001.fastq.gz"
 CB_PATH = "tests/data/hydrop_scatac_1_S1_R2_001.fastq.gz"
 BAM_PATH = "tests/data/hydrop_scatac_1_S1_R1.sorted.bam"
 BAI_PATH = "tests/data/hydrop_scatac_1_S1_R1.sorted.bam.bai"
@@ -67,30 +66,6 @@ class TestCli(unittest.TestCase):
         result = self.invoke_cli(["foo"])
         # print(result)
         self.assertTrue(result.exit_code == 2)
-
-    @mock.patch("carmack.__main__.FastqFilter", autospec=True)
-    def test_cli_command_fastq_filter(self, mock_fastq_filter):
-        """Test fastq_filter"""
-
-        # Init
-        params = {"output_dir": ".", "prefix": ""}
-
-        # Test
-        cmd = ["fastq-filter"] + [R1_PATH, R2_PATH, BC_VALID_PATH] + self.assemble_params(params)
-        result = self.invoke_cli(cmd)
-
-        # print(mock_fastq_filter.call_args)
-        # print(mock_fastq_filter.return_value.filter_valid_reads.call_args)
-        # print(result)
-        # print(result.output)
-        # print(result.exception)
-
-        # Assert
-        self.assertTrue(result.exit_code == 0)
-        mock_fastq_filter.assert_called_once_with(R1_PATH, R2_PATH)
-        # mock_fastq_filter.return_value.filter_valid_reads.assert_called_once_with(
-        #     BC_VALID_PATH, params["output_dir"], params["prefix"]
-        # )
 
     @mock.patch("carmack.__main__.BarcodeExtractor", autospec=True)
     def test_cli_command_barcode_extractor(self, mock_barcode_extractor):
@@ -357,7 +332,6 @@ class TestCli(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         # Check for command names in help output
         self.assertIn("extract-barcodes", result.output)
-        self.assertIn("fastq-filter", result.output)
         self.assertIn("bam-tag-deduplicate", result.output)
         self.assertIn("split-bam", result.output)
         self.assertIn("call-cells", result.output)

@@ -17,9 +17,10 @@ both arms bump -- and the invariant that holds across repeated calls into the
 same accumulator.
 
 Finally it covers the two streaming helpers a later driver runs `prepare_read`
-inside: pairing an R1 stream with its R2 stream while validating that every
-pulled pair's read ids agree, and lazily grouping that paired stream into
-batches.
+inside: pairing an R1 stream thinned by upstream filtering against the full R2
+stream it was cut down from, skipping the R2 reads that no longer have an R1
+half and raising only for an R1 read the remainder of R2 never carries, and
+lazily grouping that paired stream into batches.
 """
 
 import gzip
@@ -55,7 +56,6 @@ from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
     PRIMER_C,
     TGIDX_LENGTH,
     UMI_LENGTH,
-    UMI_LENGTH_TOLERANCE,
     ChemistryCarmackCustomSeq10,
 )
 from carmack.chemistry.chemistry_factory import ChemistryFactory
@@ -237,7 +237,6 @@ def build_head_components() -> list[ReadComponent]:
             name="UMI",
             type=ReadComponentType.UMI,
             length=UMI_LENGTH,
-            length_tolerance=UMI_LENGTH_TOLERANCE,
         ),
     ]
 
@@ -885,7 +884,7 @@ def make_paired_reads(count: int) -> tuple[list[tuple[str, str, str]], list[tupl
 
 
 class TestIterPairedReads:
-    """Zipping an R1 stream with its R2 stream while validating every pulled pair."""
+    """Pairing a thinned R1 stream against the full R2 stream it was cut down from."""
 
     def test_matching_pairs_stream_through_unchanged_and_in_order(self) -> None:
         r1_reads, r2_reads = make_paired_reads(4)
@@ -894,12 +893,70 @@ class TestIterPairedReads:
 
         assert_that(pairs).is_equal_to(list(zip(r1_reads, r2_reads)))
 
-    def test_mismatch_on_the_first_pair_raises_before_pulling_anything_further(self) -> None:
-        """No read beyond the first mismatched pair is ever pulled from either source.
+    def test_interstitial_r2_reads_dropped_from_r1_are_skipped(self) -> None:
+        """The shape every real run arrives in: a thinned R1 against an untouched R2.
 
-        Proven with a counting wrapper rather than taken on trust: a
-        generator that validated eagerly across the whole stream before
-        yielding anything would defeat the laziness this function promises.
+        Two upstream stages have already deleted reads from R1 by the time
+        prepare-reads is handed it -- extract-barcodes writes out only the
+        reads whose barcode fully matched, and extract-umis then drops the
+        reads missing their anchor or too short to carry the UMI slice --
+        while R2 reaches the same stage exactly as the sequencer produced it,
+        never having been filtered by anything. R1 is therefore an
+        order-preserving subsequence of R2, and the R2 reads sitting between
+        two survivors are the everyday case, not a corrupt file pair.
+        """
+        all_r1_reads, r2_reads = make_paired_reads(6)
+        surviving = [0, 2, 4]
+        r1_reads = [all_r1_reads[index] for index in surviving]
+
+        pairs = list(iter_paired_reads(iter(r1_reads), iter(r2_reads)))
+
+        assert_that(pairs).is_equal_to(
+            [(all_r1_reads[index], r2_reads[index]) for index in surviving]
+        )
+
+    def test_trailing_r2_reads_are_skipped_without_raising(self) -> None:
+        """R2 outliving R1 is how a normal run ends, not a truncated input.
+
+        The reads upstream discarded are no less likely to sit at the tail of
+        the file than anywhere else, so R2 routinely still has reads in it
+        once the last surviving R1 read has been paired. Running out of R1
+        with R2 still going therefore ends the stream quietly.
+        """
+        all_r1_reads, r2_reads = make_paired_reads(3)
+        r1_reads = all_r1_reads[:2]
+
+        pairs = list(iter_paired_reads(iter(r1_reads), iter(r2_reads)))
+
+        assert_that(pairs).is_equal_to(list(zip(r1_reads, r2_reads)))
+
+    def test_empty_r1_against_a_full_r2_yields_nothing_and_pulls_no_r2(self) -> None:
+        """An R1 emptied by upstream filtering is a legitimate, if useless, input.
+
+        Every read failed its barcode or its UMI check, so there is nothing
+        left to pair and the whole of R2 is surplus. Walking it anyway would
+        buy nothing and charge a full pass over the largest of the two files
+        for it.
+        """
+        r2_reads = CountingReads([("a 2:N", "T", "I"), ("b 2:N", "T", "I")])
+
+        pairs = list(iter_paired_reads(iter([]), r2_reads))
+
+        assert_that(pairs).is_empty()
+        assert_that(r2_reads.pulled).is_equal_to(0)
+
+    def test_r1_is_never_pulled_past_the_unmatched_read(self) -> None:
+        """Laziness is an R1-side guarantee only, and deliberately so.
+
+        Nothing is ever pulled from R1 beyond the read currently being
+        matched, so the caller's own consumption still bounds how far into R1
+        the pairing runs. R2 carries no such promise and cannot: skipping
+        ahead has no way of knowing a match is absent until the stream ends,
+        so proving that this R1 read has no partner costs the entire
+        remainder of R2. Proven with a counting wrapper rather than taken on
+        trust, because a generator that validated eagerly across the whole of
+        R1 before yielding anything would defeat the laziness this function
+        promises.
         """
         r1_reads = CountingReads([("bad1 1:N", "AAAA", "IIII"), ("read1 1:N", "CCCC", "IIII")])
         r2_reads = CountingReads([("bad2 2:N", "TTTT", "IIII"), ("read1 2:N", "GGGG", "IIII")])
@@ -908,7 +965,7 @@ class TestIterPairedReads:
             list(iter_paired_reads(r1_reads, r2_reads))
 
         assert_that(r1_reads.pulled).is_equal_to(1)
-        assert_that(r2_reads.pulled).is_equal_to(1)
+        assert_that(r2_reads.pulled).is_equal_to(2)
 
     def test_mismatch_after_several_matches_raises_at_exactly_that_point(self) -> None:
         """Pairs already yielded before a later mismatch are unaffected by it."""
@@ -938,15 +995,23 @@ class TestIterPairedReads:
                 [("a 2:N", "T", "I"), ("b 2:N", "T", "I")],
             ),
             (
-                [("a 1:N", "A", "I"), ("b 1:N", "A", "I")],
-                [("a 2:N", "T", "I"), ("b 2:N", "T", "I"), ("c 2:N", "T", "I")],
+                [("a 1:N", "A", "I"), ("b 1:N", "A", "I"), ("c 1:N", "A", "I")],
+                [("a 2:N", "T", "I"), ("c 2:N", "T", "I")],
             ),
         ],
-        ids=["r1_longer", "r2_longer"],
+        ids=["r1_longer", "r1_read_missing_mid_stream"],
     )
     def test_length_mismatch_raises(
         self, r1_reads: list[tuple[str, str, str]], r2_reads: list[tuple[str, str, str]]
     ) -> None:
+        """An R1 read with no partner left in R2 is the genuine corruption case.
+
+        R1 only ever loses reads upstream, never gains them, so a read that
+        R1 carries and the whole remainder of R2 does not cannot have come
+        from the same run: the R2 file has been truncated, reordered, or
+        taken from the wrong sample, and pairing on regardless would silently
+        attach the wrong sequence to every read after it.
+        """
         with pytest.raises(ValueError):
             list(iter_paired_reads(iter(r1_reads), iter(r2_reads)))
 
@@ -954,6 +1019,14 @@ class TestIterPairedReads:
         assert_that(list(iter_paired_reads(iter([]), iter([])))).is_empty()
 
     def test_mismatch_error_names_both_read_ids(self) -> None:
+        """The one surviving failure names both ends of the search that came up empty.
+
+        R2 runs out before the current R1 read's id is ever reached. The
+        message has to carry the R1 read left unmatched and the last R2 read
+        looked at before the stream ended, because between them they tell
+        whoever reads the log which file is wrong and how far in the pairing
+        got before it noticed.
+        """
         r1_reads = [("alpha 1:N", "AAAA", "IIII")]
         r2_reads = [("beta 2:N", "TTTT", "IIII")]
 
@@ -961,6 +1034,23 @@ class TestIterPairedReads:
             list(iter_paired_reads(iter(r1_reads), iter(r2_reads)))
 
         assert_that(str(excinfo.value)).contains("alpha", "beta")
+
+    def test_mismatch_against_an_empty_r2_still_names_the_r1_read(self) -> None:
+        """With no R2 read ever examined there is no second id to report.
+
+        An R2 that was empty from the start fails the very first R1 read, but
+        the failure has nothing to say about where in R2 the search gave up.
+        The message still has to name the unmatched R1 read, and still has to
+        read as prose rather than handing over a placeholder where an id
+        should be.
+        """
+        r1_reads = [("alpha 1:N", "AAAA", "IIII")]
+
+        with pytest.raises(ValueError) as excinfo:
+            list(iter_paired_reads(iter(r1_reads), iter([])))
+
+        assert_that(str(excinfo.value)).contains("alpha")
+        assert_that(str(excinfo.value)).does_not_contain("None")
 
 
 # Batch shape the batcher tests drive: small enough that the synthetic input
@@ -2603,12 +2693,12 @@ PREPARE_READS_R1_METAVAR = "<r1_annotated_fastq>"
 PREPARE_READS_R2_METAVAR = "<r2_fastq>"
 
 # The help group the command belongs to and the two commands it sits between.
-# The stage runs after assign-targets and before fastq-filter, and the
+# The stage runs after assign-targets and before bam-tag-deduplicate, and the
 # grouped help listing is the only place a user reads that order off, so the
 # position is part of the contract and not a cosmetic detail.
 PREPARE_READS_USER_COMMAND_GROUP = "Commands for users"
 PREPARE_READS_PRECEDING_COMMAND = "assign-targets"
-PREPARE_READS_FOLLOWING_COMMAND = "fastq-filter"
+PREPARE_READS_FOLLOWING_COMMAND = "bam-tag-deduplicate"
 
 # The parameter name the pool width is bound to and the two spellings it is
 # offered under -- the same convention assign-targets, extract-barcodes and
@@ -2735,7 +2825,7 @@ class TestPrepareReadsCli:
         assert_that(result.exit_code).is_equal_to(0)
         assert_that(result.output).contains(PREPARE_READS_COMMAND_NAME)
 
-    def test_command_group_places_it_between_assign_targets_and_fastq_filter(self) -> None:
+    def test_command_group_places_it_between_assign_targets_and_bam_tag_deduplicate(self) -> None:
         commands = prepare_reads_user_command_names()
 
         assert_that(commands).contains(PREPARE_READS_COMMAND_NAME)

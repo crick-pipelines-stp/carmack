@@ -41,10 +41,10 @@
 #   the real committed R1 gzip, starting at line 0, stripping the leading "@" and taking
 #   the first whitespace-delimited token. This mirrors a real sequencer's R1/R2 output,
 #   where every physical read has a mate regardless of what a later software pipeline
-#   decides to keep: it is the target-annotated R1 (barcode- and UMI-extraction survivors
-#   only, a strict, order-preserving subsequence of the full input) that the golden test
-#   harness then pairs a read down to before ever handing it to ReadPreparer -- see
-#   tests/test_golden_outputs.py's `build_prepare_r2` helper.
+#   decides to keep. The file goes to ReadPreparer whole: the R1 it is paired against is
+#   the target-annotated one (barcode- and UMI-extraction survivors only, a strict,
+#   order-preserving subsequence of the full input), and skipping the R2 reads whose R1
+#   half is gone is ReadPreparer's own job rather than the golden harness's.
 #
 #   Each record's sequence and quality are derived deterministically from its read id
 #   alone, so regenerating the files reproduces identical bytes:

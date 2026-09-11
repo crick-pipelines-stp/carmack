@@ -17,6 +17,7 @@ from carmack.barcode.extraction_dataclasses import (
 )
 from carmack.barcode.matchers.matcher_base import MatcherBase
 from carmack.chemistry.read_component import ReadComponentType
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,153 @@ class ExtractionStats:
         details = f"# Carmack version: {carmack_version}\n"
         details += f"# Report generated at: {run_time}\n"
         return details
+
+    def to_mqc_general_stats(self, prefix: str) -> dict[str, object]:
+        """
+        Build a MultiQC "generalstats" custom-content payload summarising this run.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with a single row of headline percentages
+            (perfect, corrected, failed, ambiguous) for this sample.
+        """
+        pct_perfect = 100 * self.overall.perfect / self.overall.total_reads
+        pct_corrected = 100 * self.overall.corrok / self.overall.total_reads
+        pct_failed = 100 * self.overall.fail / self.overall.total_reads
+        pct_ambiguous = (
+            100
+            * sum(s.reads_w_ambiguous_match for s in self.per_barcode)
+            / self.overall.total_reads
+        )
+
+        return {
+            "id": "carmack_extraction_general_stats",
+            "plot_type": "generalstats",
+            "pconfig": [
+                {
+                    "pct_perfect": {
+                        "title": "% Perfect",
+                        "description": "Percentage of reads where every barcode component matched the whitelist exactly.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "RdYlGn",
+                    }
+                },
+                {
+                    "pct_corrected": {
+                        "title": "% Corrected",
+                        "description": "Percentage of reads where at least one barcode component required error correction.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlGnBu",
+                    }
+                },
+                {
+                    "pct_failed": {
+                        "title": "% Failed",
+                        "description": "Percentage of reads that failed to match at least one barcode component.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+                {
+                    "pct_ambiguous": {
+                        "title": "% Ambiguous",
+                        "description": "Percentage of reads with at least one ambiguous (tied) barcode match.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+            ],
+            "data": {
+                prefix: {
+                    "pct_perfect": pct_perfect,
+                    "pct_corrected": pct_corrected,
+                    "pct_failed": pct_failed,
+                    "pct_ambiguous": pct_ambiguous,
+                }
+            },
+        }
+
+    def to_mqc_breakdown(self, prefix: str) -> dict[str, object]:
+        """
+        Build a MultiQC "bargraph" custom-content payload of raw match-outcome counts.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload nested under carmack's shared parent section,
+            with one bar per sample split into perfect/corrected/failed read counts.
+        """
+        return {
+            "id": "carmack_extraction_breakdown",
+            "plot_type": "bargraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Barcode Extraction Breakdown",
+            "description": "Read counts broken down by barcode extraction outcome.",
+            "pconfig": {
+                "id": "carmack_extraction_breakdown_plot",
+                "title": "Barcode Extraction: Match Outcomes",
+                "ylab": "Reads",
+            },
+            "data": {
+                prefix: {
+                    "perfect": self.overall.perfect,
+                    "corrected": self.overall.corrok,
+                    "failed": self.overall.fail,
+                }
+            },
+        }
+
+    def to_mqc_edit_distance(self, prefix: str) -> dict[str, object] | None:
+        """
+        Build a MultiQC "linegraph" custom-content payload of the combined edit distance distribution.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with the edit distance distribution summed
+            across every barcode component and matching method, or None if none of the
+            per-barcode entries carry any edit distance data.
+        """
+        combined: Counter[int] = Counter()
+        for bc_stats in self.per_barcode:
+            if bc_stats.edit_distance_dist:
+                combined.update(bc_stats.edit_distance_dist)
+
+        if not combined:
+            return None
+
+        return {
+            "id": "carmack_extraction_edit_distance",
+            "plot_type": "linegraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Barcode Extraction Edit Distance",
+            "description": "Distribution of edit distances for corrected barcode matches, summed across all barcode components.",
+            "pconfig": {
+                "id": "carmack_extraction_edit_distance_plot",
+                "title": "Barcode Extraction: Edit Distance Distribution",
+                "xlab": "Edit distance",
+                "ylab": "Reads",
+            },
+            "data": {prefix: dict(combined)},
+        }
 
 
 @dataclass
