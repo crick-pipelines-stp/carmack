@@ -817,37 +817,6 @@ class TestBarcodeExtractorDataclasses:
 
         assert_that(history.succeeded_at).is_none()
 
-    def test_barcode_match_history_ambiguous_matches_no_duplicates(self) -> None:
-        """Test that ambiguous_matches reports False when each method appears once."""
-        history = BarcodeMatchHistory(bc_name="BC1")
-        attempt1 = BarcodeMatchAttempt(
-            candidate="ACGTACGTAC", method=MatchMethod.EXACTMATCH, match="ACGTACGTAC"
-        )
-        attempt2 = BarcodeMatchAttempt(
-            candidate="ACGTACGTAC", method=MatchMethod.KMERMATCH, match="ACGTACGTAC"
-        )
-        history.record_attempt(attempt1, success=False)
-        history.record_attempt(attempt2, success=True)
-
-        ambiguous = history.ambiguous_matches
-        assert_that(ambiguous.get(MatchMethod.EXACTMATCH, False)).is_false()
-        assert_that(ambiguous.get(MatchMethod.KMERMATCH, False)).is_false()
-
-    def test_barcode_match_history_ambiguous_matches_with_duplicates(self) -> None:
-        """Test that ambiguous_matches reports True when a method appears multiple times."""
-        history = BarcodeMatchHistory(bc_name="BC1")
-        attempt1 = BarcodeMatchAttempt(
-            candidate="ACGTACGTAC", method=MatchMethod.KMERMATCH, match="ACGTACGTAC"
-        )
-        attempt2 = BarcodeMatchAttempt(
-            candidate="TGCATGCATG", method=MatchMethod.KMERMATCH, match="TGCATGCATG"
-        )
-        history.record_attempt(attempt1, success=False)
-        history.record_attempt(attempt2, success=True)
-
-        ambiguous = history.ambiguous_matches
-        assert_that(ambiguous[MatchMethod.KMERMATCH]).is_true()
-
     @pytest.mark.parametrize(
         "attempts_data, expected_status",
         [
@@ -906,6 +875,30 @@ class TestBarcodeExtractorDataclasses:
                 spacer_downstream=sp_down,
             )
             history.record_attempt(attempt, success=(match is not None))
+
+        assert_that(history.to_status_string()).is_equal_to(expected_status)
+
+    @pytest.mark.parametrize(
+        "method, expected_status",
+        [
+            (MatchMethod.KMERMATCH, "BC1:KMERMATCH-AMBIG"),
+            (MatchMethod.ALIGNMATCH, "BC1:ALIGNMATCH-AMBIG"),
+        ],
+    )
+    def test_barcode_match_history_to_status_string_names_the_ambiguous_method(
+        self, method: MatchMethod, expected_status: str
+    ) -> None:
+        """Test that an ambiguity verdict is rendered, and attributed to the stage that made it.
+
+        An unresolvable component and a component with no candidate at all used to render the
+        same ``NOMATCH`` token, so a run could not report how often it declined versus how
+        often it simply found nothing.
+        """
+        history = BarcodeMatchHistory(bc_name="BC1")
+        for candidate in ("AACCAACTTA", "CACCAACCTA"):
+            history.record_attempt(
+                BarcodeMatchAttempt(candidate=candidate, method=method), ambiguous=True
+            )
 
         assert_that(history.to_status_string()).is_equal_to(expected_status)
 

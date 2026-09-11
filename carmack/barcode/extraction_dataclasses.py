@@ -2,7 +2,6 @@
 Data structures for barcode extraction results.
 """
 
-from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -46,22 +45,63 @@ class BarcodeMatchHistory:
     """
     Tracks all matching attempts for a single barcode component across pipeline stages.
 
+    A component ends in one of three states, and they are deliberately three rather than two.
+    "Matched", "no candidate was found" and "candidates were found and could not be separated"
+    are different answers, and the last one is a *verdict*: the read's barcode window is
+    genuinely equidistant from two whitelist entries, so no amount of further searching can
+    honestly resolve it. Storing that as plain failure, as this used to, let a later matcher
+    run on precisely the reads an earlier one had declared unresolvable and pick one of them.
+
     Attributes:
         bc_name: Barcode component name (e.g., "BC1")
-        attempts: Ordered list of failed attempts, from first stage to last
-        success: If the final attempt was successful, this holds the successful result. Otherwise False.
+        attempts: Ordered list of attempts, from first stage to last
+        success: Whether any attempt called a barcode.
+        ambiguous_at: The method that declared this component unresolvable, or None if no
+            method did. Latches on the first such verdict, since ambiguity is terminal.
     """
 
     bc_name: str
     attempts: list[BarcodeMatchAttempt] = field(default_factory=list)
     success: bool = False
+    ambiguous_at: MatchMethod | None = None
 
-    def record_attempt(self, attempt: BarcodeMatchAttempt, success: bool = False) -> None:
-        """Append a attempt to the history."""
+    def record_attempt(
+        self, attempt: BarcodeMatchAttempt, success: bool = False, ambiguous: bool = False
+    ) -> None:
+        """
+        Append an attempt to the history.
+
+        Args:
+            attempt: The attempt to record.
+            success: Whether this attempt called a barcode.
+            ambiguous: Whether this attempt is one of several equally close candidates the
+                matcher could not separate. Recorded on the history rather than the attempt
+                because ambiguity is a property of the *set* of attempts a matcher returned,
+                not of any one of them.
+        """
         self.attempts.append(attempt)
 
         if success:
             self.success = True
+
+        if ambiguous and self.ambiguous_at is None:
+            self.ambiguous_at = attempt.method
+
+    @property
+    def is_ambiguous(self) -> bool:
+        """Whether some matcher found candidates it could not separate."""
+        return self.ambiguous_at is not None
+
+    @property
+    def is_terminal(self) -> bool:
+        """
+        Whether this component's verdict is final, so no later matcher should be run on it.
+
+        A called barcode is final for the obvious reason. An ambiguity verdict is final
+        because it is an answer, not an absence: a later matcher ranking by a different
+        criterion would separate candidates the contract says must not be separated.
+        """
+        return self.success or self.is_ambiguous
 
     @property
     def succeeded_at(self) -> MatchMethod | None:
@@ -70,24 +110,18 @@ class BarcodeMatchHistory:
             return self.attempts[-1].method
         return None
 
-    @property
-    def ambiguous_matches(self) -> dict[MatchMethod, bool]:
-        """
-        Return a dict indicating whether each method had ambiguous matches that failed tiebreaking.
-
-        We only record ambiguous BarcodeMatchAttempts if spacer validation failed.
-        """
-        methods = [a.method for a in self.attempts if a.match is not None]
-
-        counts = Counter(methods)
-
-        return {method: count > 1 for method, count in counts.items()}
-
     def to_status_string(self) -> str:
         """
         Generate status string for this barcode component. Useful for read name annotations.
 
-        Format: BCX:METHODA-STATUS:METHODB-STATUS-...
+        Format: BCX:METHODA-STATUS:METHODB-STATUS-...:VERDICT
+
+        A component that resolved carries no verdict token; the per-method detail is the
+        answer. A component that did not resolve carries one of two verdict tokens, and they
+        mean different things. NOMATCH is "no candidate was ever found". METHOD-AMBIG is
+        "that method found candidates and could not separate them", which is a read the
+        pipeline declined to guess at rather than one it lost. Rendering both as NOMATCH, as
+        this used to, made the two indistinguishable to anything reading a read name.
         """
         status = f"{self.bc_name}"
         for attempt in self.attempts:
@@ -102,7 +136,7 @@ class BarcodeMatchHistory:
                     status += "-spDown"
 
         if not self.success:
-            status += ":NOMATCH"
+            status += f":{self.ambiguous_at.value}-AMBIG" if self.is_ambiguous else ":NOMATCH"
 
         return status
 

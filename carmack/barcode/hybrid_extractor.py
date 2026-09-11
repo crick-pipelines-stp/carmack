@@ -76,8 +76,14 @@ class HybridExtractor:
                     # No ambiguous barcode handling needed for fixed position matcher, so we can directly record the match attempts
                     results = matcher[bc_name].match(read)
                 else:
-                    # Skip other matchers if barcode extraction succeeded for this barcode component
-                    if barcode_match_tracker[bc_name].success:
+                    # Skip other matchers once this component's verdict is final. Success is
+                    # the obvious case; an ambiguity verdict is the one that used to be
+                    # missed. A matcher that returns several equally close candidates has
+                    # said the read's window cannot be resolved, and running the next matcher
+                    # on it does not find more evidence -- it ranks the same candidates by a
+                    # different criterion and separates what the contract says must not be
+                    # separated.
+                    if barcode_match_tracker[bc_name].is_terminal:
                         continue
 
                     # Handle other matcher types if any
@@ -91,9 +97,15 @@ class HybridExtractor:
                     if result.read_idx:
                         search_start_idx_tracker[bc_name] = result.read_idx[1]
                 else:
-                    # If multiple attempts, we have ambiguity. We record all attempts but mark success as False.
+                    # Several attempts back from one matcher is that matcher's verdict that it
+                    # could not separate equally close candidates; a single matchless attempt
+                    # means it found nothing at all. Both fail, but only the first is terminal,
+                    # so the distinction is recorded rather than collapsed.
+                    ambiguous = len(results) > 1
                     for r in results:
-                        barcode_match_tracker[bc_name].record_attempt(r, success=False)
+                        barcode_match_tracker[bc_name].record_attempt(
+                            r, success=False, ambiguous=ambiguous
+                        )
 
         # Compile final result for the read
         read_result = ReadMatchResult(

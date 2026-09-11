@@ -9,11 +9,14 @@ Each chemistry defines the structure of barcodes within reads, including:
 
 import logging
 from abc import ABC
+from collections import defaultdict
 from contextlib import closing
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cached_property, lru_cache
 from importlib.resources.abc import Traversable
+from itertools import combinations
 
+from carmack.barcode.barcode_utils import edit_distance
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.chemistry.read_structure import ReadStructure
 from carmack.io.gzip_file import GzipFile
@@ -36,6 +39,117 @@ TGIDX_MAX_LEADING_ANCHOR = 2
 TGIDX_WHITELIST_SIZE_LIMIT = 4
 
 
+def deletion_variants(sequence: str, max_deletions: int) -> set[str]:
+    """
+    Return every string reachable by deleting at most ``max_deletions`` characters.
+
+    Args:
+        sequence: The sequence to delete from.
+        max_deletions: Largest number of characters to delete.
+
+    Returns:
+        The deletion neighbourhood, including ``sequence`` itself.
+    """
+    variants = {sequence}
+    frontier = {sequence}
+    for _ in range(max_deletions):
+        wider = {
+            variant[:i] + variant[i + 1 :] for variant in frontier for i in range(len(variant))
+        }
+        variants |= wider
+        frontier = wider
+    return variants
+
+
+@lru_cache(maxsize=None)
+def close_whitelist_pairs(
+    whitelist: tuple[str, ...], max_distance: int
+) -> dict[tuple[str, str], int]:
+    """
+    Find every pair of whitelist entries within ``max_distance`` edits of each other.
+
+    Comparing all pairs directly is quadratic in the whitelist and cubic in the entry length,
+    which is too slow to sit on the construction path of a chemistry that is built when its
+    module is imported. Instead entries are bucketed by their deletion neighbourhoods: two
+    strings within ``d`` edits can always be reduced to a common string by deleting at most
+    ``d`` characters from each, so any close pair collides in at least one bucket and only
+    colliding pairs need their distance computing. On the shipped 96-entry whitelists this is
+    around thirty times faster than the direct comparison, and it agrees with it exactly.
+
+    Results are cached on the whitelist tuple, so a chemistry constructed repeatedly -- which
+    the factory does once per registration and the tests do constantly -- pays for the scan
+    once per process.
+
+    Args:
+        whitelist: The entries to compare, as a hashable tuple.
+        max_distance: Largest edit distance to report a pair at.
+
+    Returns:
+        Mapping of each close pair, ordered within the pair for stability, to its edit
+        distance. Empty when no pair is that close. Cached, so every caller is handed the
+        same object and none of them may mutate it.
+    """
+    buckets: dict[str, set[str]] = defaultdict(set)
+    for entry in whitelist:
+        for variant in deletion_variants(entry, max_distance):
+            buckets[variant].add(entry)
+
+    distances: dict[tuple[str, str], int] = {}
+    for colliding in buckets.values():
+        if len(colliding) < 2:
+            continue
+        for first, second in combinations(sorted(colliding), 2):
+            pair = (first, second)
+            if pair in distances:
+                continue
+            distance = edit_distance(first, second, "N", False)
+            if distance <= max_distance:
+                distances[pair] = distance
+    return distances
+
+
+@lru_cache(maxsize=None)
+def warn_once(message: str) -> None:
+    """
+    Emit a warning the first time this process is asked to, and never again.
+
+    Chemistries are constructed when their module is imported, because the factory reads a
+    chemistry's name off an instance to register it, and they are then constructed again for
+    every run and every test. A construction-time warning would therefore repeat several times
+    before anything has happened. Caching on the message keeps each distinct finding to one
+    line per process without the caller having to track what it has already said.
+
+    Args:
+        message: The warning text, which is also the cache key.
+    """
+    log.warning(message)
+
+
+@dataclass(frozen=True)
+class WhitelistDistancePolicy:
+    """
+    How a chemistry answers for a whitelist that cannot satisfy its own error budget.
+
+    The distance rule itself is fixed; what a chemistry chooses is whether it is in a position
+    to act on a violation. A chemistry whose barcode set we design can retire an offending
+    entry, so a violation there is a defect and construction should refuse. A chemistry
+    implementing someone else's published protocol cannot change its whitelist at all, so
+    refusing to construct would only make the chemistry unusable while leaving the underlying
+    risk exactly where it was; reporting it loudly is the whole of what we can do.
+
+    Attributes:
+        enforce: Whether a pair within the error budget fails construction. False downgrades
+            it to a warning, for a whitelist this project does not own.
+        exempt_pairs: Pairs, each as a frozenset of the two entries, that are known to violate
+            the bound and are accepted for now. Declaring one is a recorded decision to ship a
+            whitelist with a known blind spot, which is why it is an explicit pair rather than
+            a threshold that could quietly absorb the next one too.
+    """
+
+    enforce: bool = True
+    exempt_pairs: frozenset[frozenset[str]] = frozenset()
+
+
 class AbstractCachedProperty(cached_property):
     """A cached property that ``ABCMeta`` still recognises as abstract.
 
@@ -56,7 +170,15 @@ class MatchErrors:
 
     Attributes:
         barcode: Max edits when matching a barcode component to its whitelist.
-        spacer: Max edits when matching a spacer / primer sequence.
+        spacer: Max edits a spacer or primer component is allowed to carry.
+            Nothing compares a spacer against its declared sequence with any
+            tolerance -- ``MatcherBase.check_spacers`` demands the whole run
+            base for base, so a spacer is evidence or it is nothing. What this
+            budget actually governs is displacement: each primer or other
+            component ahead of a component contributes this many bases to the
+            drift that component may have accumulated, since every error it is
+            allowed to carry can be an indel. See
+            :attr:`ChemistryBase.drift_tolerances`.
         tgidx: Max edits when matching a TGIDX component to its whitelist.
             Defaults to one so that a chemistry adding a target index without
             stating a tolerance gets sensible behaviour rather than silent
@@ -495,6 +617,212 @@ class ChemistryBase(ABC):
                 "than by the index alone."
             )
 
+    def whitelist_distance_policy(self) -> WhitelistDistancePolicy:
+        """
+        Declare how this chemistry answers for a whitelist that violates the distance bound.
+
+        The default enforces with no exemptions, so a new chemistry gets the strict answer
+        unless it says otherwise. Chemistries override this to record a decision, never to
+        make the check quieter by accident.
+
+        Returns:
+            The policy ``validate_whitelist_distances`` applies to this chemistry.
+        """
+        return WhitelistDistancePolicy()
+
+    def match_errors_for(self, component: ReadComponent) -> int | None:
+        """
+        Return the error budget this chemistry matches ``component`` to its whitelist with.
+
+        Args:
+            component: A component of this chemistry's read structure.
+
+        Returns:
+            The budget, or ``None`` for a component that is not matched against a whitelist
+            and so has no whitelist distance requirement.
+        """
+        if component.type is ReadComponentType.BARCODE:
+            return self.max_errors.barcode
+        if component.type is ReadComponentType.TGIDX:
+            return self.max_errors.tgidx
+        return None
+
+    @cached_property
+    def drift_tolerances(self) -> dict[str, int | None]:
+        """
+        Return how far the declared layout permits each component to have moved.
+
+        A component sits at its nominal start only on a read that matched the layout base for
+        base. Every error each component *ahead* of it is allowed to carry can be an indel, and
+        an indel shifts everything behind it, so the furthest a component can honestly have
+        travelled is the running total of those budgets. That total is what bounds where the
+        component may be looked for; without it a matcher has to guess, and the guess in use
+        before this -- the gap to the neighbouring barcode -- left the last barcode of every
+        shipped chemistry searched across the UMI, the anchor, the target index and the whole
+        insert.
+
+        The walk mirrors :meth:`ReadStructure.compute_start_positions` exactly: a running total
+        is assigned to each component *before* that component's own budget is added, since a
+        component cannot be displaced by its own errors, and the total is dropped once a
+        variable-length component has been passed. ``None`` therefore means the layout makes no
+        positional prediction at all, and the components it holds for are precisely those with
+        ``start is None`` -- one fact with two symptoms, because both fall out of the same walk.
+
+        Drift is displacement, not matchability, which is why this cannot be expressed in terms
+        of :meth:`match_errors_for`. That method reports ``None`` for a primer, because a primer
+        is never matched against a whitelist; but ``carmack_custom_seq_1_0_primd``'s
+        ``PRIMER_D`` ships without a sequence and so can never be spacer-checked either, and it
+        still occupies 22 bases and still displaces everything 3' of it exactly as a checkable
+        primer would. A primer contributes its spacer budget here whether or not anything can
+        ever verify it.
+
+        Returns:
+            Each component's name mapped to the drift its layout permits, or to ``None`` for a
+            component the layout cannot place at all.
+        """
+        # What each component's own errors can displace behind it. A type absent from this
+        # mapping contributes nothing: a UMI is read off the length the layout declares rather
+        # than matched against anything, so it is never allowed to absorb an indel.
+        contributions = {
+            ReadComponentType.BARCODE: self.max_errors.barcode,
+            ReadComponentType.PRIMER: self.max_errors.spacer,
+            ReadComponentType.OTHER: self.max_errors.spacer,
+            ReadComponentType.TGIDX: self.max_errors.tgidx,
+        }
+
+        tolerances: dict[str, int | None] = {}
+        running_total: int | None = 0
+
+        for component in self.read_structure:
+            tolerances[component.name] = running_total
+            if running_total is None:
+                continue
+            if component.is_variable_length:
+                running_total = None
+                continue
+            running_total += contributions.get(component.type, 0)
+
+        return tolerances
+
+    def drift_tolerance(self, component: ReadComponent) -> int | None:
+        """
+        Return how far the declared layout permits ``component`` to have moved.
+
+        Args:
+            component: A component of this chemistry's read structure. It is looked up by name,
+                so it need not be the same object the structure holds.
+
+        Returns:
+            The drift the layout permits, or ``None`` when the layout makes no positional
+            prediction for this component. A component whose ``start`` is ``None`` answers
+            here without raising, since ``None`` is the answer rather than a failure.
+
+        Raises:
+            ValueError: If ``component`` is not part of this chemistry's read structure. A
+                missing name would otherwise read as absent and be indistinguishable from a
+                component the layout genuinely nails to the read start.
+        """
+        tolerances = self.drift_tolerances
+        if component.name not in tolerances:
+            raise ValueError(
+                f"Component '{component.name}' is not part of chemistry '{self.name}', so this "
+                "chemistry's layout says nothing about how far it may have drifted. Components "
+                f"in this read structure: {', '.join(tolerances)}"
+            )
+        return tolerances[component.name]
+
+    def validate_whitelist_distances(self) -> None:
+        """
+        Reject or report whitelists that cannot satisfy the error budget they are used with.
+
+        Correcting a read to a whitelist entry is only sound while every window inside the
+        error budget has a single nearest entry. Two thresholds bound that, and they differ in
+        kind rather than degree:
+
+        * **Within ``max_errors``** -- one sequencing error inside the budget turns one valid
+          entry into *the other valid entry*. It then matches exactly at its own expected
+          position and is reported as a perfect match, so there is no ambiguity to observe and
+          nothing downstream can detect it. The read is not lost, it is attributed to the wrong
+          cell. No matching logic can fix this; only the whitelist can, which is why this tier
+          fails construction for a whitelist we own.
+        * **Within ``2 * max_errors``** -- a window can sit equally close to two entries. That
+          is observable, and is now a terminal ambiguity verdict rather than a guess, so the
+          cost is a dropped read and not a wrong barcode. Worth reporting; not worth refusing
+          to run over.
+
+        The scan escalates rather than going straight to the wider bound. Deletion
+        neighbourhoods grow combinatorially in the distance, so scanning at
+        ``2 * max_errors`` is markedly more expensive than at ``max_errors``, and a whitelist
+        that already fails the narrow bound has nothing more to learn from the wide one.
+
+        Raises:
+            ValueError: If a whitelist holds two entries within ``max_errors`` of each other,
+                the pair is not exempted, and the chemistry's policy enforces the bound.
+        """
+        policy = self.whitelist_distance_policy()
+        whitelists = self.whitelists
+
+        for component in self.read_structure:
+            budget = self.match_errors_for(component)
+            whitelist = whitelists.get(component.name)
+
+            if budget is None or budget < 1 or whitelist is None or len(whitelist) < 2:
+                continue
+
+            within_budget = close_whitelist_pairs(whitelist, budget)
+            unexempted = {
+                pair: distance
+                for pair, distance in within_budget.items()
+                if frozenset(pair) not in policy.exempt_pairs
+            }
+
+            if unexempted:
+                pair, distance = min(unexempted.items(), key=lambda item: item[1])
+                message = (
+                    f"Whitelist for component '{component.name}' holds {len(unexempted)} pair(s) "
+                    f"of entries within its error budget of {budget}, the closest being "
+                    f"'{pair[0]}' and '{pair[1]}' at edit distance {distance}. A single error "
+                    "inside the budget turns one of these valid entries into the other, which "
+                    "then matches exactly at its expected position and is reported as a perfect "
+                    "match, so the misassignment cannot be detected downstream. Retire one entry "
+                    f"of each pair so that every pair is more than {budget} edits apart."
+                )
+                if policy.enforce:
+                    raise ValueError(message)
+                warn_once(message)
+            elif within_budget:
+                pair, distance = min(within_budget.items(), key=lambda item: item[1])
+                # Every offending pair is a recorded exemption. Say so on every run anyway: the
+                # reads such a pair mis-attributes are indistinguishable from correct ones, so
+                # this line is the only place the blind spot surfaces at all.
+                warn_once(
+                    f"Whitelist for component '{component.name}' holds {len(within_budget)} "
+                    "pair(s) of entries within its error budget of "
+                    f"{budget}, all of them declared exemptions, the closest being '{pair[0]}' "
+                    f"and '{pair[1]}' at edit distance {distance}. A single error inside the "
+                    "budget silently turns one of these valid entries into the other and is "
+                    "reported as a perfect match. Reads carrying it are misattributed and "
+                    "cannot be identified after the fact."
+                )
+
+            # The wider bound is informational: a window equally close to two entries is
+            # detectable, and is now a terminal ambiguity verdict, so it costs a dropped read
+            # rather than a wrong barcode. It is reported at debug both for that reason and
+            # because the deletion neighbourhood it needs grows combinatorially in the bound --
+            # scanning at twice a budget of two is an order of magnitude dearer than at the
+            # budget itself, which is not worth paying on every import to say nothing new.
+            if log.isEnabledFor(logging.DEBUG):
+                wider = close_whitelist_pairs(whitelist, 2 * budget)
+                if wider:
+                    pair, distance = min(wider.items(), key=lambda item: item[1])
+                    log.debug(
+                        f"Whitelist for component '{component.name}' holds {len(wider)} pair(s) "
+                        f"of entries within {2 * budget} edits, the closest being '{pair[0]}' "
+                        f"and '{pair[1]}' at edit distance {distance}. A read window can sit "
+                        "equally close to both entries of such a pair, which is unresolvable "
+                        "and reported as an ambiguous match rather than corrected."
+                    )
+
     def __post_init__(self):
         # Validate that all barcode components defined in the read structure have whitelists
         whitelists = self.whitelists
@@ -507,6 +835,9 @@ class ChemistryBase(ABC):
 
         # Validate the target index declaration, if the chemistry declares one
         self.validate_target_index()
+
+        # Validate that every whitelist is spread widely enough for the budget it is used with
+        self.validate_whitelist_distances()
 
         # Validate that all spacers defined in the read structure are present in the spacers dictionary
         spacer_names = {

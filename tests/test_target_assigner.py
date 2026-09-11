@@ -72,6 +72,7 @@ from carmack.assign_targets.target_assigner import (
 )
 from carmack.assign_targets.tgidx_locator import locate_tgidx_window
 from carmack.barcode.barcode_extractor import BarcodeExtractor
+from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.chemistry.annotation import format_span, parse_span, position_key
 from carmack.chemistry.chemistry_base import ChemistryBase
@@ -729,15 +730,29 @@ class TestAssignTargetsMatching:
         [SUBSTITUTED_TARGET, DELETED_TARGET],
         ids=["substitution", "deletion"],
     )
-    def test_one_error_index_is_matched_and_span_is_the_observed_slice(
+    def test_one_error_index_is_matched_and_span_is_the_entrys_own_length(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path, observed: str
     ) -> None:
-        """Pin that the recorded span bounds the read, not the entry it verified against.
+        """Pin that the recorded span bounds the read, at the entry's own length.
 
-        ``read_idx`` bounds the sequence found in the read while ``match`` is the
-        whitelist entry it verified against, so the two coincide only at edit
-        distance zero. Slicing the span back must therefore return the observed
-        sequence.
+        ``read_idx`` bounds the sequence found in the read while ``match`` is the whitelist
+        entry it verified against, so the two coincide only at edit distance zero; slicing the
+        span back returns the read, not the entry.
+
+        Among the windows that tie at the minimum edit distance, the one reported is the window
+        whose length equals the entry's. For a substitution that is simply the observed
+        sequence. For a deletion it is one base longer than what was planted, and that is
+        deliberate rather than sloppy: a read carrying a deletion and a read carrying a
+        substitution at the entry's last base are *byte-identical* over this window -- both read
+        ``TATAGCTT`` here -- so no rule can tell them apart from the sequence alone, and both
+        the 7bp and the 8bp window sit at edit distance one. Preferring the entry's length is
+        what stops a component's reported 3' boundary drifting inwards, which is what sent the
+        adjacent-spacer check a base early and shifted the UMI off the end of the barcode
+        before it. The cost is this one borrowed base on a genuine deletion.
+
+        Nothing downstream measures off the target index -- it is the last component, and the
+        poly-G anchor is taken from the UMI span -- so the borrowed base is reported and not
+        acted upon.
         """
         assigner = build_assigner([make_annotated_read("oneerror", index=observed)])
 
@@ -751,7 +766,10 @@ class TestAssignTargetsMatching:
         ann = read_annotations(tgidx_fastq(tmp_path))[0]
         assert_that(ann.get(TGIDX_NAME)).is_equal_to(TARGET_SEQ)
         start, end = parse_span(ann.get(position_key(TGIDX_NAME)))
-        assert_that(seq[start:end]).is_equal_to(observed)
+
+        assert_that(end - start).is_equal_to(len(TARGET_SEQ))
+        assert_that(seq[start:end]).starts_with(observed[: len(TARGET_SEQ) - 1])
+        assert_that(edit_distance(seq[start:end], TARGET_SEQ)).is_equal_to(1)
 
     def test_run_starting_one_base_early_gives_the_same_target_and_span(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
