@@ -202,53 +202,114 @@ class MatcherBase(ABC):
         """
         Return the half-open region of ``read`` this component may be located in.
 
-        A component is bounded to its own inter-barcode interval: from the expected end of the
-        preceding barcode to the expected start of the following one. The interval is the
-        natural allowance rather than an arbitrary margin, because what separates two barcodes
-        in the read structure is exactly the room an indel upstream can push a component into,
-        while a bound stopping short of the neighbour still refuses to look inside another
-        barcode's window.
+        A component is bounded to its own extent widened, either side, by everything that can
+        have moved it: the drift its chemistry's layout permits, plus the error budget the
+        caller is searching with. Drift accounts for the read the matcher is handed being
+        displaced -- an indel in any component ahead of this one shifts it -- and the budget
+        accounts for the match itself being allowed to start a base or two out. Nothing else
+        can put the component anywhere, so nothing else belongs in the bound.
 
-        That refusal is the point. Unbounded, a whitelist entry that happens to be a rotation
-        of a *neighbouring* component's entry sits in that neighbour's region on every single
-        read of a library using it -- and being a rotation, it is often an exact match there
-        while the component's own damaged window is one edit out, so it wins on distance
-        outright and no tie-break or spacer check is ever reached. The result is a cell barcode
-        read off another component's sequence, with a span overlapping that component's.
+        Bounding by the gap to the neighbouring barcode instead, as this once did, measured
+        the wrong thing everywhere rather than only where it ran out of read. The distance to
+        the next barcode is the width of the primer between them; it says how much room a
+        component *could* occupy without colliding with its neighbour, not how far anything
+        can have pushed it. It was far too generous in both directions: a two-sided window
+        admitted a valid whitelist entry planted twenty bases from where its component belongs
+        just as readily as the unbounded side did. And ``get_next(..., bc_only=True)`` is
+        ``None`` for the last barcode of every shipped chemistry, so that side fell through to
+        ``len(read)`` and the last barcode was searched across the UMI, the poly-G anchor, the
+        target index, the Mosaic End and the whole cDNA insert -- a stretch in which a 96-entry
+        10bp whitelist finds a chance exact match often enough to fabricate cell barcodes, and
+        an exact chance match beats the component's own error-bearing window outright, so no
+        tie is formed and no tie-break or spacer check is ever reached.
 
-        The interval is relaxed so that the component's own extent widened by the error budget
-        always fits, so the bound can never cut a window that is legitimately in budget.
+        The component's own length is added on the high side because the window bounds a
+        *span*, not a start. A component drifted the full tolerance begins at the ceiling the
+        tolerance sets and still occupies its own length behind that, so a ceiling without the
+        length would cut the very read the tolerance was computed to admit.
 
         Args:
             read: The sequencing read being searched, used only for its length.
             max_errors: The error budget the caller matches this component with.
 
         Returns:
-            ``(low, high)``, a half-open slice of ``read``. Spans the whole read when the
-            component has no resolved start, since there is then no expected position to
-            measure an interval from -- a target index, for instance, is located by an anchor
-            run rather than by an offset.
+            ``(low, high)``, a half-open slice of ``read``, clamped to it. Spans the whole read
+            when the layout makes no positional prediction for this component, since there is
+            then nothing to measure a displacement from -- a target index, for instance, is
+            located by the anchor run in front of it rather than by an offset, and that anchor
+            has already bounded it before a matcher sees it.
         """
         expected_start = self.component.start
-        if expected_start is None:
+        drift = self.chemistry.drift_tolerance(self.component)
+        # Having no resolved start and having no drift prediction are one fact with two
+        # symptoms: both fall out of the same walk stopping at the first variable-length
+        # component. Tested together so a type checker sees both narrowed at once.
+        if expected_start is None or drift is None:
             return (0, len(read))
 
-        structure = self.chemistry.read_structure
-        previous = structure.get_previous(self.component, bc_only=True)
-        following = structure.get_next(self.component, bc_only=True)
-
-        low = 0
-        if previous is not None and previous.start is not None:
-            low = previous.start + previous.length
-
-        high = len(read)
-        if following is not None and following.start is not None:
-            high = following.start
-
-        low = min(low, max(0, expected_start - max_errors))
-        high = max(high, expected_start + self.component.length + max_errors)
+        tolerance = drift + max_errors
+        low = expected_start - tolerance
+        high = expected_start + self.component.length + tolerance
 
         return (max(0, min(low, len(read))), max(0, min(high, len(read))))
+
+    def requires_spacer_evidence(self, read_idx: tuple[int, int], max_errors: int) -> bool:
+        """
+        Whether a candidate that arrived alone has to be corroborated by an adjacent spacer.
+
+        Arriving alone is not itself evidence, so a lone candidate is not simply waved
+        through. But what a lone candidate still owes depends on how well it already agrees
+        with the read structure, and two different things can leave it the only one standing.
+
+        A candidate sitting where the layout can account for it is already corroborated by its
+        position, which is the prediction the read structure makes. Demanding a spacer as well
+        would throw reads away for a reason unrelated to their barcode: an adjacent primer is
+        22bp and has to match exactly, so a single error anywhere in it removes the evidence,
+        and reads reaching a searching matcher at all are the error-laden ones.
+
+        A candidate found beyond that is a different claim -- that the component is somewhere
+        the structure cannot put it -- and needs something beyond itself to support it.
+        Requiring a flanking spacer there is what closes the path that assigned a barcode read
+        off a neighbouring component's sequence or off the insert.
+
+        The threshold is the larger of the drift the layout permits and the budget the
+        component is matched with, never their sum. Keyed on the sum it would be vacuous:
+        ``component_window`` admits a full-length span at exactly that displacement and
+        nothing past it, so the rule could never fire on a full-length candidate. Keyed on the
+        drift alone it would be tighter than the budget wherever the layout permits no drift
+        at all, which would refuse a first barcode found one base out with no upstream
+        component able to have moved it. The larger of the two is never tighter than either,
+        and it leaves a real band -- displacement in ``(drift, drift + max_errors]`` -- where
+        the window admits a candidate and this rule still refuses it.
+
+        A component the layout cannot place at all is exempt: where the structure predicts no
+        position, position neither corroborates nor contradicts, so there is nothing for a
+        displacement rule to measure. The exemption is load-bearing rather than merely tidy.
+        A target index sits behind a homopolymer and in front of a Mosaic End shipped with no
+        sequence, so its spacer check returns nothing on every read by construction; demanding
+        evidence would be unanswerable, and every read would be reported as carrying no target
+        at all. Such a component is bounded before it reaches a matcher, by the anchor run
+        that locates it, and that bound is its corroboration.
+
+        Args:
+            read_idx: The candidate's span, in original-read coordinates.
+            max_errors: The error budget this candidate was matched with. Passed in rather
+                than read off the matcher because this class owns no budget, one subclass has
+                none at all, and a caller matching a target index passes that component's
+                budget rather than a barcode's.
+
+        Returns:
+            True when the candidate must carry at least one adjacent spacer to be assigned.
+        """
+        drift = self.chemistry.drift_tolerance(self.component)
+        expected_start = self.component.start
+        # Both halves of the same fact again, so the second can only be reached with the
+        # first. Named alongside it so the comparison below is narrowed to two integers
+        # rather than measured against a possible None.
+        if drift is None or expected_start is None:
+            return False
+
+        return abs(read_idx[0] - expected_start) > max(drift, max_errors)
 
     def check_spacers(
         self, read: str, match_idx: tuple[int, int]

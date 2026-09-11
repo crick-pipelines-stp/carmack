@@ -208,10 +208,16 @@ class AlignmentMatcher(MatcherBase):
         """
         Return the half-open slice of the read a match for this component may be found in.
 
-        This is the component's structural window from ``component_window``, with the caller's
-        ``start_idx`` applied on top as a floor: this matcher treats ``start_idx`` as a hard
-        bound on where a match may begin, so the two bounds compose rather than replacing one
-        another.
+        This is the component's structural window from ``component_window`` -- its own extent
+        widened either side by the drift the declared layout permits plus the budget this
+        matcher searches with -- with the caller's ``start_idx`` applied on top as a floor:
+        this matcher treats ``start_idx`` as a hard bound on where a match may begin, so the
+        two bounds compose rather than replacing one another.
+
+        The window is not a neighbour's territory being kept clear. It is the whole of where
+        the layout can have put this component, which is why the last barcode of a chemistry
+        is bounded on the right just as tightly as one with a barcode behind it, and why the
+        primer separating two barcodes is not room either of them may wander into.
 
         Args:
             read: The sequencing read being searched.
@@ -354,39 +360,6 @@ class AlignmentMatcher(MatcherBase):
         candidate.attempt.edit_distance = candidate.edit_distance
         return [candidate.attempt]
 
-    def requires_spacer_evidence(self, read_idx: tuple[int, int]) -> bool:
-        """
-        Whether a candidate that arrived alone has to be corroborated by an adjacent spacer.
-
-        Arriving alone is not itself evidence, so a lone candidate is not simply waved through
-        the way it used to be. But the evidence a lone candidate needs depends on how well it
-        already agrees with the read structure, and two different things can make it the only
-        one standing.
-
-        A candidate sitting where the structure says this component belongs is already
-        corroborated by its position, which is the prediction the read structure makes. Demanding
-        a spacer as well would throw away reads for a reason unrelated to their barcode: the
-        adjacent primer is 22bp and has to match exactly, so a single error anywhere in it
-        removes the evidence, and reads reaching this matcher at all are the error-laden ones.
-        That is the population where the alignment stage earns its place on insertions.
-
-        A candidate found away from that position is a different claim -- that the component is
-        not where the structure predicts -- and needs something beyond itself to support it.
-        Requiring a flanking spacer there is what closes the path that assigned a barcode read
-        off a neighbouring component's sequence.
-
-        Args:
-            read_idx: The candidate's span, in original-read coordinates.
-
-        Returns:
-            True when the candidate must carry at least one adjacent spacer to be assigned.
-        """
-        expected_start = self.component.start
-        if expected_start is None:
-            # Nothing predicts where this component sits, so position corroborates nothing.
-            return True
-        return abs(read_idx[0] - expected_start) > self.max_errors
-
     def resolve_sole_candidate(self, candidate: AlignmentCandidate) -> list[BarcodeMatchAttempt]:
         """
         Decide whether a candidate that arrived alone has shown enough to be assigned.
@@ -411,7 +384,11 @@ class AlignmentMatcher(MatcherBase):
             or candidate.attempt.spacer_downstream is not None
         )
 
-        if not has_spacer and read_idx is not None and self.requires_spacer_evidence(read_idx):
+        if (
+            not has_spacer
+            and read_idx is not None
+            and self.requires_spacer_evidence(read_idx, self.max_errors)
+        ):
             log.debug(
                 f"Sole alignment candidate {candidate.bc} at {read_idx} is away from the "
                 f"expected start of {self.component.name} and has no adjacent spacer evidence. "

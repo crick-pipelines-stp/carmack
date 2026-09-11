@@ -1,18 +1,17 @@
 # UMI Extraction Stats
 # The UMI is the fixed 8 bases following the left anchor, so its
 # length is not a measurement and no length distribution is reported.
-Total reads: 191
-Accepted: 191 (100.00%)
+Total reads: 190
+Accepted: 190 (100.00%)
 Rejected (missing_left_anchor): 0 (0.00%)
 Rejected (truncated): 0 (0.00%)
 
 # Anchor G-run Length Distribution
 # Measured from the first base after the UMI, over accepted reads. A zero is a
 # read whose anchor run does not begin where the chemistry says it does.
-	0	1 (0.52%)
-	3	29 (15.18%)
-	4	7 (3.66%)
-	5	12 (6.28%)
-	6	118 (61.78%)
-	7	23 (12.04%)
-	8	1 (0.52%)
+	3	29 (15.26%)
+	4	7 (3.68%)
+	5	12 (6.32%)
+	6	118 (62.11%)
+	7	23 (12.11%)
+	8	1 (0.53%)

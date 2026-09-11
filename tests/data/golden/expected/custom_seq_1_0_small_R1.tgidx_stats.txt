@@ -3,9 +3,9 @@
 # a read whose anchor was never recorded, or which ends inside its UMI, does
 # not arrive here, so the matched fraction below is not the scTIP fraction of
 # the library. See the matching .umi_stats.txt for the run's total read count.
-Total reads: 191
-Matched: 148 (77.49%)
-Unmatched (no_match): 43 (22.51%)
+Total reads: 190
+Matched: 148 (77.89%)
+Unmatched (no_match): 42 (22.11%)
 Unmatched (no_left_anchor_pos): 0 (0.00%)
 Unmatched (short_window): 0 (0.00%)
 
@@ -17,10 +17,9 @@ Unmatched (short_window): 0 (0.00%)
 	1	4 (2.70%)
 
 # Anchor G-run Length Distribution
-	0	1 (0.52%)
-	3	29 (15.18%)
-	4	7 (3.66%)
-	5	12 (6.28%)
-	6	118 (61.78%)
-	7	23 (12.04%)
-	8	1 (0.52%)
+	3	29 (15.26%)
+	4	7 (3.68%)
+	5	12 (6.32%)
+	6	118 (62.11%)
+	7	23 (12.11%)
+	8	1 (0.53%)

@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from carmack.barcode.extraction_dataclasses import BarcodeMatchAttempt, MatchMethod
 from carmack.barcode.matchers.matcher_base import MatcherBase, best_window
@@ -116,9 +116,10 @@ class KmerMatcher(MatcherBase):
         them — no best-score filter is applied here — so the near misses that resolution is about
         to discard remain visible to a caller that wants them.
 
-        Candidates verified outside the component's own region of the read are discarded, so a
-        whitelist entry found where a *neighbouring* barcode belongs is never a candidate for
-        this one. See ``MatcherBase.component_window``.
+        Candidates verified outside the region the declared layout could have moved this
+        component into are discarded, so a whitelist entry found somewhere the structure
+        cannot put this component -- a neighbouring barcode's position, the UMI, the anchor or
+        the insert -- is never a candidate for it. See ``MatcherBase.component_window``.
 
         Args:
             read: The sequencing read to search.
@@ -138,13 +139,15 @@ class KmerMatcher(MatcherBase):
                 f"Read segment too short for k-mer matching: read length {len(read)}, k={self.k}"
             )
 
-        # Where a candidate for this component may be located. Seeds are still scanned over the
-        # whole read from start_idx, so the seed floor keeps its documented meaning; what the
-        # window bounds is where a *verified* candidate may sit. Without it a whitelist entry
-        # that is a rotation of a neighbouring component's entry is found in that neighbour's
-        # region, and because a rotation often matches there exactly while this component's own
-        # damaged window is an edit out, it wins on edit distance outright -- no tie to break
-        # and no spacer consulted.
+        # How far the declared layout can have moved this component, which is the whole of
+        # where a candidate for it may sit. Seeds are still scanned over the whole read from
+        # start_idx, so the seed floor keeps its documented meaning; what the window bounds is
+        # where a *verified* candidate may end up. Without it a whitelist entry lying anywhere
+        # in the read is a candidate: a rotation of a neighbouring component's entry, found in
+        # that neighbour's region on every read of a library using it, or a chance lookalike
+        # in the insert. Either matches exactly while this component's own damaged window is an
+        # edit out, so it wins on edit distance outright -- no tie to break, no spacer
+        # consulted, and a cell barcode read off sequence that is not the barcode.
         window_low, window_high = self.component_window(read, self.max_errors)
 
         candidates: list[KmerCandidate] = []
@@ -191,11 +194,32 @@ class KmerMatcher(MatcherBase):
         Choose between collected candidates and report the outcome as match attempts.
 
         This is the resolution half of ``match``. Candidates are first filtered to the best edit
-        distance, since choosing between them is what resolution is for. A lone survivor is
-        reported directly with no spacer validation at all, because spacers serve only as a
-        tie-break and there is no tie to break. A tie is broken first by requiring at least one
-        adjacent spacer, and then, if several candidates still stand, by preferring the single
+        distance, since choosing between them is what resolution is for. What happens next
+        depends on how many survive, and the two cases ask the spacers different questions.
+
+        Several survivors are a tie, and the spacers separate them: first by requiring at
+        least one adjacent spacer, then, if several still stand, by preferring the single
         candidate flanked by two. If neither rung separates them the matcher declines to guess.
+
+        A lone survivor is not a tie, and it is not thereby correct either. What it owes is set
+        out on ``MatcherBase.requires_spacer_evidence``: a candidate the declared layout can
+        account for is corroborated by its position and is assigned as it stands, while one
+        further out has to bring a flanking spacer or be declined. Assigning a lone survivor
+        unexamined -- which this once did, and recorded as a design choice -- is what read cell
+        barcodes off the insert, and it was reachable on nearly every read, because this
+        matcher runs first and a successful lone assignment here is terminal.
+
+        The spacers are consulted only when the answer turns on them, never on the corroborated
+        path. That is partly the hot path, taken by nearly every read of a healthy library; but
+        mostly it is that the spacer fields are rendered into the annotated read name and into
+        the per-run spacer statistics, so recording evidence on every lone match would move
+        nearly every output line to describe a decision the spacers took no part in.
+
+        A declined lone candidate comes back as exactly one bare matchless attempt, the same
+        shape as finding nothing at all. One attempt is what keeps the read non-terminal so it
+        escalates to the alignment matcher, which applies the same rule and may recover it on
+        evidence of its own. Several attempts would latch an ambiguity verdict and block that
+        escalation, and ambiguity is the wrong verdict anyway: the candidates never tied.
 
         Args:
             read: The sequencing read the candidates were collected from, used both to slice out
@@ -223,10 +247,24 @@ class KmerMatcher(MatcherBase):
 
         if len(best_candidates) == 1:
             best_bc, start, end, edit_dist = best_candidates[0]
+
+            lone_spacers: dict[Literal["upstream", "downstream"], str | None] = {}
+            if self.requires_spacer_evidence((start, end), self.max_errors):
+                lone_spacers = self.check_spacers(read, (start, end))
+                if not any(lone_spacers.values()):
+                    log.debug(
+                        f"Sole kmer candidate {best_bc} at {start}-{end} is further from the "
+                        f"expected start of {self.component.name} than the layout allows and "
+                        "has no adjacent spacer evidence. Marking as no match."
+                    )
+                    return [result]
+
             result.match = best_bc
             result.candidate = read[start:end]
             result.read_idx = (start, end)
             result.edit_distance = edit_dist
+            result.spacer_upstream = lone_spacers.get("upstream")
+            result.spacer_downstream = lone_spacers.get("downstream")
             log.debug(
                 f"Kmer match found: {best_bc} at position {start}-{end} with edit distance {edit_dist}"
             )

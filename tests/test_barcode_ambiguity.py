@@ -14,6 +14,14 @@ in the suite that measures the thing the ambiguity contract exists to prevent --
 given a *wrong* barcode rather than no barcode -- and a wrong cell barcode is otherwise
 invisible: it is a valid whitelist entry, indistinguishable in every output from a correct one,
 and reported as a successfully corrected match.
+
+Every read here is assembled at the full 150 bases a run produces, cDNA tail included. That is
+not decoration. On the 94bp read this file used to build, a whitelist entry planted where the
+component cannot be has nowhere to sit, and the last barcode's search window runs off the end
+of the read rather than being bounded by anything -- so a component called from sequence it has
+no business in was invisible to every test in the file. The tail is a fixed sequence rather
+than random filler precisely so that what a test plants in it is the only thing in it a matcher
+can react to, which ``TestReadFixture`` below asserts rather than assumes.
 """
 
 import random
@@ -21,6 +29,7 @@ import random
 import pytest
 from assertpy import assert_that
 
+from carmack.barcode.barcode_utils import edit_distance
 from carmack.barcode.extraction_dataclasses import (
     BarcodeMatchAttempt,
     BarcodeMatchHistory,
@@ -32,6 +41,7 @@ from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.barcode.matchers.matcher_base import MatcherBase
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
+    BC_CHUNK_LEN,
     PRIMER_A,
     PRIMER_C,
     ChemistryCarmackCustomSeq10,
@@ -49,6 +59,42 @@ WRONG_CALL_CEILING = 0.01
 # investigation that produced these numbers.
 SMOKE_READS_PER_CELL = 60
 SWEEP_READS_PER_CELL = 1200
+
+# The length of an assembled read: the barcodes, primers, UMI, poly-G anchor and target index
+# come to 94 bases, and the cDNA tail below carries it to what a run actually produces.
+READ_LENGTH = 150
+
+# The cDNA every assembled read ends in. It has to be inert in two separate ways, both of them
+# asserted by ``TestReadFixture`` rather than taken on trust: it carries no ``GGG`` run, so it
+# cannot be mistaken for the poly-G anchor, and no window in it is within the barcode budget of
+# any whitelist entry, so a decoy planted in it is the only thing there a matcher can react to.
+# Random filler would satisfy neither reliably -- a 96-entry 10bp whitelist matches random
+# sequence at roughly 9e-05 per window, which over a tail this long is not a rare event.
+DEFAULT_CDNA_TAIL = "TTTCCTCATGCAATTCAAAACCATGTCCGTAATGTAGGCGAAATAGTAAACCATTT"
+
+# Bases inserted into a primer to displace everything 3' of it. An insertion is the only lesion
+# that moves a component without damaging it, which is what makes it the test for whether a
+# positional bound has been drawn too tightly.
+PRIMER_INSERTION_BASES = "TCATGACT"
+
+# PRIMER_A carrying one substitution at its midpoint. It is still 22 bases, so nothing 3' of it
+# moves, but ``check_spacers`` compares the flanking region to the primer base for base, so it
+# no longer counts as evidence. Reads that need a displaced component to stand on its own,
+# with no corroboration available anywhere, are built with this in place of the real primer.
+PRIMER_A_MISMATCHED = PRIMER_A[:11] + "A" + PRIMER_A[12:]
+
+# The barcode triplet the positional tests are built from. Each damaged form carries one
+# substitution away from its own entry, and is four or more edits from every other entry in its
+# whitelist, so nothing but a deliberately planted sequence can outscore the component's own
+# window. The decoys are valid entries of the component they are planted against, which is what
+# makes them dangerous: called, they are indistinguishable in every output from a real call.
+TRUE_BC3 = "TGACCGTACT"
+TRUE_BC2 = "TTAGTTGGAC"
+TRUE_BC1 = "TGTAGCAAGT"
+DAMAGED_BC2 = "TTAGCTGGAC"
+DAMAGED_BC1 = "TGTAACAAGT"
+DECOY_BC2 = "AATAGCGTGG"
+DECOY_BC1 = "GTCAACTAAC"
 
 
 def build_matchers(
@@ -92,7 +138,9 @@ def build_matchers(
     return matchers
 
 
-def build_read(bc3: str, bc2: str, bc1: str, umi: str = "ACGTACGT") -> str:
+def build_read(
+    bc3: str, bc2: str, bc1: str, umi: str = "ACGTACGT", tail: str = DEFAULT_CDNA_TAIL
+) -> str:
     """
     Assemble a ``carmack_custom_seq_1_0`` read from its components.
 
@@ -101,11 +149,55 @@ def build_read(bc3: str, bc2: str, bc1: str, umi: str = "ACGTACGT") -> str:
         bc2: BC2 sequence as it appears in the read.
         bc1: BC1 sequence as it appears in the read.
         umi: UMI sequence to place after BC1.
+        tail: The cDNA the read ends in, which is what carries it to full length. It defaults
+            to a sequence held inert by ``TestReadFixture``; pass a shorter one only to build a
+            read that is deliberately truncated.
 
     Returns:
-        The assembled read, ending in the poly-G run and target index.
+        The assembled read: barcodes, primers, UMI, poly-G anchor, target index and cDNA.
     """
-    return bc3 + PRIMER_C + bc2 + PRIMER_A + bc1 + umi + "GGGG" + "TATAGCCT"
+    return bc3 + PRIMER_C + bc2 + PRIMER_A + bc1 + umi + "GGGG" + "TATAGCCT" + tail
+
+
+def plant(read: str, at: int, sequence: str) -> str:
+    """
+    Overwrite part of a read in place, leaving its length unchanged.
+
+    Substituting rather than inserting is the point: the read keeps its layout, so whatever is
+    planted is the only difference between this read and the one it was built from, and no
+    component downstream of the planted sequence moves.
+
+    Args:
+        read: The assembled read to plant into.
+        at: Index in ``read`` the sequence is written at.
+        sequence: The bases to write, which may be a whole whitelist entry or a single base.
+
+    Returns:
+        The read with ``sequence`` written over the bases at ``at``.
+    """
+    return read[:at] + sequence + read[at + len(sequence) :]
+
+
+def insert_into_primer(read: str, primer: str, bases: str) -> str:
+    """
+    Insert bases into the middle of a primer, displacing everything 3' of it.
+
+    The insertion is placed inside the primer rather than at its edge so that the primer is
+    genuinely broken as a spacer: ``check_spacers`` compares the whole 22 bases adjacent to a
+    span against the primer, and a run of bases inserted anywhere within it fails that
+    comparison. The read is trimmed back to its original length from the 3' end, the way a
+    fixed-length run reports an upstream insertion.
+
+    Args:
+        read: The assembled read to lengthen.
+        primer: The primer sequence to insert into, which must occur in ``read``.
+        bases: The bases to insert.
+
+    Returns:
+        The read with the insertion applied, at its original length.
+    """
+    at = read.index(primer) + len(primer) // 2
+    return (read[:at] + bases + read[at:])[: len(read)]
 
 
 @pytest.fixture
@@ -117,6 +209,68 @@ def chemistry() -> ChemistryCarmackCustomSeq10:
         A freshly constructed ChemistryCarmackCustomSeq10.
     """
     return ChemistryCarmackCustomSeq10()
+
+
+class TestReadFixture:
+    """Tests that the assembled read is the thing the positional tests below assume it is."""
+
+    def test_build_read_assembles_a_full_length_read(self) -> None:
+        """Test that an assembled read is as long as one a run produces.
+
+        Read length is not a detail here, it is what makes the rest of the file able to see
+        anything. A component's search window is bounded partly by the read, so on a read that
+        stops at the target index the last barcode's window degenerates to "everything left",
+        and there is no cDNA for a planted entry to be found in. Both of those hid the defect
+        this file exists to catch, and both are properties of the fixture rather than of the
+        code under test, so they are asserted here.
+        """
+        read = build_read("TGACCGTACT", "TTAGTTGGAC", "TGTAGCAAGT")
+
+        assert_that(read).is_length(READ_LENGTH)
+        assert_that(DEFAULT_CDNA_TAIL).is_length(56)
+
+    def test_default_tail_carries_no_polyg_run(self) -> None:
+        """Test that the cDNA tail cannot be mistaken for the poly-G anchor.
+
+        The UMI is cut at a ``GGG`` run rather than by any length check, so a tail carrying one
+        would let a read whose barcodes were called from the wrong place still produce a
+        plausible UMI -- exactly the compounding failure the tail is here to expose, arriving
+        from the fixture instead of from the code.
+        """
+        assert_that(DEFAULT_CDNA_TAIL).does_not_contain("GGG")
+
+    def test_default_tail_holds_no_window_near_any_whitelist_entry(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ) -> None:
+        """Test that nothing in the cDNA tail is within the barcode budget of a whitelist entry.
+
+        Without this the decoy tests below would pass or fail for a reason unrelated to what
+        they plant. Each of them asserts that a particular entry written into the tail is not
+        called; if the tail already held a chance lookalike of some *other* entry, a matcher
+        could call that instead and the assertion would still hold, or the lookalike could tie
+        with the planted decoy and change the verdict outright. The tail has to contribute
+        nothing for the plant to be the only variable.
+
+        Every window a matcher could verify is checked, not just the ten-base ones: an indel
+        inside the budget makes a nine- or eleven-base window a candidate span too. The
+        distance is measured with the same helper and the same arguments the matchers use, so
+        that this bound is the bound they will apply and not a stricter or looser cousin of it.
+        """
+        budget = chemistry.max_errors.barcode
+        lengths = range(BC_CHUNK_LEN - budget, BC_CHUNK_LEN + budget + 1)
+
+        nearest = min(
+            (edit_distance(DEFAULT_CDNA_TAIL[start : start + length], entry, "N", True), entry)
+            for name in ("BC1", "BC2", "BC3")
+            for entry in chemistry.barcode_whitelists[name]
+            for length in lengths
+            for start in range(len(DEFAULT_CDNA_TAIL) - length + 1)
+        )
+
+        assert_that(nearest[0]).described_as(
+            f"closest whitelist entry to any window of the default tail is {nearest[1]} at "
+            f"edit distance {nearest[0]}, against a barcode budget of {budget}"
+        ).is_greater_than(budget)
 
 
 class TestAmbiguityIsADistinctState:
@@ -364,6 +518,291 @@ class TestAmbiguityRegressions:
         assert_that(bc3.success).is_false()
 
 
+def extract(
+    chemistry: ChemistryCarmackCustomSeq10, read: str, fast: bool, bc_name: str
+) -> BarcodeMatchHistory:
+    """
+    Run one read through the whole matcher stack and return one component's history.
+
+    Args:
+        chemistry: The chemistry to extract with.
+        read: The assembled read.
+        fast: Whether to omit the alignment matcher, as ``--fast`` does.
+        bc_name: The component whose history is wanted.
+
+    Returns:
+        The match history recorded for ``bc_name``.
+    """
+    extractor = HybridExtractor(chemistry=chemistry, matchers=build_matchers(chemistry, fast=fast))
+    result = extractor.process_read("read", read, "I" * len(read))
+    return next(bc for bc in result.bc_results if bc.bc_name == bc_name)
+
+
+def nominal_span(
+    chemistry: ChemistryCarmackCustomSeq10, bc_name: str, shift: int = 0
+) -> tuple[int, int]:
+    """
+    Return where the read structure says a component sits, optionally displaced.
+
+    Args:
+        chemistry: The chemistry whose read structure predicts the position.
+        bc_name: The component to locate.
+        shift: Bases the component has been pushed 3' by an upstream insertion.
+
+    Returns:
+        The component's half-open span in a read built to that layout.
+    """
+    start = chemistry.read_structure.get_component_by_name(bc_name).start + shift
+    return (start, start + BC_CHUNK_LEN)
+
+
+class TestPlantedDecoysAreNeverCalled:
+    """Tests that a valid whitelist entry lying where its component cannot be is not called.
+
+    This is the failure mode that produces a wrong cell barcode rather than a lost read, and
+    it is the reason the read structure has to bound the search. The construction is the same
+    in both tests: damage the component's own window by one substitution so it can no longer
+    win on edit distance, then write a different valid entry of the *same* component somewhere
+    the layout cannot put it. The decoy then scores zero, the true window scores one, zero wins
+    outright, and no tie is formed -- so neither the tie-break nor the spacer check ever runs.
+    Only a bound on where the component may be, and a rule that a lone candidate away from its
+    predicted position has to show something for itself, can refuse it.
+    """
+
+    @pytest.mark.parametrize("fast", [False, True])
+    @pytest.mark.parametrize("offset", [14, 20, 30, 49, 60, 73, 76])
+    def test_planted_bc1_entry_in_the_cdna_is_never_called(
+        self, chemistry: ChemistryCarmackCustomSeq10, offset: int, fast: bool
+    ) -> None:
+        """Test that a BC1 entry planted downstream of BC1 is not called, at any offset.
+
+        BC1 is the last barcode in the structure, so nothing follows it to bound its search and
+        it was searched across the UMI, the poly-G anchor, the target index and the whole cDNA.
+        The offsets walk a decoy out through every one of those regions in turn, ending with one
+        that reaches the last base of the read: the bound has to hold along the entire span, not
+        merely somewhere past the insert boundary.
+        """
+        read = plant(
+            build_read(TRUE_BC3, TRUE_BC2, DAMAGED_BC1),
+            nominal_span(chemistry, "BC1")[0] + offset,
+            DECOY_BC1,
+        )
+        assert_that(read).is_length(READ_LENGTH)
+
+        bc1 = extract(chemistry, read, fast, "BC1")
+
+        for attempt in bc1.attempts:
+            assert_that(attempt.match).described_as(
+                f"decoy at +{offset}, fast={fast}, {attempt.method} span {attempt.read_idx}"
+            ).is_not_equal_to(DECOY_BC1)
+        assert_that(bc1.attempts[-1].match).described_as(
+            f"decoy at +{offset}, fast={fast}"
+        ).is_equal_to(TRUE_BC1)
+        assert_that(bc1.attempts[-1].read_idx).described_as(
+            f"decoy at +{offset}, fast={fast}"
+        ).is_equal_to(nominal_span(chemistry, "BC1"))
+
+    @pytest.mark.parametrize("fast", [False, True])
+    @pytest.mark.parametrize("offset", [-20, -12, 14, 18, 22])
+    def test_planted_bc2_entry_inside_the_old_window_is_never_called(
+        self, chemistry: ChemistryCarmackCustomSeq10, offset: int, fast: bool
+    ) -> None:
+        """Test that a BC2 entry planted either side of BC2 is not called.
+
+        BC2 has a barcode on both sides of it, so the gap between its neighbours bounds it from
+        both directions, and every offset here sits inside that gap. It fails identically to
+        BC1 all the same, which is what says the missing right-hand neighbour was never the
+        root cause: the distance to the next barcode is simply not a measure of how far this
+        component can have moved. What bounds a component is the error budget of everything
+        upstream of it, and that is a much smaller number than the primer separating it from
+        its neighbour.
+        """
+        read = plant(
+            build_read(TRUE_BC3, DAMAGED_BC2, TRUE_BC1),
+            nominal_span(chemistry, "BC2")[0] + offset,
+            DECOY_BC2,
+        )
+        assert_that(read).is_length(READ_LENGTH)
+
+        bc2 = extract(chemistry, read, fast, "BC2")
+
+        for attempt in bc2.attempts:
+            assert_that(attempt.match).described_as(
+                f"decoy at {offset:+d}, fast={fast}, {attempt.method} span {attempt.read_idx}"
+            ).is_not_equal_to(DECOY_BC2)
+        assert_that(bc2.attempts[-1].match).described_as(
+            f"decoy at {offset:+d}, fast={fast}"
+        ).is_equal_to(TRUE_BC2)
+        assert_that(bc2.attempts[-1].read_idx).described_as(
+            f"decoy at {offset:+d}, fast={fast}"
+        ).is_equal_to(nominal_span(chemistry, "BC2"))
+
+
+class TestUpstreamDisplacement:
+    """Tests on how far a component may be pushed 3' by an upstream insertion and still be called.
+
+    These are the other half of the contract, and they are the half that keeps it honest. A
+    bound tight enough to refuse a planted decoy is also tight enough to refuse a real read
+    whose barcodes have genuinely moved, and reads with an indel in a primer are a real and
+    ordinary population. What decides the boundary is the cumulative error budget of everything
+    upstream of the component -- one base per barcode and two per primer for this chemistry --
+    so BC1, with two primers and two barcodes ahead of it, may travel six bases on its own
+    while BC2, with one of each, may travel three.
+
+    Where the insertion goes is not a free choice, and it is the whole subtlety of these tests.
+    An insertion only displaces what is 3' of it, and it only removes spacer evidence from the
+    span it is adjacent to. So an insertion in PRIMER_C displaces BC2 and BC1 both, but leaves
+    PRIMER_A intact and hard against BC1, which then has corroboration whatever it does; and an
+    insertion in PRIMER_A removes BC1's corroboration but leaves BC2 exactly where it started.
+    Each test therefore puts the insertion in the primer that actually exercises the component
+    it is about, and says so.
+    """
+
+    @pytest.mark.parametrize("fast", [False, True])
+    @pytest.mark.parametrize("insertion", [1, 2, 3, 4, 5, 6])
+    def test_upstream_insertion_still_calls_bc1_at_its_displaced_span(
+        self, chemistry: ChemistryCarmackCustomSeq10, insertion: int, fast: bool
+    ) -> None:
+        """Test that BC1 is called at its displaced span with no spacer evidence at all.
+
+        The insertion goes into PRIMER_A, the primer immediately upstream of BC1, because that
+        is the only placement that leaves BC1 with nothing to lean on. Its downstream neighbour
+        is the UMI, which carries no sequence and so can never be a spacer, and an insertion
+        anywhere in PRIMER_A means the 22 bases in front of the span no longer equal the primer.
+        BC1 is then a lone candidate, away from where the structure predicts it, with no
+        adjacent spacer -- and it must still be called, because the read is a perfectly good
+        read that happens to have an indel in a primer. Putting the insertion in PRIMER_C
+        instead would prove nothing: PRIMER_A would move along with BC1, stay hard against it,
+        and supply the corroboration the test is trying to withhold.
+        """
+        read = insert_into_primer(
+            build_read(TRUE_BC3, TRUE_BC2, TRUE_BC1), PRIMER_A, PRIMER_INSERTION_BASES[:insertion]
+        )
+        assert_that(read).is_length(READ_LENGTH)
+
+        bc1 = extract(chemistry, read, fast, "BC1")
+        attempt = bc1.attempts[-1]
+        described = f"insertion of {insertion} into PRIMER_A, fast={fast}"
+
+        assert_that(bc1.success).described_as(described).is_true()
+        assert_that(attempt.match).described_as(described).is_equal_to(TRUE_BC1)
+        assert_that(attempt.read_idx).described_as(described).is_equal_to(
+            nominal_span(chemistry, "BC1", insertion)
+        )
+        assert_that(attempt.spacer_upstream).described_as(described).is_none()
+        assert_that(attempt.spacer_downstream).described_as(described).is_none()
+
+    @pytest.mark.parametrize("fast", [False, True])
+    @pytest.mark.parametrize("insertion", [1, 2, 3])
+    def test_upstream_insertion_still_calls_bc2_at_its_displaced_span(
+        self, chemistry: ChemistryCarmackCustomSeq10, insertion: int, fast: bool
+    ) -> None:
+        """Test that BC2 is called at its displaced span with no spacer evidence at all.
+
+        The insertion goes into PRIMER_C, the only primer upstream of BC2 and so the only one
+        that can displace it. Three bases is where this stops being a test of displacement
+        alone: BC2's cumulative budget is three, and beyond that a call needs corroboration
+        rather than just room, which the next two tests take up. PRIMER_C is broken by the
+        insertion so BC2's upstream evidence is gone, and its downstream PRIMER_A is not
+        consulted at all within this range, because a candidate at or inside its budget is
+        corroborated by its position and nothing further is asked of it. Both spacer fields
+        staying empty is the observable form of that: evidence recorded here would mean the
+        matcher had gone looking for it on a read where the answer was already settled, which
+        would move every annotated read name and every spacer statistic in the pipeline.
+        """
+        read = insert_into_primer(
+            build_read(TRUE_BC3, TRUE_BC2, TRUE_BC1), PRIMER_C, PRIMER_INSERTION_BASES[:insertion]
+        )
+        assert_that(read).is_length(READ_LENGTH)
+
+        bc2 = extract(chemistry, read, fast, "BC2")
+        attempt = bc2.attempts[-1]
+        described = f"insertion of {insertion} into PRIMER_C, fast={fast}"
+
+        assert_that(bc2.success).described_as(described).is_true()
+        assert_that(attempt.match).described_as(described).is_equal_to(TRUE_BC2)
+        assert_that(attempt.read_idx).described_as(described).is_equal_to(
+            nominal_span(chemistry, "BC2", insertion)
+        )
+        assert_that(attempt.spacer_upstream).described_as(described).is_none()
+        assert_that(attempt.spacer_downstream).described_as(described).is_none()
+
+    @pytest.mark.parametrize("fast", [False, True])
+    def test_a_displaced_bc2_past_its_budget_is_called_on_spacer_evidence(
+        self, chemistry: ChemistryCarmackCustomSeq10, fast: bool
+    ) -> None:
+        """Test that a component past its budget is still called when a spacer corroborates it.
+
+        Four bases is one past what BC2's cumulative budget predicts, so position alone no
+        longer speaks for the candidate and it has to show something. On this read it can: an
+        insertion in PRIMER_C moves BC2 and PRIMER_A together, so the primer is still exactly
+        the 22 bases immediately 3' of the span and says so. The rule is not a hard ceiling on
+        displacement, it is a demand for evidence proportional to how surprising the position
+        is, and this is the case that distinguishes the two -- the very same displacement is
+        refused by the next test, on a read where that evidence has been taken away.
+        """
+        read = insert_into_primer(
+            build_read(TRUE_BC3, TRUE_BC2, TRUE_BC1), PRIMER_C, PRIMER_INSERTION_BASES[:4]
+        )
+        assert_that(read).is_length(READ_LENGTH)
+
+        bc2 = extract(chemistry, read, fast, "BC2")
+        attempt = bc2.attempts[-1]
+        described = f"insertion of 4 into PRIMER_C, fast={fast}"
+
+        assert_that(bc2.success).described_as(described).is_true()
+        assert_that(attempt.match).described_as(described).is_equal_to(TRUE_BC2)
+        assert_that(attempt.read_idx).described_as(described).is_equal_to(
+            nominal_span(chemistry, "BC2", 4)
+        )
+        assert_that(attempt.spacer_downstream).described_as(described).is_equal_to("PRIMER_A")
+
+    @pytest.mark.parametrize("fast", [False, True])
+    @pytest.mark.parametrize("insertion", [4, 5, 6])
+    def test_displacement_beyond_the_cumulative_budget_is_refused(
+        self, chemistry: ChemistryCarmackCustomSeq10, insertion: int, fast: bool
+    ) -> None:
+        """Test that an uncorroborated component past its budget is refused rather than called.
+
+        This is the design working, not a regression, and it is the price of the decoy tests
+        above: BC2 found more than the three bases from its predicted start that the structure
+        upstream of it can account for is making a claim the structure does not support, and if
+        nothing else supports it either then a refused read is the honest answer. A wrong cell
+        barcode is invisible downstream, a dropped read is not.
+
+        The read is built with PRIMER_A substituted so the displaced BC2 has no evidence
+        anywhere -- PRIMER_C is broken by the insertion, PRIMER_A no longer matches base for
+        base -- which is what isolates the budget from the corroboration. BC1 on the same read
+        is displaced by exactly as much and has exactly as little evidence, and is called
+        throughout, because six is what its own cumulative budget allows: the refusal is BC2's
+        budget being spent, not a bound drawn tight across the whole structure.
+        """
+        read = insert_into_primer(
+            plant(
+                build_read(TRUE_BC3, TRUE_BC2, TRUE_BC1),
+                chemistry.read_structure.get_component_by_name("PRIMER_A").start,
+                PRIMER_A_MISMATCHED,
+            ),
+            PRIMER_C,
+            PRIMER_INSERTION_BASES[:insertion],
+        )
+        assert_that(read).is_length(READ_LENGTH)
+        described = f"insertion of {insertion} into PRIMER_C, fast={fast}"
+
+        bc2 = extract(chemistry, read, fast, "BC2")
+        assert_that(bc2.success).described_as(described).is_false()
+        for attempt in bc2.attempts:
+            assert_that(attempt.match).described_as(
+                f"{described}, {attempt.method} span {attempt.read_idx}"
+            ).is_none()
+
+        bc1 = extract(chemistry, read, fast, "BC1")
+        assert_that(bc1.attempts[-1].match).described_as(described).is_equal_to(TRUE_BC1)
+        assert_that(bc1.attempts[-1].read_idx).described_as(described).is_equal_to(
+            nominal_span(chemistry, "BC1", insertion)
+        )
+
+
 class SweepOutcome:
     """Tally of one sweep cell: how many reads were called right, wrong, or not at all."""
 
@@ -373,6 +812,12 @@ class SweepOutcome:
         self.ambiguous = 0
         self.nomatch = 0
         self.wrong_examples: list[tuple[str, str, str]] = []
+        # What each read was called, in generation order: the assembled barcode, or None for a
+        # read that was not called. Tallies alone cannot say the two modes agree -- one mode
+        # calling read A right and read B wrong while the other does the reverse leaves every
+        # count identical -- and it is agreement on the individual read that decides which
+        # cell a molecule lands in.
+        self.calls: list[str | None] = []
 
     @property
     def total(self) -> int:
@@ -426,6 +871,7 @@ def run_sweep(
         read = build_read(observed["BC3"], observed["BC2"], observed["BC1"], umi)
 
         result = extractor.process_read("read", read, "I" * len(read))
+        outcome.calls.append(result.full_barcode if result.success else None)
         if result.success:
             called = {bc.bc_name: bc.attempts[-1].match for bc in result.bc_results}
             if called == truth:
@@ -480,12 +926,29 @@ class TestMisassignmentSweep:
         ``--fast`` and the full path have to be the same analysis. They were not: the fast path
         correctly reported no match on reads the full path assigned a barcode to, which meant
         the mode a run happened to use changed which cells its reads landed in.
+
+        Agreement is asserted read by read and not only in aggregate, because the aggregate
+        form is satisfiable by two modes that disagree on individual reads in offsetting
+        directions, and it is the individual read that ends up in a cell. It is agreement on
+        what was *called* rather than on the shape of a failure: a read the full path finds
+        two equally close candidates for is recorded as unresolvable, and the fast path, which
+        never runs the stage that says so, records the same read as unmatched. Both decline to
+        guess, which is the property that matters; only the annotation differs.
         """
         full = run_sweep(chemistry, component_name, "sub", fast=False, reads=SMOKE_READS_PER_CELL)
         fast = run_sweep(chemistry, component_name, "sub", fast=True, reads=SMOKE_READS_PER_CELL)
 
         assert_that(full.wrong).is_equal_to(fast.wrong)
         assert_that(full.correct).is_equal_to(fast.correct)
+        disagreements = [
+            (index, full_call, fast_call)
+            for index, (full_call, fast_call) in enumerate(zip(full.calls, fast.calls))
+            if full_call != fast_call
+        ]
+        assert_that(disagreements).described_as(
+            f"{component_name}: reads the two modes called differently, as "
+            f"(read, full, fast): {disagreements[:5]}"
+        ).is_empty()
 
     @pytest.mark.only_run_with_direct_target
     @pytest.mark.parametrize("component_name", ["BC3", "BC2", "BC1"])

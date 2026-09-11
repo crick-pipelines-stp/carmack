@@ -24,6 +24,7 @@ from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.barcode.matchers.matcher_base import MatcherBase, UnresolvedComponentStartError
 from carmack.chemistry.chemistry_base import ChemistryBase
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import PRIMER_A, PRIMER_C
+from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from tests.conftest import WIDE_SPACER_DOWNSTREAM, WIDE_SPACER_UPSTREAM
@@ -32,6 +33,40 @@ from tests.test_chemistry import ChemistryCarmackCustomSeq10
 # Matcher classes whose constructor takes an explicit error budget rather than reading one
 # from the chemistry.
 MATCHERS_REQUIRING_MAX_ERRORS = (KmerMatcher, AlignmentMatcher)
+
+# The region of a read each shipped chemistry's barcodes may be searched in, on a read long
+# enough that neither bound is clamped. Each is read straight off the declared layout: the
+# component's own extent widened either side by its drift tolerance plus the error budget the
+# matcher is looking with. Nothing here is a neighbour's territory -- BC1 is the last barcode
+# in all three chemistries and is bounded on the right just as tightly as BC2, which is the
+# whole difference from bounding by the gap to the next barcode.
+DRIFT_WINDOW_CASES = (
+    ("carmack_custom_seq_1_0", 150, "BC3", (0, 11)),
+    ("carmack_custom_seq_1_0", 150, "BC2", (28, 46)),
+    ("carmack_custom_seq_1_0", 150, "BC1", (57, 81)),
+    ("carmack_custom_seq_1_0_primd", 150, "BC3", (19, 35)),
+    ("carmack_custom_seq_1_0_primd", 150, "BC2", (48, 70)),
+    ("carmack_custom_seq_1_0_primd", 150, "BC1", (77, 105)),
+    ("hydrop", 60, "BC3", (0, 12)),
+    ("hydrop", 60, "BC2", (15, 35)),
+    ("hydrop", 60, "BC1", (32, 58)),
+)
+
+# The displacement at which a lone candidate stops being corroborated by its own position,
+# per shipped chemistry and barcode. It is the larger of the drift the layout permits and the
+# error budget the component is matched with, never their sum: the window already admits a
+# full-length span at exactly that sum, so a rule keyed on it could never fire.
+SPACER_EVIDENCE_THRESHOLD_CASES = (
+    ("carmack_custom_seq_1_0", "BC3", 1),
+    ("carmack_custom_seq_1_0", "BC2", 3),
+    ("carmack_custom_seq_1_0", "BC1", 6),
+    ("carmack_custom_seq_1_0_primd", "BC3", 2),
+    ("carmack_custom_seq_1_0_primd", "BC2", 5),
+    ("carmack_custom_seq_1_0_primd", "BC1", 8),
+    ("hydrop", "BC3", 2),
+    ("hydrop", "BC2", 3),
+    ("hydrop", "BC1", 6),
+)
 
 
 class TestBarcodeMatcherBase:
@@ -274,6 +309,186 @@ class TestBarcodeMatcherBase:
         assert_that(spacer_results["upstream"]).is_equal_to(upstream_spacer)
         assert_that(spacer_results["downstream"]).is_equal_to(downstream_spacer)
 
+    # ==========================================
+    # component_window() and requires_spacer_evidence()
+    # ==========================================
+
+    @pytest.fixture
+    def component_matcher(self) -> Callable[[str, str], KmerMatcher]:
+        """Return a factory building a matcher over one component of a named chemistry.
+
+        KmerMatcher is used throughout because it is the only matcher that accepts a target
+        index as well as a barcode, and both window rules have to be exercised on both.
+
+        Returns:
+            Callable taking a registered chemistry name and a component name, and returning a
+            KmerMatcher configured with that component's own whitelist and error budget.
+        """
+
+        def build(chemistry_name: str, component_name: str) -> KmerMatcher:
+            chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+            component = chemistry.read_structure.get_component_by_name(component_name)
+            return KmerMatcher(
+                whitelist=chemistry.whitelists[component_name],
+                component=component,
+                chemistry=chemistry,
+                max_errors=chemistry.match_errors_for(component),
+            )
+
+        return build
+
+    @pytest.mark.parametrize(
+        "chemistry_name, read_len, component_name, expected", DRIFT_WINDOW_CASES
+    )
+    def test_component_window_is_bounded_by_the_declared_drift(
+        self,
+        chemistry_name: str,
+        read_len: int,
+        component_name: str,
+        expected: tuple[int, int],
+        component_matcher: Callable[[str, str], KmerMatcher],
+    ) -> None:
+        """Test that a component is searched only as far as the layout could have moved it.
+
+        The bound is the component's own extent widened by the drift the declared layout
+        permits plus the budget the matcher is searching with, and nothing else. Bounding by
+        the gap to the neighbouring barcode instead left the last barcode of every chemistry
+        with no right-hand bound at all, so it was searched across the UMI, the anchor, the
+        target index and the whole insert -- a stretch in which a 96-entry whitelist finds a
+        chance exact match often enough to fabricate cell barcodes on real libraries. The
+        neighbour was never the right measure even where it existed: BC2's two-sided gap
+        admitted decoys twenty bases out just the same.
+        """
+        matcher = component_matcher(chemistry_name, component_name)
+
+        window = matcher.component_window("A" * read_len, matcher.max_errors)
+
+        assert_that(window).is_equal_to(expected)
+
+    @pytest.mark.parametrize(
+        "chemistry_name", ["carmack_custom_seq_1_0", "carmack_custom_seq_1_0_primd"]
+    )
+    def test_component_window_spans_the_read_for_an_unresolved_start(
+        self,
+        chemistry_name: str,
+        component_matcher: Callable[[str, str], KmerMatcher],
+    ) -> None:
+        """Test that a component the layout cannot place is searched across the whole read.
+
+        The target index sits behind a homopolymer of unknown length, so the structure
+        predicts neither where it starts nor how far it may have slid. There is no honest
+        window to impose, and inventing one from the nominal offsets would bound the search by
+        an arithmetic the read never promised. Such a component is bounded before it reaches a
+        matcher, by the anchor run that locates it.
+
+        Both halves of "the layout makes no prediction" are asserted here because the window
+        now reads the drift rather than the start, and the two are the same fact seen twice.
+        """
+        read = "A" * 150
+        matcher = component_matcher(chemistry_name, "TGIDX")
+
+        assert_that(matcher.component.start).is_none()
+        assert_that(matcher.chemistry.drift_tolerance(matcher.component)).is_none()
+        assert_that(matcher.component_window(read, matcher.max_errors)).is_equal_to((0, len(read)))
+
+    @pytest.mark.parametrize(
+        "chemistry_name, read_len, component_name, expected", DRIFT_WINDOW_CASES
+    )
+    def test_component_window_admits_a_full_length_span_at_the_tolerance_limit(
+        self,
+        chemistry_name: str,
+        read_len: int,
+        component_name: str,
+        expected: tuple[int, int],
+        component_matcher: Callable[[str, str], KmerMatcher],
+    ) -> None:
+        """Test that a component drifted the full tolerance still fits inside its window.
+
+        The window bounds a span, not a start. A component displaced by everything the layout
+        allows begins at the tolerance limit and still occupies its own length behind that, so
+        a ceiling of ``expected_start + tolerance`` would cut the very read the tolerance was
+        computed to admit -- custom_seq_1_0's BC1 drifted six bases ends at 80 against a
+        ceiling of 71. Adding the component's length on the high side is what makes the
+        tolerance mean what it says.
+        """
+        matcher = component_matcher(chemistry_name, component_name)
+        chemistry = matcher.chemistry
+        expected_start = matcher.component.start
+        tolerance = chemistry.drift_tolerance(matcher.component) + matcher.max_errors
+
+        window_low, window_high = matcher.component_window("A" * read_len, matcher.max_errors)
+        span_end = expected_start + tolerance + matcher.component.length
+
+        assert_that(span_end).is_less_than_or_equal_to(window_high)
+        assert_that(window_high).is_greater_than(expected_start + tolerance)
+        assert_that(window_low).is_less_than_or_equal_to(max(0, expected_start - tolerance))
+        assert_that(expected).is_equal_to((window_low, window_high))
+
+    @pytest.mark.parametrize(
+        "chemistry_name, component_name, threshold", SPACER_EVIDENCE_THRESHOLD_CASES
+    )
+    def test_requires_spacer_evidence_thresholds_on_the_cumulative_budget(
+        self,
+        chemistry_name: str,
+        component_name: str,
+        threshold: int,
+        component_matcher: Callable[[str, str], KmerMatcher],
+    ) -> None:
+        """Test that corroboration is demanded exactly one base past the cumulative budget.
+
+        A candidate within everything the layout and the matcher between them can explain is
+        already corroborated by its position, and demanding a spacer as well would throw away
+        reads over an exact 22bp primer that a single error anywhere in it destroys -- and
+        reads reaching a searching matcher at all are the error-laden ones. A candidate
+        further out is making a different claim, that the component is somewhere the structure
+        cannot put it, and has to bring evidence beyond its own alignment.
+
+        The threshold is the larger of the two budgets rather than their sum, which leaves a
+        real band where the window admits a candidate and this rule still refuses it. Keyed on
+        the sum it would be vacuous, because the window admits a full-length span at exactly
+        that displacement and nothing beyond it.
+        """
+        matcher = component_matcher(chemistry_name, component_name)
+        expected_start = matcher.component.start
+        length = matcher.component.length
+        budget = matcher.max_errors
+
+        for delta in (threshold, -threshold):
+            start = expected_start + delta
+            if start < 0:
+                continue
+            assert_that(
+                matcher.requires_spacer_evidence((start, start + length), budget)
+            ).is_false()
+
+        for delta in (threshold + 1, -(threshold + 1)):
+            start = expected_start + delta
+            if start < 0:
+                continue
+            assert_that(
+                matcher.requires_spacer_evidence((start, start + length), budget)
+            ).is_true()
+
+    def test_requires_spacer_evidence_is_false_for_the_target_index(
+        self, component_matcher: Callable[[str, str], KmerMatcher]
+    ) -> None:
+        """Test that a component the layout cannot place is never asked to corroborate itself.
+
+        Where the structure predicts no position, position neither corroborates nor
+        contradicts, so there is nothing for a displacement rule to measure. Demanding
+        evidence instead would be unanswerable rather than merely strict: the target index is
+        flanked by a homopolymer on one side and by a Mosaic End shipped without a sequence on
+        the other, so its spacer check returns nothing on every read by construction, and
+        target assignment would report every read as carrying no target at all.
+        """
+        matcher = component_matcher("carmack_custom_seq_1_0", "TGIDX")
+
+        assert_that(matcher.chemistry.drift_tolerance(matcher.component)).is_none()
+        assert_that(matcher.requires_spacer_evidence((40, 48), matcher.max_errors)).is_false()
+        assert_that(matcher.check_spacers("A" * 150, (40, 48))).is_equal_to(
+            {"upstream": None, "downstream": None}
+        )
+
 
 class TestMatcherStartIdxContract:
     """Characterisation tests pinning what `start_idx` means to each matcher.
@@ -296,9 +511,6 @@ class TestMatcherStartIdxContract:
 
     # The barcode occupies read positions 0-10; the poly-T tail seeds no whitelist k-mer.
     READ_BARCODE_AT_START = BARCODE + "T" * 20
-
-    # The barcode occupies read positions 4-14, behind four bases of filler.
-    READ_BARCODE_AT_FOUR = "TTTT" + BARCODE + "T" * 8
 
     # The barcode occupies read positions 2-12, behind two bases of filler. Two bases is inside
     # the HyDrop error budget, so AlignmentMatcher treats a candidate here as corroborated by
@@ -1255,21 +1467,128 @@ class TestKmerMatcher:
     ) -> None:
         """Test that a BC2 entry planted where BC3 belongs is not called as BC2.
 
-        Seeding scans the whole read, but a candidate is only kept if it verified inside this
-        component's own region. Without that, a whitelist entry that is a rotation of a
-        *neighbouring* component's entry is found in that neighbour's territory on every read
-        of a library using it -- and being a rotation it often matches there exactly, while the
-        component's own damaged window is an edit out, so it wins on distance outright and no
-        tie-break or spacer check is ever reached.
+        Seeding scans the whole read, but a candidate is only kept if it verified inside the
+        region the declared layout could have moved this component into. Without that, a
+        whitelist entry that is a rotation of a *neighbouring* component's entry is found in
+        that neighbour's territory on every read of a library using it -- and being a rotation
+        it often matches there exactly, while the component's own damaged window is an edit
+        out, so it wins on distance outright and no tie-break or spacer check is ever reached.
+
+        BC2 belongs at 20 and may have drifted three bases, so with a budget of two nothing
+        earlier than 15 can be it. The plant sits at 0.
         """
         bc2 = hydrop_whitelists["BC2"][0]
         read = bc2 + "A" * 40
 
         assert_that(bc2_matcher.component_window(read, bc2_matcher.max_errors)).is_equal_to(
-            (10, 40)
+            (15, 35)
         )
         for attempt in bc2_matcher.match(read):
             assert_that(attempt.match).is_none()
+
+    def test_lone_kmer_candidate_off_position_without_a_spacer_returns_one_matchless_attempt(
+        self,
+        bc2_matcher: KmerMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that an uncorroborated lone candidate declines rather than assigning.
+
+        Arriving alone is not evidence of anything. This candidate is the only one standing,
+        but it sits five bases from where BC2 belongs -- inside the window, which admits five,
+        and past the three the layout can explain -- and its flanks are filler rather than the
+        expected spacers. Assigning it unexamined is the path that read cell barcodes off
+        unrelated insert sequence, and it was reachable on nearly every read because this
+        matcher runs first and a successful lone assignment here is terminal.
+
+        Exactly one matchless attempt comes back, never several. One is what the read has to
+        carry to stay non-terminal and escalate to the alignment matcher, which applies the
+        same rule and may still recover the read on evidence of its own. Several attempts
+        would latch an ambiguity verdict and block that escalation, and ambiguity is the wrong
+        verdict here: the candidates never tied, there was only ever one.
+        """
+        bc2 = hydrop_whitelists["BC2"][0]
+        read = "A" * 25 + bc2 + "A" * 15
+
+        assert_that(bc2_matcher.component_window(read, bc2_matcher.max_errors)).is_equal_to(
+            (15, 35)
+        )
+        assert_that(
+            bc2_matcher.requires_spacer_evidence((25, 35), bc2_matcher.max_errors)
+        ).is_true()
+
+        result = bc2_matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_none()
+        assert_that(result[0].method).is_equal_to(MatchMethod.KMERMATCH)
+
+    def test_lone_kmer_candidate_off_position_with_a_spacer_is_assigned_and_records_it(
+        self,
+        bc2_matcher: KmerMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that a displaced lone candidate backed by a spacer is assigned, and says so.
+
+        The same five-base displacement as the read above, but here the ten bases immediately
+        upstream are the expected spacer, which is a claim about the read the candidate did
+        not make about itself. That is what a displaced candidate needs, and it is exactly the
+        population an upstream insertion produces: the component really has moved, and the
+        structure around it moved with it.
+
+        The spacer that carried the decision is recorded on the attempt, because a call taken
+        on evidence should be readable as such in the annotation and in the run statistics.
+        """
+        bc2 = hydrop_whitelists["BC2"][0]
+        read = "A" * 15 + self.SPACER_1 + bc2 + "A" * 15
+
+        assert_that(
+            bc2_matcher.requires_spacer_evidence((25, 35), bc2_matcher.max_errors)
+        ).is_true()
+
+        result = bc2_matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to(bc2)
+        assert_that(result[0].read_idx).is_equal_to((25, 35))
+        assert_that(result[0].spacer_upstream).is_equal_to("SPACER_1")
+        assert_that(result[0].spacer_downstream).is_none()
+
+    def test_lone_kmer_candidate_at_position_records_no_spacer_evidence(
+        self,
+        bc2_matcher: KmerMatcher,
+        hydrop_whitelists: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Test that a lone candidate at its expected position is not spacer-checked at all.
+
+        Both real spacers flank this candidate exactly, so a spacer check would find them and
+        record them. Neither field is set, which is the only way to observe from the outside
+        that the check never ran: the candidate sits where the structure predicts it, nothing
+        was required of it, and the spacers took no part in the decision.
+
+        Not running it is deliberate on two counts. It is the hot path, taken by nearly every
+        read of a healthy library. And the spacer fields are rendered into the annotated read
+        name and into the per-run spacer statistics, so recording evidence on every lone match
+        would move nearly every output line to describe a decision the spacers never entered.
+        """
+        bc2 = hydrop_whitelists["BC2"][0]
+        read = self._build_hydrop_read(
+            hydrop_whitelists["BC3"][0], bc2, hydrop_whitelists["BC1"][0]
+        )
+
+        assert_that(
+            bc2_matcher.requires_spacer_evidence((20, 30), bc2_matcher.max_errors)
+        ).is_false()
+        assert_that(bc2_matcher.check_spacers(read, (20, 30))).is_equal_to(
+            {"upstream": "SPACER_1", "downstream": "SPACER_2"}
+        )
+
+        result = bc2_matcher.match(read)
+
+        assert_that(result).is_length(1)
+        assert_that(result[0].match).is_equal_to(bc2)
+        assert_that(result[0].read_idx).is_equal_to((20, 30))
+        assert_that(result[0].spacer_upstream).is_none()
+        assert_that(result[0].spacer_downstream).is_none()
 
     def test_match_candidate_field_matches_read_slice(
         self,
@@ -2631,37 +2950,43 @@ class TestAlignmentMatcher:
     # search_bounds() Tests
     # ==========================================
 
-    def test_search_bounds_is_the_component_inter_barcode_interval(
+    def test_search_bounds_is_the_component_drift_window(
         self, bc2_matcher: AlignmentMatcher
     ) -> None:
-        """Test that a component's window runs between its neighbouring barcodes.
+        """Test that a component's window is its own extent widened by the declared drift.
 
-        HyDrop lays out BC3 at 0-10, BC2 at 20-30 and BC1 at 40-50, so BC2 may be looked for
-        between BC3's expected end and BC1's expected start. The 10bp either side of BC2's own
-        extent is the surrounding spacer, which is exactly the room an indel upstream can push
-        the component into.
+        HyDrop puts BC2 at 20-30 behind one barcode and one spacer, which between them can
+        displace it three bases; the matcher looks with a budget of two on top. So BC2 may
+        begin as early as 15 and end as late as 35, and the ten bases of surrounding spacer
+        are not room the component is entitled to wander into.
         """
-        assert_that(bc2_matcher.search_bounds("A" * 60, 0)).is_equal_to((10, 40))
+        assert_that(bc2_matcher.search_bounds("A" * 60, 0)).is_equal_to((15, 35))
 
     def test_search_bounds_first_component_starts_at_zero(
         self, bc3_matcher: AlignmentMatcher
     ) -> None:
         """Test that the first barcode's window opens at the read start.
 
-        BC3 has no preceding barcode to measure an interval from, so there is no lower
-        structural bound; the upper one is still BC2's expected start.
+        Nothing precedes BC3, so nothing can have displaced it and its drift tolerance is
+        zero: the window is its own extent widened by the error budget alone, clamped at the
+        read start because a negative index is not a position. That it stays clamped rather
+        than reaching BC2 is the point -- BC3 has no business being looked for at 15.
         """
-        assert_that(bc3_matcher.search_bounds("A" * 60, 0)).is_equal_to((0, 20))
+        assert_that(bc3_matcher.search_bounds("A" * 60, 0)).is_equal_to((0, 12))
 
-    def test_search_bounds_last_component_runs_to_the_read_end(
+    def test_search_bounds_bounds_the_last_component_on_the_right(
         self, bc1_matcher: AlignmentMatcher
     ) -> None:
-        """Test that the last barcode's window extends to the end of the read.
+        """Test that the last barcode is bounded on the right despite having no neighbour.
 
-        Nothing follows BC1 in the HyDrop structure, so there is no barcode whose window it
-        could stray into and no reason to bound it on the right.
+        This is the hole the drift bound closes. Measuring a component's window by the gap to
+        the following barcode leaves the last one of every shipped chemistry unbounded, so it
+        was searched to the end of the read -- across the UMI, the anchor, the target index
+        and the entire insert. BC1 may have drifted six bases and is matched with a budget of
+        two, so 58 is as far as it can honestly reach, whatever the read length.
         """
-        assert_that(bc1_matcher.search_bounds("A" * 60, 0)).is_equal_to((30, 60))
+        assert_that(bc1_matcher.search_bounds("A" * 60, 0)).is_equal_to((32, 58))
+        assert_that(bc1_matcher.search_bounds("A" * 200, 0)).is_equal_to((32, 58))
 
     def test_search_bounds_honours_start_idx_as_a_floor(
         self, bc2_matcher: AlignmentMatcher
@@ -2671,8 +2996,8 @@ class TestAlignmentMatcher:
         This matcher treats start_idx as a hard floor on where a match may begin, which the
         structural bound is applied on top of rather than instead of.
         """
-        assert_that(bc2_matcher.search_bounds("A" * 60, 25)).is_equal_to((25, 40))
-        assert_that(bc2_matcher.search_bounds("A" * 60, 0)).is_equal_to((10, 40))
+        assert_that(bc2_matcher.search_bounds("A" * 60, 25)).is_equal_to((25, 35))
+        assert_that(bc2_matcher.search_bounds("A" * 60, 0)).is_equal_to((15, 35))
 
     def test_search_bounds_clamped_to_the_read(self, bc2_matcher: AlignmentMatcher) -> None:
         """Test that the window never runs past the end of a short read."""
@@ -2684,17 +3009,18 @@ class TestAlignmentMatcher:
     def test_search_bounds_excludes_a_neighbouring_barcodes_window(
         self, bc3_matcher: AlignmentMatcher, hydrop_whitelists: dict[str, tuple[str, ...]]
     ) -> None:
-        """Test that a barcode placed in a neighbour's window is not found for this component.
+        """Test that a barcode planted twenty bases downstream is not found for this component.
 
         This is the hole the bound closes. Without it the whole read is in scope for the first
         component, whose start_idx is 0, so a BC3 whitelist entry that happens to sit where BC2
         belongs is aligned there and assigned -- a cell barcode read off a different
-        component's sequence entirely.
+        component's sequence entirely. Nothing precedes BC3, so nothing can have moved it and
+        a candidate at 20 is a claim the layout flatly contradicts.
         """
         planted = hydrop_whitelists["BC3"][0]
         read = "T" * 20 + planted + "T" * 20
 
-        assert_that(bc3_matcher.search_bounds(read, 0)).is_equal_to((0, 20))
+        assert_that(bc3_matcher.search_bounds(read, 0)).is_equal_to((0, 12))
         for attempt in bc3_matcher.match(read):
             assert_that(attempt.match).is_none()
 
@@ -3328,7 +3654,7 @@ class TestAlignmentMatcher:
 
     def test_match_ambiguous_with_no_spacer_evidence_returns_every_tied_candidate(
         self,
-        hydrop_chemistry: ChemistryHydrop,
+        wide_spaced_chemistry: Any,
     ) -> None:
         """Test that a tie with no spacer evidence at all returns every tied candidate.
 
@@ -3339,22 +3665,25 @@ class TestAlignmentMatcher:
         ambiguity exit above it is that BOTH ``spacer_upstream`` and ``spacer_downstream`` are
         None on every returned attempt, so those two assertions carry the characterisation.
 
-        BC2 is the component because it is the only HyDrop barcode with a defined spacer on both
-        sides, which is what makes the spacer check meaningful here rather than vacuous.
+        BC2 is the component because it is the one with a defined spacer on both sides, which
+        is what makes the spacer check meaningful here rather than vacuous. The wide-spaced
+        layout is what lets both tied candidates sit inside BC2's window at all: a shipped
+        chemistry bounds a barcode to a few bases either side of where the layout puts it, far
+        too tight to hold two candidates separated by filler.
 
         The filler is ten T's rather than five deliberately. ``check_spacers`` guards its
         upstream window with ``match_idx[0] >= spacer_component.length`` and its downstream
-        window with the mirror-image bound, and HyDrop spacers are 10bp; with only five bases of
-        filler those guards short-circuit and this test would pin a bounds check instead of a
+        window with the mirror-image bound, and the spacers here are 10bp; with only five bases
+        of filler those guards short-circuit and this test would pin a bounds check instead of a
         spacer-sequence comparison. With ten, every spacer window genuinely exists and simply
         fails to match the expected spacer sequence, which is the condition being pinned.
         """
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        comp = wide_spaced_chemistry.read_structure.get_component_by_name("BC2")
         matcher = AlignmentMatcher(
             whitelist=(self.BC_X, self.BC_Y),
             component=comp,
-            chemistry=hydrop_chemistry,
-            max_errors=hydrop_chemistry.max_errors.barcode,
+            chemistry=wide_spaced_chemistry,
+            max_errors=wide_spaced_chemistry.max_errors.barcode,
         )
         # Filler is neither spacer sequence, so no spacer window can validate a candidate.
         filler = "TTTTTTTTTT"
@@ -3400,7 +3729,7 @@ class TestAlignmentMatcher:
         self,
         bc_true: str,
         bc_other: str,
-        hydrop_chemistry: ChemistryHydrop,
+        wide_spaced_chemistry: Any,
     ) -> None:
         """Test that a lone spacer-validated survivor is assigned its OWN barcode, not the tied first one.
 
@@ -3410,22 +3739,33 @@ class TestAlignmentMatcher:
         Parametrising both role assignments of the same pair makes exactly one case assign the wrong
         barcode (failing the recomputed ``max_errors`` gate) on the buggy code under any hash seed,
         while both cases pass once each survivor keeps its own originating barcode.
+
+        Branch A is the rung that separates *tied* candidates by spacer evidence, so the read has
+        to genuinely produce two of them inside one component's window. The wide-spaced layout is
+        what buys that room: a shipped chemistry bounds a barcode to a few bases either side of
+        where the layout puts it, so a second candidate planted in filler falls outside the window
+        entirely and the read resolves as a lone candidate instead, exercising a different branch
+        under a name that claims this one. The spacer profile asserted below is the observable
+        proof of which rung ran: exactly one adjacent spacer, never two, is what Branch A means
+        and is what distinguishes it from the two-spacer narrowing rung below.
         """
-        comp = hydrop_chemistry.read_structure.get_component_by_name("BC2")
+        comp = wide_spaced_chemistry.read_structure.get_component_by_name("BC2")
         matcher = AlignmentMatcher(
             whitelist=(bc_true, bc_other),
             component=comp,
-            chemistry=hydrop_chemistry,
-            max_errors=hydrop_chemistry.max_errors.barcode,
+            chemistry=wide_spaced_chemistry,
+            max_errors=wide_spaced_chemistry.max_errors.barcode,
         )
-        # bc_true is flanked by both expected spacers; bc_other sits in non-spacer filler.
-        read = bc_other + "TTTTT" + self.SPACER_1 + bc_true + self.SPACER_2 + "TTTTT"
+        # bc_true carries the expected upstream spacer; bc_other sits in non-spacer filler.
+        read = "T" * 10 + bc_other + "T" * 10 + WIDE_SPACER_UPSTREAM + bc_true + "T" * 10
         result = matcher.match(read)
 
         assert_that(result).is_length(1)
         assert_that(result[0].match).is_equal_to(bc_true)
         assert_that(result[0].candidate).is_equal_to(bc_true)
         assert_that(result[0].edit_distance).is_equal_to(0)
+        assert_that(result[0].spacer_upstream).is_equal_to("SPACER_1")
+        assert_that(result[0].spacer_downstream).is_none()
         assert_that(edit_distance(result[0].candidate, result[0].match)).is_equal_to(
             result[0].edit_distance
         )
@@ -3445,8 +3785,8 @@ class TestAlignmentMatcher:
         forces exactly one case to assign the wrong barcode on the buggy code under any hash seed.
 
         The wide-spaced layout is needed because both candidates have to sit inside BC2's
-        search window, and a shipped chemistry's barcode spacing cannot hold two complete
-        spacer-barcode-spacer arrangements.
+        search window, and no shipped chemistry declares enough drift for that window to hold
+        two complete spacer-barcode-spacer arrangements.
         """
         comp = wide_spaced_chemistry.read_structure.get_component_by_name("BC2")
         matcher = AlignmentMatcher(
@@ -3735,16 +4075,23 @@ class TestAlignmentMatcher:
     ) -> None:
         """Test that a lone candidate away from its expected position is not assigned unbacked.
 
-        Arriving alone is not evidence. This candidate sits eight bases from where BC2 belongs,
-        which is more drift than the error budget explains, and its flanks are filler rather
-        than the expected spacers -- so there is nothing supporting it but its own alignment.
-        Assigning on that alone is the path that produced barcodes read off unrelated sequence.
+        Arriving alone is not evidence. The candidate has to be planted in the band where the
+        rule actually decides anything: BC2's window admits a displacement of five either way,
+        while the rule refuses anything past the three the layout can explain. Five bases out
+        is therefore inside the window and refused by the rule, and the read has to be
+        rejected on the rule rather than never being looked at.
+
+        Its flanks are filler rather than the expected spacers, so there is nothing supporting
+        it but its own alignment. Assigning on that alone is the path that produced barcodes
+        read off unrelated sequence.
         """
         bc2 = hydrop_whitelists["BC2"][0]
-        read = "A" * 12 + bc2 + "A" * 28
+        read = "A" * 25 + bc2 + "A" * 15
 
-        assert_that(bc2_matcher.search_bounds(read, 0)).is_equal_to((10, 40))
-        assert_that(bc2_matcher.requires_spacer_evidence((12, 22))).is_true()
+        assert_that(bc2_matcher.search_bounds(read, 0)).is_equal_to((15, 35))
+        assert_that(
+            bc2_matcher.requires_spacer_evidence((25, 35), bc2_matcher.max_errors)
+        ).is_true()
         for attempt in bc2_matcher.match(read):
             assert_that(attempt.match).is_none()
 
@@ -3764,7 +4111,9 @@ class TestAlignmentMatcher:
         bc2 = hydrop_whitelists["BC2"][0]
         read = "A" * 20 + bc2 + "A" * 20
 
-        assert_that(bc2_matcher.requires_spacer_evidence((20, 30))).is_false()
+        assert_that(
+            bc2_matcher.requires_spacer_evidence((20, 30), bc2_matcher.max_errors)
+        ).is_false()
         result = bc2_matcher.match(read)
 
         assert_that(result).is_length(1)

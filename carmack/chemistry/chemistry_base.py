@@ -170,7 +170,15 @@ class MatchErrors:
 
     Attributes:
         barcode: Max edits when matching a barcode component to its whitelist.
-        spacer: Max edits when matching a spacer / primer sequence.
+        spacer: Max edits a spacer or primer component is allowed to carry.
+            Nothing compares a spacer against its declared sequence with any
+            tolerance -- ``MatcherBase.check_spacers`` demands the whole run
+            base for base, so a spacer is evidence or it is nothing. What this
+            budget actually governs is displacement: each primer or other
+            component ahead of a component contributes this many bases to the
+            drift that component may have accumulated, since every error it is
+            allowed to carry can be an indel. See
+            :attr:`ChemistryBase.drift_tolerances`.
         tgidx: Max edits when matching a TGIDX component to its whitelist.
             Defaults to one so that a chemistry adding a target index without
             stating a tolerance gets sensible behaviour rather than silent
@@ -638,6 +646,90 @@ class ChemistryBase(ABC):
         if component.type is ReadComponentType.TGIDX:
             return self.max_errors.tgidx
         return None
+
+    @cached_property
+    def drift_tolerances(self) -> dict[str, int | None]:
+        """
+        Return how far the declared layout permits each component to have moved.
+
+        A component sits at its nominal start only on a read that matched the layout base for
+        base. Every error each component *ahead* of it is allowed to carry can be an indel, and
+        an indel shifts everything behind it, so the furthest a component can honestly have
+        travelled is the running total of those budgets. That total is what bounds where the
+        component may be looked for; without it a matcher has to guess, and the guess in use
+        before this -- the gap to the neighbouring barcode -- left the last barcode of every
+        shipped chemistry searched across the UMI, the anchor, the target index and the whole
+        insert.
+
+        The walk mirrors :meth:`ReadStructure.compute_start_positions` exactly: a running total
+        is assigned to each component *before* that component's own budget is added, since a
+        component cannot be displaced by its own errors, and the total is dropped once a
+        variable-length component has been passed. ``None`` therefore means the layout makes no
+        positional prediction at all, and the components it holds for are precisely those with
+        ``start is None`` -- one fact with two symptoms, because both fall out of the same walk.
+
+        Drift is displacement, not matchability, which is why this cannot be expressed in terms
+        of :meth:`match_errors_for`. That method reports ``None`` for a primer, because a primer
+        is never matched against a whitelist; but ``carmack_custom_seq_1_0_primd``'s
+        ``PRIMER_D`` ships without a sequence and so can never be spacer-checked either, and it
+        still occupies 22 bases and still displaces everything 3' of it exactly as a checkable
+        primer would. A primer contributes its spacer budget here whether or not anything can
+        ever verify it.
+
+        Returns:
+            Each component's name mapped to the drift its layout permits, or to ``None`` for a
+            component the layout cannot place at all.
+        """
+        # What each component's own errors can displace behind it. A type absent from this
+        # mapping contributes nothing: a UMI is read off the length the layout declares rather
+        # than matched against anything, so it is never allowed to absorb an indel.
+        contributions = {
+            ReadComponentType.BARCODE: self.max_errors.barcode,
+            ReadComponentType.PRIMER: self.max_errors.spacer,
+            ReadComponentType.OTHER: self.max_errors.spacer,
+            ReadComponentType.TGIDX: self.max_errors.tgidx,
+        }
+
+        tolerances: dict[str, int | None] = {}
+        running_total: int | None = 0
+
+        for component in self.read_structure:
+            tolerances[component.name] = running_total
+            if running_total is None:
+                continue
+            if component.is_variable_length:
+                running_total = None
+                continue
+            running_total += contributions.get(component.type, 0)
+
+        return tolerances
+
+    def drift_tolerance(self, component: ReadComponent) -> int | None:
+        """
+        Return how far the declared layout permits ``component`` to have moved.
+
+        Args:
+            component: A component of this chemistry's read structure. It is looked up by name,
+                so it need not be the same object the structure holds.
+
+        Returns:
+            The drift the layout permits, or ``None`` when the layout makes no positional
+            prediction for this component. A component whose ``start`` is ``None`` answers
+            here without raising, since ``None`` is the answer rather than a failure.
+
+        Raises:
+            ValueError: If ``component`` is not part of this chemistry's read structure. A
+                missing name would otherwise read as absent and be indistinguishable from a
+                component the layout genuinely nails to the read start.
+        """
+        tolerances = self.drift_tolerances
+        if component.name not in tolerances:
+            raise ValueError(
+                f"Component '{component.name}' is not part of chemistry '{self.name}', so this "
+                "chemistry's layout says nothing about how far it may have drifted. Components "
+                f"in this read structure: {', '.join(tolerances)}"
+            )
+        return tolerances[component.name]
 
     def validate_whitelist_distances(self) -> None:
         """
