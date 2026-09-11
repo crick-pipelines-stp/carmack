@@ -3,11 +3,15 @@ Carmack Custom Sequencing 1.0 chemistry definition.
 
 Read structure (5' to 3'):
 BC3 (10bp) -> PRIMER_C (22bp) -> BC2 (10bp) -> PRIMER_A (22bp) -> BC1 (10bp)
--> UMI (8bp) -> POLYG (homopolymer, min run 3) -> TGIDX (8bp)
+-> UMI (8bp) -> POLYG (homopolymer, min run 3) -> TGIDX (8bp) -> ME (19bp)
 
 The UMI, poly-G and TGIDX components carry no known sequence, so barcode
 matching and spacer checks ignore them; they model the post-barcode layout for
-downstream UMI extraction only.
+downstream UMI extraction only. ME's sequence is well known (see the ME
+constant below), but is deliberately left off its ReadComponent, so the same
+matching and spacer checks ignore it too, for the different reason explained
+where it is defined: ME anchors the target index's right edge for downstream
+insert-boundary arithmetic, not UMI extraction.
 """
 
 from functools import cached_property
@@ -34,6 +38,23 @@ UMI_LENGTH = 8
 POLYG_BASE = "G"
 POLYG_MIN_RUN = 3
 TGIDX_LENGTH = 8
+
+# Mosaic End, immediately 3' of the target index. Used only for its length by the
+# insert-boundary arithmetic elsewhere in the pipeline; no matcher is ever built over it, and
+# its component below deliberately omits `sequence` so it can never be matched even
+# incidentally. Two independent mechanisms protect this:
+# FixedPositionMatcher is the only matcher that reads .start unguarded, and
+# MatcherBase.__init__ structurally rejects any component whose type is not in
+# allowed_component_types (default {BARCODE}), so a PRIMER-typed component like this one can
+# never be constructed into a matcher directly. BarcodeExtractor.init_matchers() also explicitly
+# skips every non-BARCODE component before building matchers at all.
+# Separately, KmerMatcher widens allowed_component_types to include TGIDX, so TargetAssigner
+# builds a KmerMatcher directly over TGIDX; when that matcher hits a same-score tie, its
+# inherited check_spacers()/match_seq() looks at ReadStructure.get_next(TGIDX), which is this
+# ME component, and only performs a real comparison when the neighbour's `sequence` is truthy.
+# Leaving `sequence` unset on ME's component keeps that guard structurally false, so ME is never
+# read as a spacer sequence either, even though it now sits immediately after TGIDX.
+ME = "AGATGTGTATAAGAGACAG"
 
 # Barcode file paths
 BC1_PATH = files("carmack.data.barcodes.carmack.custom_seq").joinpath(
@@ -110,6 +131,11 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
                 min_run=POLYG_MIN_RUN,
             ),
             ReadComponent(name="TGIDX", type=ReadComponentType.TGIDX, length=TGIDX_LENGTH),
+            ReadComponent(
+                name="ME",
+                type=ReadComponentType.PRIMER,
+                length=len(ME),
+            ),
         ]
 
     @cached_property

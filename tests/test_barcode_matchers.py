@@ -2688,8 +2688,10 @@ class TestKmerMatcherTargetIndexAmbiguity:
           `sequence`, so it is rejected by the `match_seq` guard inside `check_spacers` (the
           `spacer_component.type in (PRIMER, OTHER) and spacer_component.sequence` condition in
           `matcher_base.py`);
-        - `ReadStructure.get_next(TGIDX)` returns None because TGIDX is the last component in the
-          read structure, so there is nothing downstream to check either;
+        - `ReadStructure.get_next(TGIDX)` returns the `ME` primer, but `ME`'s component also
+          carries no `sequence` (only its length is used, arithmetically, elsewhere in the
+          pipeline), so it is rejected by the same guard and no real comparison is ever made
+          downstream either;
         - `check_spacers` therefore returns None on both sides for every candidate, no candidate
           is ever validated, and every tie over a target index falls through to a single attempt
           with no match.
@@ -2702,6 +2704,7 @@ class TestKmerMatcherTargetIndexAmbiguity:
         span = self.index_span(chemistry, self.AMBIGUOUS_WINDOW)
         tgidx = chemistry.tgidx_component()
         previous = chemistry.read_structure.get_previous(tgidx)
+        following = chemistry.read_structure.get_next(tgidx)
 
         result = matcher.match(read)
 
@@ -2716,7 +2719,9 @@ class TestKmerMatcherTargetIndexAmbiguity:
         )
         assert_that(previous.type).is_equal_to(ReadComponentType.HOMOPOLYMER)
         assert_that(previous.sequence).is_none()
-        assert_that(chemistry.read_structure.get_next(tgidx)).is_none()
+        assert_that(following.name).is_equal_to("ME")
+        assert_that(following.type).is_equal_to(ReadComponentType.PRIMER)
+        assert_that(following.sequence).is_none()
 
     @pytest.mark.parametrize("index", [INDEX_A, INDEX_B])
     def test_same_matcher_resolves_an_unambiguous_exact_hit(

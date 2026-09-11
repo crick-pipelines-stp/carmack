@@ -1,0 +1,8 @@
+# Prepare Reads Stats
+# unmatched_written + sum(target_written.values()) == total_reads
+Total reads: 190
+Unmatched (scRNA arm): 42 (22.11%)
+Matched (scTIP arms): 148 (77.89%)
+
+# Target Distribution
+	TATAGCCT	148 (77.89%)

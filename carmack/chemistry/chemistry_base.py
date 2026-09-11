@@ -525,6 +525,30 @@ class ChemistryBase(ABC):
             return previous
         return None
 
+    def tgidx_right_anchor(self) -> ReadComponent | None:
+        """Return the anchor component immediately 3' of the target index.
+
+        The right anchor is the component following the target index in the read
+        structure, but only when that neighbour exists and can anchor a
+        variable-length component (:attr:`ReadComponent.is_anchor`). For
+        ``carmack_custom_seq_1_0`` this is the ``ME`` primer. Unlike
+        :meth:`tgidx_anchor`, a ``None`` result here is not a construction-time
+        failure: it describes a legitimate chemistry with no adapter between the
+        target index and the insert, which the generic trim-boundary arithmetic
+        already resolves correctly (offset zero).
+
+        Returns:
+            The anchoring :class:`ReadComponent`, or ``None`` when there is no
+            target index or its right neighbour cannot anchor it.
+        """
+        component = self.tgidx_component()
+        if component is None:
+            return None
+        following = self.read_structure.get_next(component)
+        if following is not None and following.is_anchor:
+            return following
+        return None
+
     def supports_target_assignment(self) -> bool:
         """Return whether this chemistry can support target index assignment.
 

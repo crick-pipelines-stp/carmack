@@ -18,9 +18,18 @@ tier: that library barely matches the HyDrop chemistry, so nearly every read fal
 all three matcher tiers.
 
 Each case covers every stage its chemistry supports. The ``carmack_custom_seq_1_0`` cases
-run barcode extraction, UMI extraction and target assignment; the HyDrop cases stop after
-barcode extraction, because that chemistry declares neither a UMI component nor a target
-index.
+run barcode extraction, UMI extraction, target assignment and prepare-reads; the HyDrop
+cases stop after barcode extraction, because that chemistry declares neither a UMI
+component nor a target index.
+
+No real R2 was ever collected alongside either committed ``carmack_custom_seq_1_0`` R1
+input, so the ``carmack_custom_seq_1_0`` cases pair a synthesized R2 golden fixture (see
+``tests/data_generators/golden.py`` for its provenance) with the target-annotated R1
+target assignment produced, and hand both to ``ReadPreparer`` as they stand. The fixture
+goes in whole: barcode and UMI extraction have already dropped reads from that R1, so the
+R2 reads with no R1 half left are exactly what a real run carries, and pairing them is
+``ReadPreparer``'s job rather than the harness's. HyDrop supports neither UMI extraction
+nor target assignment, so it never reaches prepare-reads and has no R2 fixture at all.
 
 Determinism
 -----------
@@ -38,6 +47,13 @@ batched at all. It runs at the same ``n_workers=4``, but its batch size comes fr
 fixture rather than from the stage default: at the default every golden input would fit in
 one batch, and the in-order fold this baseline is meant to cover would never be reached.
 ``GOLDEN_ASSIGN_BATCH_SIZE`` is chosen to put each of them over several batches instead.
+
+``ReadPreparer.prepare_reads`` drains its own bounded in-flight window in submission order
+too, so the unmatched arm's three files and each matched bucket's R1/R2 are written in the
+target-annotated R1's own order, and ``prepare_stats.txt`` folds per-batch tallies in that
+same order. It runs at the same ``n_workers=4``, with its own batch size chosen the same
+way ``GOLDEN_ASSIGN_BATCH_SIZE`` is: ``GOLDEN_PREPARE_BATCH_SIZE`` puts each fixture over
+several batches instead of the stage default's single one.
 
 ``fast=True`` is deliberately not used: it drops the AlignmentMatcher, which is exactly the
 tier this baseline exists to protect.
@@ -63,7 +79,7 @@ The default path asserts. To re-bless the goldens after an intended change::
 
 The first command re-blesses the always-run tier only. The second adds ``-k`` so the
 full-scale tier is selected as well, and takes about two and three quarter minutes for the
-whole 34-test tier. Always run pytest from the repo root, or a stale non-editable
+whole 46-test tier. Always run pytest from the repo root, or a stale non-editable
 ``carmack`` in site-packages shadows the repo source and silently produces different files.
 Review the resulting diff before committing it.
 """
@@ -76,6 +92,8 @@ from assertpy import assert_that
 
 from carmack.assign_targets.target_assigner import TargetAssigner
 from carmack.barcode.barcode_extractor import BarcodeExtractor
+from carmack.chemistry.chemistry_factory import ChemistryFactory
+from carmack.prepare_reads.read_preparer import ReadPreparer
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.utils import get_prefix
 from tests.utils import (
@@ -91,6 +109,10 @@ GOLDEN_EXPECTED_DIR = GOLDEN_INPUT_DIR / "expected"
 CUSTOM_SEQ_CHEMISTRY = "carmack_custom_seq_1_0"
 HYDROP_CHEMISTRY = "hydrop"
 
+# The shipped custom_seq target whitelist's one entry, read off the chemistry itself
+# rather than restated as a literal, so a whitelist change is caught here too.
+CUSTOM_SEQ_TGIDX_VALUE = ChemistryFactory.get_chemistry(CUSTOM_SEQ_CHEMISTRY).tgidx_whitelist()[0]
+
 # Four workers put every golden input over more than one batch: the 200-read input splits
 # 4x50, the 50-read input splits 13/13/13/11 and both 2000-read inputs split 4x500. That
 # multi-batch shape is the property worth protecting, because a single worker would leave
@@ -103,6 +125,15 @@ GOLDEN_WORKERS = 4
 # batch the first splits 50/50/50/40 and the second into 38 batches, where the stage default
 # of 2500 would leave both on a single batch and cover the in-order fold not at all.
 GOLDEN_ASSIGN_BATCH_SIZE = 50
+
+# Batch size prepare-reads runs at, small enough to split every input it is given. The
+# stage consumes the target-annotated R1, which target assignment never filters, so it
+# carries the same read count as the UMI-annotated file above: 190 reads for the small
+# input, 1890 for the full one. At 50 reads a batch the small input splits 50/50/50/40 and
+# the full one splits into 38 batches, where the stage default of 2500 would leave both on
+# a single batch and cover neither the in-order fold nor the R2 sidecar's alignment across
+# batch boundaries at all.
+GOLDEN_PREPARE_BATCH_SIZE = 50
 
 
 @dataclass(frozen=True)
@@ -149,10 +180,11 @@ def execute_golden_run(
     chemistry_name: str,
     extract_umis: bool,
     assign_targets: bool,
+    r2_input_name: str | None = None,
 ) -> GoldenRun:
     """
-    Run barcode extraction, and optionally UMI extraction and target assignment, over one
-    golden input.
+    Run barcode extraction, and optionally UMI extraction, target assignment and
+    prepare-reads, over one golden input.
 
     Args:
         tmp_path_factory: Session-scoped factory supplying the run's output directory.
@@ -160,6 +192,12 @@ def execute_golden_run(
         chemistry_name: Registered chemistry name to extract with.
         extract_umis: Whether to chain UMI extraction onto the annotated R1 output.
         assign_targets: Whether to chain target assignment onto the UMI-annotated R1 output.
+        r2_input_name: File name of a committed R2 golden fixture under the golden input
+            directory, or ``None``. When given -- and only once both ``extract_umis`` and
+            ``assign_targets`` are true -- prepare-reads is chained onto the target-annotated
+            R1 output, paired with this R2 fixture exactly as committed: whole, unfiltered
+            and still carrying every read the earlier stages dropped from R1, which is the
+            shape a real pipeline hands ``ReadPreparer`` too.
 
     Returns:
         The completed run, locating its outputs and goldens.
@@ -184,6 +222,19 @@ def execute_golden_run(
             batch_size=GOLDEN_ASSIGN_BATCH_SIZE,
         )
         assigner.assign_targets(str(output_dir), prefix)
+
+        if r2_input_name is not None:
+            tgidx_fastq = output_dir / f"{prefix}.r1_tgidx.fastq.gz"
+            full_r2_fastq = GOLDEN_INPUT_DIR / r2_input_name
+
+            preparer = ReadPreparer(
+                str(tgidx_fastq),
+                str(full_r2_fastq),
+                chemistry_name,
+                n_workers=GOLDEN_WORKERS,
+                batch_size=GOLDEN_PREPARE_BATCH_SIZE,
+            )
+            preparer.prepare_reads(str(output_dir), prefix)
 
     return GoldenRun(output_dir=output_dir, prefix=prefix)
 
@@ -247,7 +298,8 @@ def assert_report_output_matches_golden(run: GoldenRun, suffix: str) -> None:
 @pytest.fixture(scope="module")
 def custom_seq_small_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
     """
-    Extract barcodes, UMIs and target indices from the 200-read carmack_custom_seq_1_0 input.
+    Extract barcodes, UMIs and target indices, then prepare reads, from the 200-read
+    carmack_custom_seq_1_0 input.
 
     Args:
         tmp_path_factory: Session-scoped factory supplying the run's output directory.
@@ -261,6 +313,7 @@ def custom_seq_small_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
         chemistry_name=CUSTOM_SEQ_CHEMISTRY,
         extract_umis=True,
         assign_targets=True,
+        r2_input_name="custom_seq_1_0_small_R2.fastq.gz",
     )
 
 
@@ -289,7 +342,8 @@ def hydrop_small_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
 @pytest.fixture(scope="module")
 def custom_seq_full_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
     """
-    Extract barcodes, UMIs and target indices from the 2000-read carmack_custom_seq_1_0 input.
+    Extract barcodes, UMIs and target indices, then prepare reads, from the 2000-read
+    carmack_custom_seq_1_0 input.
 
     Args:
         tmp_path_factory: Session-scoped factory supplying the run's output directory.
@@ -303,6 +357,7 @@ def custom_seq_full_run(tmp_path_factory: pytest.TempPathFactory) -> GoldenRun:
         chemistry_name=CUSTOM_SEQ_CHEMISTRY,
         extract_umis=True,
         assign_targets=True,
+        r2_input_name="custom_seq_1_0_R2.fastq.gz",
     )
 
 
@@ -449,10 +504,102 @@ class TargetGoldenOutputChecks:
         assert_report_output_matches_golden(golden_run, "tgidx_stats.txt")
 
 
+class PrepareReadsGoldenOutputChecks:
+    """
+    Per-file golden checks for the six prepare-reads outputs.
+
+    The shipped custom_seq whitelist carries exactly one target (``CUSTOM_SEQ_TGIDX_VALUE``),
+    so this class checks that one bucket's R1/R2 pair by name rather than looping over the
+    whitelist. Only chemistries with a committed R2 golden fixture reach this stage, so
+    HyDrop test classes do not inherit it. This class is not collected itself: it has no
+    Test prefix.
+    """
+
+    def test_unmatched_r1_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the unmatched (scRNA) arm's trimmed R1 FASTQ matches the golden file.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_gzip_output_matches_golden(golden_run, "none.r1.fastq.gz", "none.r1.fastq")
+
+    def test_unmatched_r2_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the unmatched (scRNA) arm's passthrough R2 FASTQ matches the golden file.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_gzip_output_matches_golden(golden_run, "none.r2.fastq.gz", "none.r2.fastq")
+
+    def test_unmatched_barcodes_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the unmatched arm's synthesized barcodes FASTQ matches the golden file.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_gzip_output_matches_golden(
+            golden_run, "none.barcodes.fastq.gz", "none.barcodes.fastq"
+        )
+
+    def test_matched_bucket_r1_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the one real target bucket's trimmed R1 FASTQ matches the golden file.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_gzip_output_matches_golden(
+            golden_run,
+            f"{CUSTOM_SEQ_TGIDX_VALUE}.r1.fastq.gz",
+            f"{CUSTOM_SEQ_TGIDX_VALUE}.r1.fastq",
+        )
+
+    def test_matched_bucket_r2_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the one real target bucket's passthrough R2 FASTQ matches the golden file.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_gzip_output_matches_golden(
+            golden_run,
+            f"{CUSTOM_SEQ_TGIDX_VALUE}.r2.fastq.gz",
+            f"{CUSTOM_SEQ_TGIDX_VALUE}.r2.fastq",
+        )
+
+    def test_prepare_stats_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the prepare-reads stats report matches the golden file once run details
+        are stripped.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_report_output_matches_golden(golden_run, "prepare_stats.txt")
+
+    def test_detected_targets_matches_golden(self, golden_run: GoldenRun) -> None:
+        """
+        Test that the detected-targets list matches the golden file verbatim.
+
+        Compared verbatim rather than normalised: this file carries no version or
+        timestamp line to strip, which is the point of it.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        assert_text_output_matches_golden(golden_run, "detected_targets.txt")
+
+
 class TestCustomSeqSmallGoldenOutputs(
-    BarcodeGoldenOutputChecks, UmiGoldenOutputChecks, TargetGoldenOutputChecks
+    BarcodeGoldenOutputChecks,
+    UmiGoldenOutputChecks,
+    TargetGoldenOutputChecks,
+    PrepareReadsGoldenOutputChecks,
 ):
-    """Golden outputs for 200 reads of carmack_custom_seq_1_0, barcodes, UMIs and targets."""
+    """Golden outputs for 200 reads of carmack_custom_seq_1_0: barcodes, UMIs, targets and prepared reads."""
 
     @pytest.fixture
     def golden_run(self, custom_seq_small_run: GoldenRun) -> GoldenRun:
@@ -487,7 +634,10 @@ class TestHydropSmallGoldenOutputs(BarcodeGoldenOutputChecks):
 
 @pytest.mark.only_run_with_direct_target
 class TestCustomSeqFullScaleGoldenOutputs(
-    BarcodeGoldenOutputChecks, UmiGoldenOutputChecks, TargetGoldenOutputChecks
+    BarcodeGoldenOutputChecks,
+    UmiGoldenOutputChecks,
+    TargetGoldenOutputChecks,
+    PrepareReadsGoldenOutputChecks,
 ):
     """Golden outputs for 2000 reads of carmack_custom_seq_1_0, selected with -k only."""
 
