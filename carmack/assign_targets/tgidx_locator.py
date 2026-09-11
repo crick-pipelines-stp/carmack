@@ -23,6 +23,15 @@ from carmack.utils import homopolymer_run_length
 # is better than a plausible window scored against arbitrary sequence.
 ANCHOR_RUN_MAX_SHIFT = 2
 
+# How many single non-anchor bases inside the run may be bridged. The anchor is a real
+# homopolymer tract in the construct, and a tract carrying one base that is not the anchor
+# base is common enough in this library to matter: the scan stopping at it reports a run
+# ending several bases early, which drags the whole target window left and hides the index
+# behind its right edge. One is deliberate -- a second interruption is no longer a tract
+# with a blemish, it is a different piece of sequence, and bridging it would walk the
+# window into the insert.
+ANCHOR_RUN_MAX_BRIDGED = 1
+
 
 @dataclass(frozen=True)
 class TrimWindow:
@@ -76,6 +85,50 @@ class AnchorRun:
         return self.end - self.start
 
 
+def run_end_bridging_interruptions(
+    seq: str,
+    run_start: int,
+    base: str,
+    min_run: int,
+    max_bridged: int = ANCHOR_RUN_MAX_BRIDGED,
+) -> int:
+    """Return the exclusive end of the anchor run at ``run_start``, bridging interruptions.
+
+    Counting the anchor base forward stops at the first base that is not it, which is the
+    right answer when the tract has ended and the wrong one when the tract merely carries a
+    base that is not the anchor. The two are told apart by what follows: a tract resumes with
+    more anchor bases, while sequence that has genuinely moved on does not. So an interruption
+    is bridged only when at least ``min_run`` anchor bases sit immediately behind it, the same
+    count the chemistry already requires before it will call a run a run at all.
+
+    The requirement is what keeps this from running away. Arbitrary sequence offers a single
+    anchor base often, and ``min_run`` of them in a row rarely, so the rule extends a real
+    tract across its blemish while leaving a run that has truly ended where it ended.
+
+    This reports a longer run, never a differently placed one: the window cut from the end is
+    the same width as before and merely sits where the tract actually finishes.
+
+    Args:
+        seq: The read sequence.
+        run_start: 0-based index the run begins at.
+        base: The anchor base the run repeats.
+        min_run: Anchor bases that must resume after an interruption for it to be bridged.
+        max_bridged: Most interruptions that may be bridged in one run.
+
+    Returns:
+        Exclusive end of the run, half-open, with any bridged interruptions included.
+    """
+    end = run_start + homopolymer_run_length(seq, run_start, base)
+
+    for _ in range(max_bridged):
+        resumed = end + 1
+        if seq[resumed : resumed + min_run] != base * min_run:
+            break
+        end = resumed + homopolymer_run_length(seq, resumed, base)
+
+    return end
+
+
 def locate_anchor_run(
     seq: str,
     expected_start: int,
@@ -117,13 +170,18 @@ def locate_anchor_run(
     """
     length = homopolymer_run_length(seq, expected_start, base)
     if length:
-        return AnchorRun(start=expected_start, end=expected_start + length)
+        return AnchorRun(
+            start=expected_start,
+            end=run_end_bridging_interruptions(seq, expected_start, base, min_run),
+        )
 
     run = base * min_run
     for shift in range(1, max_shift + 1):
         start = expected_start + shift
         if seq[start : start + min_run] == run:
-            return AnchorRun(start=start, end=start + homopolymer_run_length(seq, start, base))
+            return AnchorRun(
+                start=start, end=run_end_bridging_interruptions(seq, start, base, min_run)
+            )
 
     return AnchorRun(start=expected_start, end=expected_start)
 

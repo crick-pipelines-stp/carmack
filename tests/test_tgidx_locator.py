@@ -26,10 +26,12 @@ import pytest
 from assertpy import assert_that
 
 from carmack.assign_targets.tgidx_locator import (
+    ANCHOR_RUN_MAX_BRIDGED,
     ANCHOR_RUN_MAX_SHIFT,
     TrimWindow,
     locate_anchor_run,
     locate_tgidx_window,
+    run_end_bridging_interruptions,
 )
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.chemistry.chemistry_base import TGIDX_MAX_LEADING_ANCHOR
@@ -522,3 +524,141 @@ class TestMatcherContract:
 
         assert_that([candidate[0] for candidate in candidates]).contains(INDEX_NO_LEADING_ANCHOR)
         assert_that([window.start + candidate[1] for candidate in candidates]).contains(true_start)
+
+
+class TestAnchorRunBridgesInterruptions:
+    """Tests for reading an anchor tract that carries a base which is not the anchor.
+
+    The construct's anchor is a real homopolymer tract, and in this library a tract
+    frequently carries one base that is not the anchor base at high quality. Counting
+    forward stops there, reporting a run that ends several bases early; every window cut
+    from that end then sits too far left and hides the target index behind its right edge.
+    A tract is told apart from sequence that has genuinely moved on by what follows the
+    interruption, so the run resumes only when at least ``min_run`` anchor bases do.
+    """
+
+    def test_single_interruption_is_bridged_when_the_run_resumes(self) -> None:
+        """Test that one non-anchor base inside a tract does not end the run."""
+        seq = "GG" + "A" + "GGG" + "TATAGCCT"
+
+        result = locate_anchor_run(seq, 0, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result.end).is_equal_to(6)
+        assert_that(result.length).is_equal_to(6)
+
+    def test_run_that_has_genuinely_ended_is_not_extended(self) -> None:
+        """Test that a tract followed by ordinary sequence stops where it stops.
+
+        This is the case the resumption requirement exists to protect: one anchor base
+        appears in arbitrary sequence often, so bridging on its presence alone would walk
+        the run, and the window cut from it, into the insert.
+        """
+        seq = "GGG" + "T" + "ACGTACGTACGT"
+
+        result = locate_anchor_run(seq, 0, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result.end).is_equal_to(3)
+
+    def test_interruption_is_not_bridged_when_too_few_anchor_bases_resume(self) -> None:
+        """Test that a resumption shorter than min_run does not license a bridge."""
+        seq = "GG" + "A" + "GG" + "TATAGCCT"
+
+        result = locate_anchor_run(seq, 0, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result.end).is_equal_to(2)
+
+    def test_at_most_one_interruption_is_bridged(self) -> None:
+        """Test that a second interruption ends the run even when it too resumes.
+
+        A tract with one blemish is still a tract. Two is a different piece of sequence,
+        and bridging repeatedly would let the run cross into the index itself.
+        """
+        seq = "GG" + "A" + "GGG" + "A" + "GGG" + "TATAGCCT"
+
+        result = locate_anchor_run(seq, 0, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result.end).is_equal_to(6)
+        assert_that(ANCHOR_RUN_MAX_BRIDGED).is_equal_to(1)
+
+    def test_bridging_is_safe_at_the_end_of_the_read(self) -> None:
+        """Test that a run reaching the read's end is reported rather than read past it."""
+        seq = "ACGT" + "GGG"
+
+        result = locate_anchor_run(seq, 4, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result.end).is_equal_to(len(seq))
+
+    def test_an_interruption_beyond_the_read_end_is_not_bridged(self) -> None:
+        """Test that a tract ending one base short of the read does not read off the end."""
+        seq = "GGG" + "A"
+
+        result = locate_anchor_run(seq, 0, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result.end).is_equal_to(3)
+
+    @pytest.mark.parametrize("run_len", [3, 4, 5, 6, 7, 8])
+    def test_an_uninterrupted_run_is_unchanged(self, run_len: int) -> None:
+        """Test that the common case is untouched, so no window moves for it."""
+        seq = build_read(run_len)
+        run_start = len(PREFIX)
+
+        result = locate_anchor_run(seq, run_start, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result.end).is_equal_to(run_start + run_len)
+
+    def test_bridging_finds_the_same_end_as_an_uninterrupted_tract_of_equal_length(self) -> None:
+        """Test that a blemished tract and a clean one of the same extent agree.
+
+        The point of bridging is that the index is at a fixed distance behind the tract,
+        so the two reads must hand the window the same coordinate.
+        """
+        clean = "GGGGGG" + "TATAGCCT"
+        blemished = "GGAGGG" + "TATAGCCT"
+
+        clean_end = locate_anchor_run(clean, 0, ANCHOR_BASE, MIN_RUN).end
+        blemished_end = locate_anchor_run(blemished, 0, ANCHOR_BASE, MIN_RUN).end
+
+        assert_that(blemished_end).is_equal_to(clean_end)
+
+    def test_helper_reports_the_run_end_directly(self) -> None:
+        """Test the bridging scan on its own, since the insert locator calls it too."""
+        seq = "GGAGGGTATAGCCT"
+
+        result = run_end_bridging_interruptions(seq, 0, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result).is_equal_to(6)
+
+    def test_bridging_can_be_disabled(self) -> None:
+        """Test that the bridge count is a parameter, so the old scan remains expressible."""
+        seq = "GGAGGGTATAGCCT"
+
+        result = run_end_bridging_interruptions(seq, 0, ANCHOR_BASE, MIN_RUN, max_bridged=0)
+
+        assert_that(result).is_equal_to(2)
+
+    def test_a_shifted_run_start_also_bridges(self) -> None:
+        """Test that a run found by the forward search is read with the same rule.
+
+        The forward search and the on-target count report the same kind of thing, so a
+        tract found one base late must not be measured by a different scan.
+        """
+        seq = "T" + "GGG" + "A" + "GGG" + "TATAGCCT"
+
+        result = locate_anchor_run(seq, 0, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result.start).is_equal_to(1)
+        assert_that(result.end).is_equal_to(8)
+
+    def test_forward_search_still_needs_min_run_before_any_interruption(self) -> None:
+        """Test that the forward search is not itself made tolerant by this change.
+
+        Finding where a run begins and reading how far it extends are separate questions.
+        The search still demands min_run anchor bases at the shifted offset, so a tract
+        that both starts late and is interrupted before min_run bases have accumulated is
+        reported as absent rather than guessed at.
+        """
+        seq = "T" + "GG" + "A" + "GGG" + "TATAGCCT"
+
+        result = locate_anchor_run(seq, 0, ANCHOR_BASE, MIN_RUN)
+
+        assert_that(result.length).is_equal_to(0)
