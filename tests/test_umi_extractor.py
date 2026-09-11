@@ -9,6 +9,7 @@ wiring.
 """
 
 import gzip
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -21,6 +22,7 @@ from carmack.chemistry.annotation import format_span, parse_span, position_key
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ChemistryCarmackCustomSeq10
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.io.read_annotation import ReadAnnotation
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.umi.umi_reporting import UmiExtractionStats
 
@@ -348,7 +350,12 @@ class TestExtractUmis:
         assert_that(text).does_not_contain("UB")
         assert_that((tmp_path / "out.umi_map.tsv").exists()).is_false()
         assert_that(sorted(p.name for p in Path(tmp_path).glob("out.*"))).is_equal_to(
-            ["out.r1_umi.fastq.gz", "out.umi_stats.txt"]
+            [
+                "out.r1_umi.fastq.gz",
+                "out.umi_anchor_run_mqc.json",
+                "out.umi_stats.txt",
+                "out.umi_stats_mqc.json",
+            ]
         )
 
     def test_stats_reconcile(self, build_extractor, tmp_path) -> None:
@@ -393,6 +400,49 @@ class TestExtractUmis:
         stats = build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
 
         assert_that(sum(stats.homopolymer_run_counts.values())).is_equal_to(stats.accepted)
+
+    def test_mqc_stats_and_anchor_run_are_written_when_a_run_is_present(
+        self, build_extractor, tmp_path
+    ) -> None:
+        """Both MultiQC files appear for a run whose accepted reads carry an anchor run."""
+        records = [make_read("a", "ACTACTAC", 4)]
+        build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        stats_path = tmp_path / "out.umi_stats_mqc.json"
+        anchor_run_path = tmp_path / "out.umi_anchor_run_mqc.json"
+        assert_that(stats_path.exists()).is_true()
+        assert_that(anchor_run_path.exists()).is_true()
+
+        payload = json.loads(stats_path.read_text())
+        assert_that(payload).contains_key("general_stats")
+        assert_that(payload).contains_key("breakdown")
+
+    def test_mqc_anchor_run_is_not_written_when_the_chemistry_has_no_homopolymer_neighbour(
+        self, tmp_path
+    ) -> None:
+        """With no homopolymer 3' of the UMI, the anchor-run tally stays empty end to end.
+
+        A single accepted read with a poly-G run still leaves
+        ``homopolymer_run_counts`` empty here, because the run is never measured
+        when the chemistry reports no homopolymer neighbour -- unlike a read
+        that presents no run under a chemistry that does have one, which still
+        records a zero-length entry and is therefore not "empty" in the sense
+        this method checks.
+        """
+        records = [make_read("a", "ACTACTAC", 4)]
+        fastq_path = tmp_path / "SK462.r1_annotated.fastq.gz"
+        write_fastq(fastq_path, records)
+        chemistry = UmiExtractor(str(fastq_path), CHEMISTRY).chemistry
+        with mock.patch.object(type(chemistry), "umi_right_anchor", return_value=None):
+            extractor = UmiExtractor(str(fastq_path), CHEMISTRY)
+        stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
+
+        assert_that(stats.homopolymer_run_counts).is_empty()
+        stats_path = tmp_path / "out.umi_stats_mqc.json"
+        anchor_run_path = tmp_path / "out.umi_anchor_run_mqc.json"
+        assert_that(anchor_run_path.exists()).is_false()
+        assert_that(stats_path.exists()).is_true()
+        json.loads(stats_path.read_text())
 
     def test_output_preserves_input_order_seq_and_qual(self, build_extractor, tmp_path) -> None:
         r_first = make_read("first", "ACTACTAC", 4)
@@ -488,6 +538,121 @@ class TestUmiExtractionStatsReport:
     def test_report_omits_the_anchor_section_when_no_base_is_known(self) -> None:
         """A chemistry with no homopolymer 3' of its UMI simply has nothing to report."""
         assert_that(self.build().get_report()).does_not_contain("Anchor")
+
+
+class TestUmiExtractionStatsMqcReporting:
+    """Tests for the MultiQC custom-content payload methods on UmiExtractionStats."""
+
+    SAMPLE_PREFIX = "SK123"
+
+    # ===== to_mqc_general_stats =====
+
+    def test_to_mqc_general_stats_has_generalstats_plot_type_and_id(self) -> None:
+        """to_mqc_general_stats returns a generalstats payload with the expected id."""
+        payload = TestUmiExtractionStatsReport.build().to_mqc_general_stats(self.SAMPLE_PREFIX)
+
+        assert_that(payload["plot_type"]).is_equal_to("generalstats")
+        assert_that(payload["id"]).is_equal_to("carmack_umi_general_stats")
+
+    def test_to_mqc_general_stats_computes_percentages(self) -> None:
+        """total_reads=4, accepted=2, missing_left_anchor=1, truncated=1 -> 50/25/25."""
+        payload = TestUmiExtractionStatsReport.build().to_mqc_general_stats(self.SAMPLE_PREFIX)
+        data = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(data["pct_accepted"]).is_equal_to(50.0)
+        assert_that(data["pct_missing_left_anchor"]).is_equal_to(25.0)
+        assert_that(data["pct_truncated"]).is_equal_to(25.0)
+
+    def test_to_mqc_general_stats_on_zero_reads_returns_zero_percentages(self) -> None:
+        """The zero-guarded fraction() helper keeps a zero-read run from raising."""
+        stats = TestUmiExtractionStatsReport.build(
+            total_reads=0, accepted=0, missing_left_anchor=0, truncated=0
+        )
+
+        payload = stats.to_mqc_general_stats(self.SAMPLE_PREFIX)
+        data = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(data["pct_accepted"]).is_equal_to(0.0)
+        assert_that(data["pct_missing_left_anchor"]).is_equal_to(0.0)
+        assert_that(data["pct_truncated"]).is_equal_to(0.0)
+
+    # ===== to_mqc_breakdown =====
+
+    def test_to_mqc_breakdown_has_bargraph_plot_type_and_parent(self) -> None:
+        """to_mqc_breakdown returns a bargraph payload naming carmack's shared parent section."""
+        payload = TestUmiExtractionStatsReport.build().to_mqc_breakdown(self.SAMPLE_PREFIX)
+
+        assert_that(payload["plot_type"]).is_equal_to("bargraph")
+        assert_that(payload["parent_id"]).is_equal_to(CARMACK_PARENT_ID)
+        assert_that(payload["parent_name"]).is_equal_to(CARMACK_PARENT_NAME)
+
+    def test_to_mqc_breakdown_data_matches_counts(self) -> None:
+        """The breakdown data holds raw accepted/missing_left_anchor/truncated counts."""
+        payload = TestUmiExtractionStatsReport.build().to_mqc_breakdown(self.SAMPLE_PREFIX)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(
+            {"accepted": 2, "missing_left_anchor": 1, "truncated": 1}
+        )
+
+    # ===== to_mqc_anchor_run =====
+
+    def test_to_mqc_anchor_run_has_linegraph_plot_type(self) -> None:
+        """to_mqc_anchor_run returns a linegraph payload when a run distribution exists."""
+        stats = TestUmiExtractionStatsReport.build(
+            total_reads=3,
+            accepted=3,
+            missing_left_anchor=0,
+            truncated=0,
+            homopolymer_base="G",
+            homopolymer_run_counts={3: 1, 4: 2},
+        )
+
+        payload = stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)
+
+        assert_that(payload["plot_type"]).is_equal_to("linegraph")
+
+    def test_to_mqc_anchor_run_data_matches_run_counts(self) -> None:
+        """The anchor-run data holds the run-length distribution for the prefix."""
+        stats = TestUmiExtractionStatsReport.build(
+            total_reads=3,
+            accepted=3,
+            missing_left_anchor=0,
+            truncated=0,
+            homopolymer_base="G",
+            homopolymer_run_counts={3: 1, 4: 2},
+        )
+
+        payload = stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to({3: 1, 4: 2})
+
+    def test_to_mqc_anchor_run_returns_none_when_run_counts_are_empty(self) -> None:
+        """The dataclass default homopolymer_run_counts is an empty dict, not a Counter."""
+        assert_that(
+            TestUmiExtractionStatsReport.build().to_mqc_anchor_run(self.SAMPLE_PREFIX)
+        ).is_none()
+
+    # ===== Shared prefix-keying contract =====
+
+    @pytest.mark.parametrize("prefix", ["SK123", "another_sample_prefix"])
+    def test_mqc_payloads_are_keyed_by_the_given_prefix(self, prefix: str) -> None:
+        """Every to_mqc_* payload's data dict is keyed by exactly the prefix supplied."""
+        stats = TestUmiExtractionStatsReport.build(
+            total_reads=3,
+            accepted=3,
+            missing_left_anchor=0,
+            truncated=0,
+            homopolymer_base="G",
+            homopolymer_run_counts={3: 1, 4: 2},
+        )
+
+        general_stats_payload = stats.to_mqc_general_stats(prefix)
+        breakdown_payload = stats.to_mqc_breakdown(prefix)
+        anchor_run_payload = stats.to_mqc_anchor_run(prefix)
+
+        assert_that(list(general_stats_payload["data"].keys())).is_equal_to([prefix])
+        assert_that(list(breakdown_payload["data"].keys())).is_equal_to([prefix])
+        assert_that(list(anchor_run_payload["data"].keys())).is_equal_to([prefix])
 
 
 class TestExtractUmisCli:

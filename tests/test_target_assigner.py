@@ -36,6 +36,7 @@ UMI extraction and target assignment over a committed golden input.
 
 import gzip
 import importlib.util
+import json
 import multiprocessing
 import os
 import pickle
@@ -663,6 +664,21 @@ def tgidx_stats(directory: Path, prefix: str = OUT_PREFIX) -> Path:
     return directory / f"{prefix}.tgidx_stats.txt"
 
 
+def tgidx_stats_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
+    """Return the path of the MultiQC stats payload the stage writes for ``prefix``."""
+    return directory / f"{prefix}.tgidx_stats_mqc.json"
+
+
+def tgidx_edit_distance_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
+    """Return the path of the MultiQC edit-distance payload the stage writes for ``prefix``."""
+    return directory / f"{prefix}.tgidx_edit_distance_mqc.json"
+
+
+def tgidx_anchor_run_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
+    """Return the path of the MultiQC anchor-run payload the stage writes for ``prefix``."""
+    return directory / f"{prefix}.tgidx_anchor_run_mqc.json"
+
+
 @pytest.fixture
 def build_assigner(tmp_path: Path) -> Callable[..., TargetAssigner]:
     """Return a factory that writes records to a FASTQ and builds an assigner.
@@ -1107,6 +1123,39 @@ class TestAssignTargetsOutputs:
         assert_that(report).contains("Unmatched (no_left_anchor_pos): 1")
         assert_that(report).contains("Unmatched (short_window): 1")
         assert_that(report).contains(f"\t{TARGET_SEQ}\t1")
+
+    def test_mqc_stats_json_is_written_and_parses_with_the_expected_top_level_keys(
+        self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
+    ) -> None:
+        """A real assignment with at least one matched read produces a parseable
+        ``{prefix}.tgidx_stats_mqc.json`` carrying the general stats, breakdown
+        and target distribution payloads, plus the conditional edit-distance and
+        anchor-run payloads this fixture's matched and anchor-measured reads
+        genuinely populate. This is a wiring check, not an arithmetic one -- the
+        payload contents are pinned in detail against ``AssignStats`` directly in
+        ``tests/test_assign_reporting.py``.
+        """
+        records = [
+            make_annotated_read("matched"),
+            make_annotated_read("noumipos", with_anchor_pos=False),
+            make_annotated_read("nomatch", index="", tail=NO_INDEX_TAIL),
+            make_annotated_read("shortwindow", index="", tail=""),
+        ]
+        assigner = build_assigner(records)
+
+        stats = assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_that(stats.matched).is_greater_than(0)
+        mqc_stats_path = tgidx_stats_mqc(tmp_path)
+        assert_that(mqc_stats_path.exists()).is_true()
+
+        payload = json.loads(mqc_stats_path.read_text())
+        assert_that(payload).contains_key("general_stats")
+        assert_that(payload).contains_key("breakdown")
+        assert_that(payload).contains_key("target_distribution")
+
+        assert_that(tgidx_edit_distance_mqc(tmp_path).exists()).is_true()
+        assert_that(tgidx_anchor_run_mqc(tmp_path).exists()).is_true()
 
     def test_prefix_defaults_to_the_input_filename(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path

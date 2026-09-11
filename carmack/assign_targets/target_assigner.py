@@ -35,6 +35,7 @@ from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.io.fastq_file import FastqFile
 from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
+from carmack.mqc_report import write_mqc_json
 from carmack.parallel import map_batches_in_order
 from carmack.utils import get_prefix, progress_bar
 
@@ -300,6 +301,9 @@ class TargetAssigner:
         output_path = Path(output_dir)
         tgidx_fastq_path = output_path / f"{prefix}.r1_tgidx.fastq.gz"
         tgidx_stats_path = output_path / f"{prefix}.tgidx_stats.txt"
+        tgidx_stats_mqc_path = output_path / f"{prefix}.tgidx_stats_mqc.json"
+        tgidx_edit_distance_mqc_path = output_path / f"{prefix}.tgidx_edit_distance_mqc.json"
+        tgidx_anchor_run_mqc_path = output_path / f"{prefix}.tgidx_anchor_run_mqc.json"
 
         counts = AssignCounts()
 
@@ -361,6 +365,21 @@ class TargetAssigner:
 
         with tgidx_stats_path.open("w") as report_file:
             report_file.write(stats.get_report())
+
+        write_mqc_json(
+            tgidx_stats_mqc_path,
+            {
+                "general_stats": stats.to_mqc_general_stats(prefix),
+                "breakdown": stats.to_mqc_breakdown(prefix),
+                "target_distribution": stats.to_mqc_target_distribution(prefix),
+            },
+        )
+        edit_distance_payload = stats.to_mqc_edit_distance(prefix)
+        if edit_distance_payload is not None:
+            write_mqc_json(tgidx_edit_distance_mqc_path, edit_distance_payload)
+        anchor_run_payload = stats.to_mqc_anchor_run(prefix)
+        if anchor_run_payload is not None:
+            write_mqc_json(tgidx_anchor_run_mqc_path, anchor_run_payload)
 
         log.info(f"Assigned target indices to {counts.matched}/{counts.total} reads")
         return stats

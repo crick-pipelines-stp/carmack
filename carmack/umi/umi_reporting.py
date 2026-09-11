@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from carmack import __version__ as carmack_version
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 
 
 @dataclass(frozen=True)
@@ -112,3 +113,126 @@ class UmiExtractionStats:
             count = self.homopolymer_run_counts[run_length]
             section += f"\t{run_length}\t{count} ({self.fraction(count, self.accepted):.2%})\n"
         return section
+
+    def to_mqc_general_stats(self, prefix: str) -> dict[str, object]:
+        """Build a MultiQC "generalstats" custom-content payload summarising this run.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with a single row of headline percentages
+            (accepted, missing_left_anchor, truncated) for this sample.
+        """
+        pct_accepted = 100 * self.fraction(self.accepted, self.total_reads)
+        pct_missing_left_anchor = 100 * self.fraction(self.missing_left_anchor, self.total_reads)
+        pct_truncated = 100 * self.fraction(self.truncated, self.total_reads)
+
+        return {
+            "id": "carmack_umi_general_stats",
+            "plot_type": "generalstats",
+            "pconfig": [
+                {
+                    "pct_accepted": {
+                        "title": "% UMI Accepted",
+                        "description": "Percentage of reads with a UMI extracted.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "RdYlGn",
+                    }
+                },
+                {
+                    "pct_missing_left_anchor": {
+                        "title": "% Missing Anchor",
+                        "description": "Percentage of reads skipped because the header carried no position tag for the anchor the UMI is measured from.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+                {
+                    "pct_truncated": {
+                        "title": "% UMI Truncated",
+                        "description": "Percentage of reads skipped because the read ended before the UMI did.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
+            ],
+            "data": {
+                prefix: {
+                    "pct_accepted": pct_accepted,
+                    "pct_missing_left_anchor": pct_missing_left_anchor,
+                    "pct_truncated": pct_truncated,
+                }
+            },
+        }
+
+    def to_mqc_breakdown(self, prefix: str) -> dict[str, object]:
+        """Build a MultiQC "bargraph" custom-content payload of raw outcome counts.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload nested under carmack's shared parent section,
+            with one bar per sample split into accepted/missing_left_anchor/truncated
+            read counts.
+        """
+        return {
+            "id": "carmack_umi_breakdown",
+            "plot_type": "bargraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "UMI Extraction Breakdown",
+            "description": "Read counts broken down by UMI extraction outcome.",
+            "pconfig": {
+                "id": "carmack_umi_breakdown_plot",
+                "title": "UMI Extraction: Outcomes",
+                "ylab": "Reads",
+            },
+            "data": {
+                prefix: {
+                    "accepted": self.accepted,
+                    "missing_left_anchor": self.missing_left_anchor,
+                    "truncated": self.truncated,
+                }
+            },
+        }
+
+    def to_mqc_anchor_run(self, prefix: str) -> dict[str, object] | None:
+        """Build a MultiQC "linegraph" custom-content payload of the anchor run distribution.
+
+        Args:
+            prefix: Sample identifier used to key the payload's ``data`` section.
+
+        Returns:
+            MultiQC custom-content payload with the anchor homopolymer run-length
+            distribution over accepted reads, or None when no run was measured
+            (a chemistry with no homopolymer neighbour 3' of the UMI).
+        """
+        if not self.homopolymer_run_counts:
+            return None
+
+        return {
+            "id": "carmack_umi_anchor_run",
+            "plot_type": "linegraph",
+            "parent_id": CARMACK_PARENT_ID,
+            "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "UMI Anchor Run Length",
+            "description": "Distribution of the anchor homopolymer run length observed at the first base after the UMI, over accepted reads.",
+            "pconfig": {
+                "id": "carmack_umi_anchor_run_plot",
+                "title": "UMI Extraction: Anchor Run Length Distribution",
+                "xlab": "Run length",
+                "ylab": "Reads",
+            },
+            "data": {prefix: dict(self.homopolymer_run_counts)},
+        }

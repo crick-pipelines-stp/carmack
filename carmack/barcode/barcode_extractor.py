@@ -20,6 +20,7 @@ from carmack.chemistry.read_component import ReadComponentType
 from carmack.io.fastq_file import FastqFile
 from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
+from carmack.mqc_report import write_mqc_json
 from carmack.parallel import map_batches_in_order
 from carmack.utils import get_prefix, progress_bar
 
@@ -176,9 +177,13 @@ class BarcodeExtractor:
         bc_counts_path = output_path / f"{prefix}.bc_counts.csv"
         bc_rank_plot_path = output_path / f"{prefix}.bc_rank.png"
         bc_stats_path = output_path / f"{prefix}.bc_stats.txt"
+        extraction_stats_mqc_path = output_path / f"{prefix}.extraction_stats_mqc.json"
+        extraction_edit_distance_mqc_path = (
+            output_path / f"{prefix}.extraction_edit_distance_mqc.json"
+        )
 
         log.debug(
-            f"Output paths: {bc_all_path}, {bc_valid_path}, {bc_annotated_path}, {bc_counts_path}, {bc_rank_plot_path}, {bc_stats_path}"
+            f"Output paths: {bc_all_path}, {bc_valid_path}, {bc_annotated_path}, {bc_counts_path}, {bc_rank_plot_path}, {bc_stats_path}, {extraction_stats_mqc_path}, {extraction_edit_distance_mqc_path}"
         )
 
         stats_acc = ExtractionStatsAccumulator(self.matchers)
@@ -225,9 +230,11 @@ class BarcodeExtractor:
                     pbar.update(task, advance=batch_len)
 
         ex_stats = stats_acc.finalize()
+        edit_distance_payload = ex_stats.to_mqc_edit_distance(prefix)
 
         with progress_bar(unit="files") as pbar:
-            task = pbar.add_task("Writing summary files...", total=3)
+            summary_total = 3 + (2 if edit_distance_payload is not None else 1)
+            task = pbar.add_task("Writing summary files...", total=summary_total)
 
             with bc_counts_path.open("w") as f:
                 for bc, count in stats_acc.full_barcode_counts.most_common():
@@ -242,6 +249,19 @@ class BarcodeExtractor:
             with bc_stats_path.open("w") as f:
                 f.write(ex_stats.get_report())
             pbar.update(task, advance=1)
+
+            write_mqc_json(
+                extraction_stats_mqc_path,
+                {
+                    "general_stats": ex_stats.to_mqc_general_stats(prefix),
+                    "breakdown": ex_stats.to_mqc_breakdown(prefix),
+                },
+            )
+            pbar.update(task, advance=1)
+
+            if edit_distance_payload is not None:
+                write_mqc_json(extraction_edit_distance_mqc_path, edit_distance_payload)
+                pbar.update(task, advance=1)
 
         log.info(f"Completed barcode extraction for {ex_stats.overall.total_reads} reads")
         log.info(

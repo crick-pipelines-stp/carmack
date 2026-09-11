@@ -2,6 +2,8 @@
 Tests for barcode extraction reporting module: OverallStats, PerBarcodeStats, and ExtractionStats.
 """
 
+from collections import Counter
+
 import pytest
 from assertpy import assert_that
 
@@ -18,6 +20,7 @@ from carmack.barcode.extraction_reporting import (
     PerBarcodeStats,
 )
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 
 
 def build_stats(results, matchers) -> ExtractionStats:
@@ -780,3 +783,148 @@ class TestExtractionStats:
         assert_that(details).contains("# Carmack version:")
         assert_that(details).contains("# Report generated at:")
         assert_that(details).matches(r"\d{4}-\d{2}-\d{2}")
+
+
+class TestExtractionStatsMqcReporting:
+    """Tests for the MultiQC custom-content payload methods on ExtractionStats."""
+
+    SAMPLE_PREFIX = "SK123"
+
+    @pytest.fixture
+    def sample_extraction_stats(self) -> ExtractionStats:
+        """Reuse TestExtractionStats' sample fixture rather than duplicating it."""
+        return TestExtractionStats()._make_sample_extraction_stats()
+
+    def make_stats_with_edit_distance_dists(
+        self, edit_distance_dist: Counter[int] | None
+    ) -> ExtractionStats:
+        """Build an ExtractionStats whose per_barcode entries all share one edit_distance_dist."""
+        overall = OverallStats(
+            total_reads=100,
+            perfect=80,
+            corrok=15,
+            fail=5,
+            top_10_barcodes=[],
+        )
+        per_barcode = [
+            PerBarcodeStats(
+                bc_name=bc_name,
+                method=MatchMethod.EXACTMATCH,
+                attempts=100,
+                success=95,
+                fail=5,
+                edit_distance_dist=edit_distance_dist,
+                reads_w_ambiguous_match=0,
+                spacer_present=0,
+            )
+            for bc_name in ("BC3", "BC2", "BC1")
+        ]
+        return ExtractionStats(
+            overall=overall,
+            per_barcode=per_barcode,
+            bc_names=["BC3", "BC2", "BC1"],
+        )
+
+    # ===== to_mqc_general_stats =====
+
+    def test_to_mqc_general_stats_has_generalstats_plot_type_and_id(
+        self, sample_extraction_stats: ExtractionStats
+    ) -> None:
+        """to_mqc_general_stats returns a generalstats payload with a non-empty id."""
+        payload = sample_extraction_stats.to_mqc_general_stats(self.SAMPLE_PREFIX)
+
+        assert_that(payload["plot_type"]).is_equal_to("generalstats")
+        assert_that(payload["id"]).is_instance_of(str)
+        assert_that(payload["id"]).is_not_empty()
+
+    def test_to_mqc_general_stats_computes_percentages(
+        self, sample_extraction_stats: ExtractionStats
+    ) -> None:
+        """to_mqc_general_stats computes 0-100 percentages from the overall and per-barcode counts."""
+        payload = sample_extraction_stats.to_mqc_general_stats(self.SAMPLE_PREFIX)
+        data = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(data["pct_perfect"]).is_equal_to(80.0)
+        assert_that(data["pct_corrected"]).is_equal_to(15.0)
+        assert_that(data["pct_failed"]).is_equal_to(5.0)
+        assert_that(data["pct_ambiguous"]).is_equal_to(2.3)
+
+    def test_to_mqc_general_stats_keys_data_by_prefix(
+        self, sample_extraction_stats: ExtractionStats
+    ) -> None:
+        """The payload's data dict is keyed by exactly the prefix passed in."""
+        payload = sample_extraction_stats.to_mqc_general_stats(self.SAMPLE_PREFIX)
+
+        assert_that(list(payload["data"].keys())).is_equal_to([self.SAMPLE_PREFIX])
+
+    # ===== to_mqc_breakdown =====
+
+    def test_to_mqc_breakdown_has_bargraph_plot_type_and_parent(
+        self, sample_extraction_stats: ExtractionStats
+    ) -> None:
+        """to_mqc_breakdown returns a bargraph payload naming carmack's shared parent section."""
+        payload = sample_extraction_stats.to_mqc_breakdown(self.SAMPLE_PREFIX)
+
+        assert_that(payload["plot_type"]).is_equal_to("bargraph")
+        assert_that(payload["parent_id"]).is_equal_to(CARMACK_PARENT_ID)
+        assert_that(payload["parent_name"]).is_equal_to(CARMACK_PARENT_NAME)
+
+    def test_to_mqc_breakdown_data_matches_overall_counts(
+        self, sample_extraction_stats: ExtractionStats
+    ) -> None:
+        """The breakdown data holds raw perfect/corrected/failed counts for the prefix."""
+        payload = sample_extraction_stats.to_mqc_breakdown(self.SAMPLE_PREFIX)
+
+        assert_that(list(payload["data"].keys())).is_equal_to([self.SAMPLE_PREFIX])
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(
+            {"perfect": 800, "corrected": 150, "failed": 50}
+        )
+
+    # ===== to_mqc_edit_distance =====
+
+    def test_to_mqc_edit_distance_has_linegraph_plot_type(
+        self, sample_extraction_stats: ExtractionStats
+    ) -> None:
+        """to_mqc_edit_distance returns a linegraph payload when a distribution exists."""
+        payload = sample_extraction_stats.to_mqc_edit_distance(self.SAMPLE_PREFIX)
+
+        assert_that(payload).is_not_none()
+        assert_that(payload["plot_type"]).is_equal_to("linegraph")
+
+    def test_to_mqc_edit_distance_combines_per_barcode_counters(
+        self, sample_extraction_stats: ExtractionStats
+    ) -> None:
+        """The edit distance data sums every per-barcode Counter into one combined Counter."""
+        payload = sample_extraction_stats.to_mqc_edit_distance(self.SAMPLE_PREFIX)
+
+        assert_that(list(payload["data"].keys())).is_equal_to([self.SAMPLE_PREFIX])
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to({0: 2770})
+
+    @pytest.mark.parametrize(
+        "edit_distance_dist",
+        [None, Counter()],
+        ids=["none", "empty_counter"],
+    )
+    def test_to_mqc_edit_distance_returns_none_when_all_empty(
+        self, edit_distance_dist: Counter[int] | None
+    ) -> None:
+        """When every per_barcode entry carries no edit distance data, the method returns None."""
+        stats = self.make_stats_with_edit_distance_dists(edit_distance_dist)
+
+        assert_that(stats.to_mqc_edit_distance(self.SAMPLE_PREFIX)).is_none()
+
+    # ===== Shared prefix-keying contract =====
+
+    @pytest.mark.parametrize("prefix", ["SK123", "another_sample_prefix"])
+    def test_mqc_payloads_are_keyed_by_the_given_prefix(
+        self, sample_extraction_stats: ExtractionStats, prefix: str
+    ) -> None:
+        """Every to_mqc_* payload's data dict is keyed by exactly the prefix supplied, not a
+        hard-coded sample name."""
+        general_stats_payload = sample_extraction_stats.to_mqc_general_stats(prefix)
+        breakdown_payload = sample_extraction_stats.to_mqc_breakdown(prefix)
+        edit_distance_payload = sample_extraction_stats.to_mqc_edit_distance(prefix)
+
+        assert_that(list(general_stats_payload["data"].keys())).is_equal_to([prefix])
+        assert_that(list(breakdown_payload["data"].keys())).is_equal_to([prefix])
+        assert_that(list(edit_distance_payload["data"].keys())).is_equal_to([prefix])
