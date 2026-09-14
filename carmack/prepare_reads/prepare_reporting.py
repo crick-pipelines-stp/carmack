@@ -152,12 +152,48 @@ class PrepareStats:
         Returns:
             A MultiQC custom content payload attached to the shared Carmack
             parent module, carrying ``pct_unmatched`` and ``pct_matched`` as
-            percentages of ``total_reads``.
+            percentages of ``total_reads``. ``id`` names the payload's own
+            MultiQC module: without it the custom content parser falls back to
+            the cleaned filename, so the module varies with the sample and an
+            N-sample run renders N one-row tables rather than one table with N
+            rows. ``pconfig`` declares a header per data column: without it
+            MultiQC guesses the columns from the raw data keys and renders them
+            untitled, unsuffixed and unscaled beside the sibling stages' fully
+            configured percentage columns.
         """
         return {
+            "id": "carmack_prepare_general_stats",
             "plot_type": "generalstats",
             "parent_id": CARMACK_PARENT_ID,
             "parent_name": CARMACK_PARENT_NAME,
+            "pconfig": [
+                # Scaled informationally rather than as a warning, unlike the
+                # sibling stages' leftover columns: a read on the scRNA arm is
+                # one of this stage's two legitimate destinations, not a read
+                # lost, so a red tail would report a problem that is not one.
+                {
+                    "pct_unmatched": {
+                        "title": "% scRNA Arm",
+                        "description": "Percentage of reads written to the scRNA arm, carrying no scTIP target index.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlGnBu",
+                    }
+                },
+                {
+                    "pct_matched": {
+                        "title": "% scTIP Arms",
+                        "description": "Percentage of reads written to a scTIP target bucket.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "RdYlGn",
+                    }
+                },
+            ],
             "data": {
                 prefix: {
                     "pct_unmatched": self.fraction(self.unmatched_written, self.total_reads) * 100,
@@ -181,15 +217,41 @@ class PrepareStats:
             A MultiQC custom content payload attached to the shared Carmack
             parent module, carrying one category per target in
             ``target_written`` plus the unmatched arm, keyed by ``NO_TARGET``.
+            ``id`` names the payload's own MultiQC module: without it the
+            custom content parser falls back to the cleaned filename, so an
+            N-sample run renders N single-sample bargraphs rather than one
+            chart carrying every sample's bars. ``section_name`` and
+            ``description`` head the section that chart renders as: this chart
+            and assign-targets' hang off the same parent and are both "the
+            target distribution" for their stage, so the heading has to say
+            whose numbers these are and the description has to say what the
+            bars count and against what denominator. ``pconfig`` names the plot
+            itself, keeping it addressable separately from the section it sits
+            in, and labels the axis for the reads the bars count.
         """
         categories = {
             target: self.target_written[target] for target in sorted(self.target_written)
         }
         categories[NO_TARGET] = self.unmatched_written
         return {
+            "id": "carmack_prepare_target_distribution",
             "plot_type": "bargraph",
             "parent_id": CARMACK_PARENT_ID,
             "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Prepare Reads Output Arm Distribution",
+            "description": (
+                "Read counts per output arm: one category per scTIP target bucket, plus "
+                "the scRNA arm. This stage never filters, so the categories partition "
+                "every read the run saw and the denominator is the whole run, unlike "
+                "assign-targets' target distribution, which is a fraction of matched "
+                "reads alone. These are the arms reads were actually written to, not a "
+                "record of what the target index matched."
+            ),
+            "pconfig": {
+                "id": "carmack_prepare_target_distribution_plot",
+                "title": "Prepare Reads: Output Arm Distribution",
+                "ylab": "Reads",
+            },
             "data": {prefix: categories},
         }
 

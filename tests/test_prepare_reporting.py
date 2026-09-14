@@ -35,6 +35,18 @@ prefix keying, JSON-serializability, and -- for the distribution -- that no
 read is double-counted or dropped and that the target categories stay sorted
 by name.
 
+They also pin what makes each payload addressable in a MultiQC run. A payload
+carrying no ``id`` is filed under the cleaned filename MultiQC falls back to, so
+an N-sample run renders N separate one-sample sections instead of one section
+with N bars, and a writer naming a payload's output file from its own id has
+nothing to name the file with. A generalstats payload carrying no ``pconfig``
+leaves MultiQC to guess its headers from the raw data keys, so the columns
+render as bare ``pct_matched``/``pct_unmatched`` with no title, no percent
+suffix and no colour scale beside three other stages' fully configured columns.
+The bargraph's ``section_name`` is pinned to differ from assign-targets', read
+from that stage's own builder rather than copied, because the two become
+sibling sections under one parent and must be tellable apart.
+
 ``PrepareCounts`` is the mutable accumulator that feeds it: one batch of reads
 is tallied into one of these, batches are folded together as they drain, and
 the run's totals are rendered as a frozen ``PrepareStats`` at the end. Its
@@ -49,14 +61,19 @@ import json
 from collections import Counter
 from collections.abc import Sequence
 from itertools import permutations
+from typing import Any
 
 import pytest
 from assertpy import assert_that
 
 from carmack import __version__ as carmack_version
+from carmack.assign_targets.assign_reporting import AssignStats
 from carmack.assign_targets.target_assigner import NO_TARGET
+from carmack.barcode.extraction_dataclasses import MatchMethod
+from carmack.barcode.extraction_reporting import ExtractionStats, OverallStats, PerBarcodeStats
 from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 from carmack.prepare_reads.prepare_reporting import PrepareCounts, PrepareStats
+from carmack.umi.umi_reporting import UmiExtractionStats
 from tests.utils import strip_report_run_details
 
 # Three scTIP target buckets, seen three, one and two times respectively, supplied
@@ -139,6 +156,40 @@ MQC_PREFIX_B = "SK661"
 GENERALSTATS_PLOT_TYPE = "generalstats"
 BARGRAPH_PLOT_TYPE = "bargraph"
 
+# The MultiQC module id each payload must declare. Pinned as literals because a
+# downstream consumer keys off them, and because the id is what a writer names the
+# payload's output file from.
+PREPARE_GENERAL_STATS_ID = "carmack_prepare_general_stats"
+PREPARE_TARGET_DISTRIBUTION_ID = "carmack_prepare_target_distribution"
+
+# The two builders under test, and the id each must declare.
+MQC_BUILDER_IDS = {
+    "to_mqc_general_stats": PREPARE_GENERAL_STATS_ID,
+    "to_mqc_target_distribution": PREPARE_TARGET_DISTRIBUTION_ID,
+}
+
+# The stage token the sibling stages spell bare - extraction, umi, tgidx, none of them
+# carrying a _stats suffix - so this stage's ids are carmack_prepare_*, and the token
+# they must never drift to.
+STAGE_TOKEN_PREFIX = f"{CARMACK_PARENT_ID}_prepare_"
+REJECTED_STAGE_TOKEN = "prepare_stats"
+
+# The generalstats data columns, each of which pconfig must configure a header for.
+GENERAL_STATS_COLUMNS = ("pct_unmatched", "pct_matched")
+
+# Every setting a generalstats header must carry for MultiQC to render the column as a
+# titled, bounded, colour-scaled percentage rather than guess it from the data key.
+PCONFIG_COLUMN_KEYS = ("title", "description", "min", "max", "suffix", "format", "scale")
+
+# The bounds and formatting that make a column read as a percentage, as every sibling
+# stage's percentage columns spell them.
+PCONFIG_PERCENTAGE_SETTINGS = {"min": 0, "max": 100, "suffix": "%", "format": "{:,.2f}"}
+
+# How a bargraph's pconfig id is derived from the payload id, and the y-axis label every
+# sibling stage's bargraph carries.
+PLOT_ID_SUFFIX = "_plot"
+BARGRAPH_YLAB = "Reads"
+
 
 def make_stats(**overrides: object) -> PrepareStats:
     """Build a ``PrepareStats`` whose default field values reconcile.
@@ -214,6 +265,123 @@ def outcome_sum(counts: PrepareCounts) -> int:
         The sum of the unmatched tally and every value in the target counter.
     """
     return counts.unmatched + sum(counts.target_counts.values())
+
+
+def build_mqc_payload(builder_name: str) -> dict[str, Any]:
+    """Build one of the two MultiQC payloads by the name of the builder that renders it.
+
+    Lets the properties common to both payloads - the module id, its namespacing,
+    its uniqueness - be parametrized over the builders rather than written twice.
+
+    Args:
+        builder_name: Name of the ``PrepareStats`` builder to call.
+
+    Returns:
+        The payload that builder renders for the default reconciling stats.
+    """
+    return getattr(make_stats(), builder_name)(MQC_PREFIX_A)
+
+
+def general_stats_header(column: str) -> dict[str, Any]:
+    """Return the header settings the generalstats pconfig declares for one data column.
+
+    MultiQC takes a generalstats pconfig as a list of single-key dicts, one per
+    column, so a column's settings are found by searching that list rather than
+    indexed straight out of a mapping.
+
+    Args:
+        column: Data column whose header settings are wanted.
+
+    Returns:
+        The settings mapping declared for that column, or an empty mapping when
+        pconfig declares no entry for it.
+    """
+    for entry in build_mqc_payload("to_mqc_general_stats")["pconfig"]:
+        if column in entry:
+            return entry[column]
+    return {}
+
+
+def assign_target_distribution_section_name() -> str:
+    """Return assign-targets' own target-distribution section heading, from its own builder.
+
+    Read out of the sibling module rather than copied here, so the assertion that
+    the two headings differ keeps holding however either stage rewords its own.
+
+    Returns:
+        The ``section_name`` assign-targets' target distribution payload carries.
+    """
+    stats = AssignStats(
+        total_reads=0,
+        matched=0,
+        unmatched_no_match=0,
+        unmatched_no_left_anchor_pos=0,
+        unmatched_short_window=0,
+        target_counts={},
+        edit_distance_counts={},
+    )
+    return str(stats.to_mqc_target_distribution(MQC_PREFIX_A)["section_name"])
+
+
+def sibling_mqc_payload_ids() -> set[str]:
+    """Collect the module id of every MultiQC payload the other carmack stages render.
+
+    Each sibling stats object is populated richly enough that none of its builders
+    suppress their payload, so the result is the whole id space this stage's own
+    ids have to stay clear of. Gathered by calling the builders rather than listing
+    the ids here, so a sibling stage renaming or adding a payload is reflected
+    without this file being edited.
+
+    Returns:
+        Every module id the barcode, UMI and assign-targets payloads declare.
+    """
+    siblings = (
+        ExtractionStats(
+            overall=OverallStats(total_reads=1, perfect=1, corrok=0, fail=0, top_10_barcodes=[]),
+            per_barcode=[
+                PerBarcodeStats(
+                    bc_name="BC1",
+                    method=MatchMethod.EXACTMATCH,
+                    attempts=1,
+                    success=1,
+                    fail=0,
+                    edit_distance_dist=Counter({0: 1}),
+                    reads_w_ambiguous_match=0,
+                    spacer_present=0,
+                )
+            ],
+            bc_names=["BC1"],
+        ),
+        UmiExtractionStats(
+            total_reads=1,
+            accepted=1,
+            missing_left_anchor=0,
+            truncated=0,
+            umi_length=12,
+            homopolymer_base="G",
+            homopolymer_run_counts={4: 1},
+        ),
+        AssignStats(
+            total_reads=1,
+            matched=1,
+            unmatched_no_match=0,
+            unmatched_no_left_anchor_pos=0,
+            unmatched_short_window=0,
+            target_counts={"targetA": 1},
+            edit_distance_counts={0: 1},
+            homopolymer_base="G",
+            homopolymer_run_counts={4: 1},
+        ),
+    )
+    ids = set()
+    for stats in siblings:
+        for name in dir(stats):
+            if not name.startswith("to_mqc_"):
+                continue
+            payload = getattr(stats, name)(MQC_PREFIX_A)
+            if payload is not None:
+                ids.add(payload["id"])
+    return ids
 
 
 class TestPrepareStatsConstruction:
@@ -610,6 +778,101 @@ class TestPrepareStatsMqcGeneralStats:
 
         assert_that(reloaded).is_equal_to(payload)
 
+    def test_payload_declares_its_own_module_id(self) -> None:
+        """Test that the payload names its own MultiQC module rather than leaving it to be guessed.
+
+        MultiQC's custom-content parser falls back to the cleaned filename when a
+        payload carries no id, so the module id varies with the sample and an
+        N-sample run renders N separate one-sample tables instead of one table with
+        N rows. The literal is pinned because a downstream consumer keys off it.
+        """
+        payload = make_stats().to_mqc_general_stats(MQC_PREFIX_A)
+
+        assert_that(payload["id"]).is_equal_to(PREPARE_GENERAL_STATS_ID)
+
+    def test_pconfig_is_a_list_of_single_column_headers(self) -> None:
+        """Test that pconfig is a list of one-key dicts, the shape a generalstats pconfig takes.
+
+        MultiQC reads one header definition per list entry, keyed by the data column
+        it configures, and every sibling stage spells its generalstats pconfig this
+        way. A mapping in its place would configure nothing.
+        """
+        pconfig = make_stats().to_mqc_general_stats(MQC_PREFIX_A)["pconfig"]
+
+        assert_that(pconfig).is_instance_of(list)
+        for entry in pconfig:
+            assert_that(entry).is_instance_of(dict)
+            assert_that(entry).is_length(1)
+
+    def test_pconfig_configures_exactly_the_columns_the_data_carries(self) -> None:
+        """Test that every data column gets a header, and no header names a column that is absent.
+
+        An unconfigured column is one MultiQC guesses from the raw data key, so it
+        lands in the General Statistics table as a bare ``pct_matched`` with no
+        title, no percent suffix and no colour scale, beside three other stages'
+        fully configured columns.
+        """
+        payload = make_stats().to_mqc_general_stats(MQC_PREFIX_A)
+
+        configured = [next(iter(entry)) for entry in payload["pconfig"]]
+
+        assert_that(configured).is_length(len(GENERAL_STATS_COLUMNS))
+        assert_that(set(configured)).is_equal_to(set(GENERAL_STATS_COLUMNS))
+        assert_that(set(configured)).is_equal_to(set(payload["data"][MQC_PREFIX_A]))
+
+    @pytest.mark.parametrize("column", GENERAL_STATS_COLUMNS)
+    @pytest.mark.parametrize("setting", PCONFIG_COLUMN_KEYS)
+    def test_every_column_header_carries_every_setting(self, column: str, setting: str) -> None:
+        """Test that each column's header declares the full set of settings the siblings declare.
+
+        Asserted setting by setting rather than on the whole mapping, so a header
+        missing one of them names which one, and so a header carrying extra settings
+        a future chart needs is not failed for it.
+        """
+        assert_that(general_stats_header(column)).contains_key(setting)
+
+    @pytest.mark.parametrize("column", GENERAL_STATS_COLUMNS)
+    def test_every_column_header_is_titled_and_described_in_words(self, column: str) -> None:
+        """Test that each column carries human prose rather than repeating the raw data key.
+
+        The title is the column heading a reader sees in the General Statistics
+        table, and the description is its tooltip; leaving them to MultiQC's fallback
+        is what this payload does today by carrying no pconfig at all.
+        """
+        header = general_stats_header(column)
+
+        assert_that(header["title"]).is_instance_of(str)
+        assert_that(str(header["title"]).strip()).is_not_empty()
+        assert_that(header["title"]).is_not_equal_to(column)
+        assert_that(header["description"]).is_instance_of(str)
+        assert_that(str(header["description"]).strip()).is_not_empty()
+
+    @pytest.mark.parametrize("column", GENERAL_STATS_COLUMNS)
+    @pytest.mark.parametrize("setting,value", list(PCONFIG_PERCENTAGE_SETTINGS.items()))
+    def test_every_column_header_renders_a_bounded_percentage(
+        self, column: str, setting: str, value: object
+    ) -> None:
+        """Test that each column is bounded 0-100 and formatted as a suffixed, two-decimal percentage.
+
+        The data section already carries percentages of ``total_reads``, so the
+        header has to say so; without it MultiQC renders them as bare unsuffixed
+        floats auto-scaled to whatever range the run happened to produce, which is
+        not comparable with the neighbouring stages' percentage columns.
+        """
+        assert_that(general_stats_header(column)).contains_entry({setting: value})
+
+    @pytest.mark.parametrize("column", GENERAL_STATS_COLUMNS)
+    def test_every_column_header_names_a_colour_scale(self, column: str) -> None:
+        """Test that each column asks for a colour scale, so the table reads at a glance.
+
+        The neighbouring stages' percentage columns are all scaled; an unscaled
+        column beside them reads as a column nobody thought worth looking at.
+        """
+        scale = general_stats_header(column)["scale"]
+
+        assert_that(scale).is_instance_of(str)
+        assert_that(str(scale).strip()).is_not_empty()
+
 
 class TestPrepareStatsMqcTargetDistribution:
     """to_mqc_target_distribution: the bargraph payload over target_written plus the unmatched arm."""
@@ -717,6 +980,125 @@ class TestPrepareStatsMqcTargetDistribution:
         reloaded = json.loads(json.dumps(payload))
 
         assert_that(reloaded).is_equal_to(payload)
+
+    def test_payload_declares_its_own_module_id(self) -> None:
+        """Test that the payload names its own MultiQC module rather than leaving it to be guessed.
+
+        Without an id MultiQC falls back to the cleaned filename, so an N-sample run
+        renders N separate one-sample bargraphs instead of one chart carrying every
+        sample's bars. The literal is pinned because a downstream consumer keys off
+        it, and because a writer names this payload's output file from it.
+        """
+        payload = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["id"]).is_equal_to(PREPARE_TARGET_DISTRIBUTION_ID)
+
+    def test_payload_names_and_describes_its_own_section(self) -> None:
+        """Test that the bargraph carries both a section heading and a prose description.
+
+        A bargraph payload renders as a MultiQC section of its own; carrying neither
+        leaves it under whatever heading the parser derived from the filename, with
+        nothing on the page saying what the bars count or against what denominator.
+        """
+        payload = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["section_name"]).is_instance_of(str)
+        assert_that(str(payload["section_name"]).strip()).is_not_empty()
+        assert_that(payload["description"]).is_instance_of(str)
+        assert_that(str(payload["description"]).strip()).is_not_empty()
+
+    def test_section_name_differs_from_the_assign_targets_distribution_section(self) -> None:
+        """Test that this section is tellable apart from assign-targets' own target distribution.
+
+        Both hang off the same Carmack parent, and both are "the target
+        distribution" for their stage over different denominators - every read the
+        run saw here, matched reads only there - so two identically headed sections
+        leave a reader no way to know whose numbers are in front of them.
+        Assign-targets' heading is read from its own builder rather than copied here,
+        so the two stay distinct however either stage rewords its own.
+        """
+        payload = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)
+
+        assert_that(payload["section_name"]).is_not_equal_to(
+            assign_target_distribution_section_name()
+        )
+
+    def test_pconfig_is_a_mapping_naming_the_plot_after_the_payload(self) -> None:
+        """Test that pconfig is a dict whose id is the payload id plus the plot suffix.
+
+        A bargraph pconfig is a mapping, not the list a generalstats pconfig is, and
+        every sibling stage derives its plot id from its payload id this way so the
+        plot and the section it sits in stay separately addressable.
+        """
+        pconfig = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)["pconfig"]
+
+        assert_that(pconfig).is_instance_of(dict)
+        assert_that(pconfig["id"]).is_equal_to(f"{PREPARE_TARGET_DISTRIBUTION_ID}{PLOT_ID_SUFFIX}")
+
+    def test_pconfig_titles_the_plot_and_labels_the_y_axis_in_reads(self) -> None:
+        """Test that the plot carries a title and says its bars are counted in reads.
+
+        The categories are raw read counts, the same ones target_section() renders,
+        so the axis is labelled for reads exactly as every sibling stage's bargraph
+        labels it; an unlabelled axis reads as a fraction just as easily.
+        """
+        pconfig = make_stats().to_mqc_target_distribution(MQC_PREFIX_A)["pconfig"]
+
+        assert_that(pconfig["title"]).is_instance_of(str)
+        assert_that(str(pconfig["title"]).strip()).is_not_empty()
+        assert_that(pconfig["ylab"]).is_equal_to(BARGRAPH_YLAB)
+
+
+class TestPrepareStatsMqcPayloadIdentity:
+    """The module ids both payloads declare, and the namespace and file names they key."""
+
+    @pytest.mark.parametrize("builder_name", list(MQC_BUILDER_IDS))
+    def test_payload_id_is_namespaced_under_the_carmack_parent(self, builder_name: str) -> None:
+        """Test that each id sits under the shared parent id and carries a stem after it.
+
+        A writer names each payload's output file from the payload's own id, so an
+        id that is missing, or bare once the parent prefix is taken off it, leaves
+        nothing to derive a filename stem from.
+        """
+        payload_id = str(build_mqc_payload(builder_name)["id"])
+
+        assert_that(payload_id).starts_with(f"{CARMACK_PARENT_ID}_")
+        assert_that(payload_id[len(CARMACK_PARENT_ID) + 1 :]).is_not_empty()
+
+    @pytest.mark.parametrize("builder_name", list(MQC_BUILDER_IDS))
+    def test_payload_id_uses_the_bare_stage_token(self, builder_name: str) -> None:
+        """Test that the stage token is the bare ``prepare``, as the siblings' tokens are bare.
+
+        The other stages spell theirs ``extraction``, ``umi`` and ``tgidx``, none of
+        which carries a ``_stats`` suffix, and a downstream consumer keys off these
+        strings literally, so the token must not drift to ``prepare_stats``.
+        """
+        payload_id = str(build_mqc_payload(builder_name)["id"])
+
+        assert_that(payload_id).starts_with(STAGE_TOKEN_PREFIX)
+        assert_that(payload_id).does_not_contain(REJECTED_STAGE_TOKEN)
+
+    def test_the_two_payloads_declare_different_ids(self) -> None:
+        """Test that the generalstats table and the bargraph are separate MultiQC modules.
+
+        They render as separate sections and are written to separately named files
+        derived from these ids, so one id shared between them would collapse both
+        into a single module and leave one file overwriting the other.
+        """
+        ids = [build_mqc_payload(builder_name)["id"] for builder_name in MQC_BUILDER_IDS]
+
+        assert_that(set(ids)).is_length(len(MQC_BUILDER_IDS))
+
+    @pytest.mark.parametrize("builder_name", list(MQC_BUILDER_IDS))
+    def test_payload_id_collides_with_no_other_stage(self, builder_name: str) -> None:
+        """Test that neither id is already claimed by the barcode, UMI or assign-targets payloads.
+
+        Every carmack payload lands in one MultiQC run under one parent, so an id
+        reused across stages has one stage's numbers silently displace another's.
+        """
+        payload_id = build_mqc_payload(builder_name)["id"]
+
+        assert_that(sibling_mqc_payload_ids()).does_not_contain(payload_id)
 
 
 class TestPrepareCountsConstruction:
