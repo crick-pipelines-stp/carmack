@@ -857,6 +857,16 @@ class TestExtractionStatsMqcReporting:
 
         assert_that(list(payload["data"].keys())).is_equal_to([self.SAMPLE_PREFIX])
 
+    def test_to_mqc_general_stats_attributes_its_columns_with_a_namespace(
+        self, sample_extraction_stats: ExtractionStats
+    ) -> None:
+        """to_mqc_general_stats names carmack as its columns' source through ``namespace``."""
+        payload = sample_extraction_stats.to_mqc_general_stats(self.SAMPLE_PREFIX)
+
+        assert_that(payload).contains_entry({"namespace": CARMACK_PARENT_NAME})
+        assert_that(payload).does_not_contain_key("parent_id")
+        assert_that(payload).does_not_contain_key("parent_name")
+
     # ===== to_mqc_breakdown =====
 
     def test_to_mqc_breakdown_has_bargraph_plot_type_and_parent(

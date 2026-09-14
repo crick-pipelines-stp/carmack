@@ -34,11 +34,14 @@ so those percentages can never drift from what ``get_report`` already prints;
 ``to_mqc_target_distribution`` renders the same per-target distribution as a
 bargraph, adding the unmatched arm as one more category so every read the run
 saw is accounted for in one chart. Both are keyed by a caller-supplied prefix
-and carry the shared Carmack parent identifiers from ``carmack.mqc_report``.
-These tests pin the reuse of ``fraction``, the zero-reads edge case, the
-prefix keying, JSON-serializability, and -- for the distribution -- that no
-read is double-counted or dropped and that the target categories stay sorted
-by name.
+and both attribute themselves to the shared Carmack parent from
+``carmack.mqc_report``, though through different keys: the bargraph through the
+``parent_id``/``parent_name`` pair that nests its section, the generalstats
+table through ``namespace``, because MultiQC's custom-content parser returns on
+the generalstats branch before a parent id is ever read. These tests pin the
+reuse of ``fraction``, the zero-reads edge case, the prefix keying,
+JSON-serializability, and -- for the distribution -- that no read is
+double-counted or dropped and that the target categories stay sorted by name.
 
 They also pin what makes each payload addressable in a MultiQC run. A payload
 carrying no ``id`` is filed under the cleaned filename MultiQC falls back to, so
@@ -51,6 +54,14 @@ suffix and no colour scale beside three other stages' fully configured columns.
 The bargraph's ``section_name`` is pinned to differ from assign-targets', read
 from that stage's own builder rather than copied, because the two become
 sibling sections under one parent and must be tellable apart.
+
+Those comparisons reach into the other stages' stats objects, and so does the
+id-collision test: every carmack payload lands in one MultiQC run under one
+parent, so this stage's two ids are checked against the whole id space the
+sibling stages render, gathered by reflecting over their builders rather than
+listed here. The attribution rule those payloads all obey is a rule about
+``carmack.mqc_report``'s own two constants and is stated over all four stages in
+``tests/test_mqc_report.py``; the reflection helpers are imported from there.
 
 ``PrepareCounts`` is the mutable accumulator that feeds it: one batch of reads
 is tallied into one of these, batches are folded together as they drain, and
@@ -74,11 +85,20 @@ from assertpy import assert_that
 from carmack import __version__ as carmack_version
 from carmack.assign_targets.assign_reporting import AssignStats
 from carmack.assign_targets.target_assigner import NO_TARGET
-from carmack.barcode.extraction_dataclasses import MatchMethod
-from carmack.barcode.extraction_reporting import ExtractionStats, OverallStats, PerBarcodeStats
 from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 from carmack.prepare_reads.prepare_reporting import PrepareCounts, PrepareStats
-from carmack.umi.umi_reporting import UmiExtractionStats
+
+# The repo-wide MultiQC payload contract, and the reflection that reaches every
+# stage's builders, are stated once in the shared module's own tests. They are
+# imported rather than restated so this stage's id-collision and namespace tests
+# hold to the same definitions.
+from tests.test_mqc_report import (
+    GENERALSTATS_PLOT_TYPE,
+    NAMESPACE_KEY,
+    PARENT_KEYS,
+    mqc_payloads,
+    sibling_stats,
+)
 from tests.utils import strip_report_run_details
 
 # Three scTIP target buckets, seen three, one and two times respectively, supplied
@@ -158,7 +178,6 @@ PERMUTED_PARTITION = (3, 3, 4)
 MQC_PREFIX_A = "SK588"
 MQC_PREFIX_B = "SK661"
 
-GENERALSTATS_PLOT_TYPE = "generalstats"
 BARGRAPH_PLOT_TYPE = "bargraph"
 
 # The MultiQC module id each payload must declare. Pinned as literals because a
@@ -167,11 +186,9 @@ BARGRAPH_PLOT_TYPE = "bargraph"
 PREPARE_GENERAL_STATS_ID = "carmack_prepare_general_stats"
 PREPARE_TARGET_DISTRIBUTION_ID = "carmack_prepare_target_distribution"
 
-# The two builders under test, and the id each must declare.
-MQC_BUILDER_IDS = {
-    "to_mqc_general_stats": PREPARE_GENERAL_STATS_ID,
-    "to_mqc_target_distribution": PREPARE_TARGET_DISTRIBUTION_ID,
-}
+# The two builders under test, named so the properties common to both payloads can
+# be parametrized over them.
+MQC_BUILDER_NAMES = ("to_mqc_general_stats", "to_mqc_target_distribution")
 
 # The stage token the sibling stages spell bare - extraction, umi, tgidx, none of them
 # carrying a _stats suffix - so this stage's ids are carmack_prepare_*, and the token
@@ -369,62 +386,15 @@ def assign_target_distribution_section_name() -> str:
 def sibling_mqc_payload_ids() -> set[str]:
     """Collect the module id of every MultiQC payload the other carmack stages render.
 
-    Each sibling stats object is populated richly enough that none of its builders
-    suppress their payload, so the result is the whole id space this stage's own
-    ids have to stay clear of. Gathered by calling the builders rather than listing
-    the ids here, so a sibling stage renaming or adding a payload is reflected
-    without this file being edited.
+    The result is the whole id space this stage's own ids have to stay clear of.
+    Gathered by calling the builders rather than listing the ids here, so a
+    sibling stage renaming or adding a payload is reflected without this file
+    being edited.
 
     Returns:
         Every module id the barcode, UMI and assign-targets payloads declare.
     """
-    siblings = (
-        ExtractionStats(
-            overall=OverallStats(total_reads=1, perfect=1, corrok=0, fail=0, top_10_barcodes=[]),
-            per_barcode=[
-                PerBarcodeStats(
-                    bc_name="BC1",
-                    method=MatchMethod.EXACTMATCH,
-                    attempts=1,
-                    success=1,
-                    fail=0,
-                    edit_distance_dist=Counter({0: 1}),
-                    reads_w_ambiguous_match=0,
-                    spacer_present=0,
-                )
-            ],
-            bc_names=["BC1"],
-        ),
-        UmiExtractionStats(
-            total_reads=1,
-            accepted=1,
-            missing_left_anchor=0,
-            truncated=0,
-            umi_length=12,
-            homopolymer_base="G",
-            homopolymer_run_counts={4: 1},
-        ),
-        AssignStats(
-            total_reads=1,
-            matched=1,
-            unmatched_no_match=0,
-            unmatched_no_left_anchor_pos=0,
-            unmatched_short_window=0,
-            target_counts={"targetA": 1},
-            edit_distance_counts={0: 1},
-            homopolymer_base="G",
-            homopolymer_run_counts={4: 1},
-        ),
-    )
-    ids = set()
-    for stats in siblings:
-        for name in dir(stats):
-            if not name.startswith("to_mqc_"):
-                continue
-            payload = getattr(stats, name)(MQC_PREFIX_A)
-            if payload is not None:
-                ids.add(payload["id"])
-    return ids
+    return {str(payload["id"]) for payload in mqc_payloads(sibling_stats())}
 
 
 class TestPrepareStatsConstruction:
@@ -783,12 +753,12 @@ class TestPrepareStatsMqcGeneralStats:
 
         assert_that(payload["plot_type"]).is_equal_to(GENERALSTATS_PLOT_TYPE)
 
-    def test_payload_carries_the_shared_carmack_parent_identifiers(self) -> None:
-        """Test that the payload attaches to the shared Carmack parent module."""
+    def test_payload_attributes_its_columns_with_a_namespace(self) -> None:
+        """Test that the payload names Carmack as its columns' source through ``namespace``."""
         payload = make_stats().to_mqc_general_stats(MQC_PREFIX_A)
 
-        assert_that(payload["parent_id"]).is_equal_to(CARMACK_PARENT_ID)
-        assert_that(payload["parent_name"]).is_equal_to(CARMACK_PARENT_NAME)
+        assert_that(payload).contains_entry({NAMESPACE_KEY: CARMACK_PARENT_NAME})
+        assert_that(payload).does_not_contain_key(*PARENT_KEYS)
 
     @pytest.mark.parametrize("prefix", [MQC_PREFIX_A, MQC_PREFIX_B])
     def test_data_section_is_keyed_by_the_given_prefix(self, prefix: str) -> None:
@@ -1134,7 +1104,7 @@ class TestPrepareStatsMqcTargetDistribution:
 class TestPrepareStatsMqcPayloadIdentity:
     """The module ids both payloads declare, and the namespace and file names they key."""
 
-    @pytest.mark.parametrize("builder_name", list(MQC_BUILDER_IDS))
+    @pytest.mark.parametrize("builder_name", MQC_BUILDER_NAMES)
     def test_payload_id_is_namespaced_under_the_carmack_parent(self, builder_name: str) -> None:
         """Test that each id sits under the shared parent id and carries a stem after it.
 
@@ -1147,7 +1117,7 @@ class TestPrepareStatsMqcPayloadIdentity:
         assert_that(payload_id).starts_with(f"{CARMACK_PARENT_ID}_")
         assert_that(payload_id[len(CARMACK_PARENT_ID) + 1 :]).is_not_empty()
 
-    @pytest.mark.parametrize("builder_name", list(MQC_BUILDER_IDS))
+    @pytest.mark.parametrize("builder_name", MQC_BUILDER_NAMES)
     def test_payload_id_uses_the_bare_stage_token(self, builder_name: str) -> None:
         """Test that the stage token is the bare ``prepare``, as the siblings' tokens are bare.
 
@@ -1167,11 +1137,11 @@ class TestPrepareStatsMqcPayloadIdentity:
         derived from these ids, so one id shared between them would collapse both
         into a single module and leave one file overwriting the other.
         """
-        ids = [build_mqc_payload(builder_name)["id"] for builder_name in MQC_BUILDER_IDS]
+        ids = [build_mqc_payload(builder_name)["id"] for builder_name in MQC_BUILDER_NAMES]
 
-        assert_that(set(ids)).is_length(len(MQC_BUILDER_IDS))
+        assert_that(set(ids)).is_length(len(MQC_BUILDER_NAMES))
 
-    @pytest.mark.parametrize("builder_name", list(MQC_BUILDER_IDS))
+    @pytest.mark.parametrize("builder_name", MQC_BUILDER_NAMES)
     def test_payload_id_collides_with_no_other_stage(self, builder_name: str) -> None:
         """Test that neither id is already claimed by the barcode, UMI or assign-targets payloads.
 

@@ -122,7 +122,11 @@ class UmiExtractionStats:
 
         Returns:
             MultiQC custom-content payload with a single row of headline percentages
-            (accepted, missing_left_anchor, truncated) for this sample.
+            (accepted, missing_left_anchor, truncated) for this sample. ``namespace``
+            is what attributes those columns to Carmack: the custom-content parser
+            branches on the generalstats plot type and returns before it reads
+            ``parent_id``, so the parent keys that nest this stage's chart sections are
+            inert here, and a namespace left unset falls back to the raw payload id.
         """
         pct_accepted = 100 * self.fraction(self.accepted, self.total_reads)
         pct_missing_left_anchor = 100 * self.fraction(self.missing_left_anchor, self.total_reads)
@@ -131,6 +135,7 @@ class UmiExtractionStats:
         return {
             "id": "carmack_umi_general_stats",
             "plot_type": "generalstats",
+            "namespace": CARMACK_PARENT_NAME,
             "pconfig": [
                 {
                     "pct_accepted": {

@@ -160,9 +160,14 @@ class PrepareStats:
                 caller reporting several runs can tell them apart.
 
         Returns:
-            A MultiQC custom content payload attached to the shared Carmack
-            parent module, carrying ``pct_unmatched`` and ``pct_matched`` as
-            percentages of ``total_reads``. ``id`` names the payload's own
+            A MultiQC custom content payload carrying ``pct_unmatched`` and
+            ``pct_matched`` as percentages of ``total_reads``. ``namespace`` is
+            what attributes those columns to Carmack, and the only key that can:
+            the custom content parser branches on the generalstats plot type and
+            returns before it reads ``parent_id``, so the parent keys that nest
+            this stage's chart sections are inert here, and a namespace left
+            unset falls back to the raw payload id -- one per stage, rather than
+            one Carmack heading over all four. ``id`` names the payload's own
             MultiQC module: without it the custom content parser falls back to
             the cleaned filename, so the module varies with the sample and an
             N-sample run renders N one-row tables rather than one table with N
@@ -174,8 +179,7 @@ class PrepareStats:
         return {
             "id": "carmack_prepare_general_stats",
             "plot_type": "generalstats",
-            "parent_id": CARMACK_PARENT_ID,
-            "parent_name": CARMACK_PARENT_NAME,
+            "namespace": CARMACK_PARENT_NAME,
             "pconfig": [
                 # Scaled informationally rather than as a warning, unlike the
                 # sibling stages' leftover columns: a read on the scRNA arm is

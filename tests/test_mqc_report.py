@@ -6,6 +6,14 @@ content section needs to attach itself to the Carmack parent module
 caller writes MQC-readable JSON payloads to disk. These tests pin the two
 constants' exact values, since a MultiQC config keys off them literally.
 
+Because those constants are carmack-wide rather than any one stage's, this is
+also where the rule for using them is stated: which of the two keys a payload
+must carry is decided by its plot type, and the assertion runs over every
+payload all four stages render, reached by reflecting over their builders so a
+payload added later is held to the same rule without this file being edited.
+The four per-stage reporting test modules keep a one-line version of the same
+check against their own generalstats payload, which fails closer to the stage.
+
 ``write_mqc_payloads`` is the writer that makes MultiQC's one-file-one-chart
 rule structural instead of remembered. MultiQC opens a custom-content file,
 looks for a top-level ``data`` key, and throws the whole file away with a
@@ -26,12 +34,20 @@ assign-targets emits exactly that for a run in which nothing matched.
 """
 
 import json
+from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from assertpy import assert_that
 
+from carmack.assign_targets.assign_reporting import AssignStats
+from carmack.barcode.extraction_dataclasses import MatchMethod
+from carmack.barcode.extraction_reporting import ExtractionStats, OverallStats, PerBarcodeStats
 from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME, write_mqc_payloads
+from carmack.prepare_reads.prepare_reporting import PrepareStats
+from carmack.umi.umi_reporting import UmiExtractionStats
 
 SAMPLE_PREFIX = "SK609"
 
@@ -41,6 +57,19 @@ RENDERING_PAYLOAD_FILENAMES = [
     ("carmack_tgidx_edit_distance", "SK609.tgidx_edit_distance_mqc.json"),
     ("carmack_tgidx_anchor_run", "SK609.tgidx_anchor_run_mqc.json"),
 ]
+
+GENERALSTATS_PLOT_TYPE = "generalstats"
+
+# The two keys that attribute a payload to the Carmack parent, and the one key that
+# does it for a generalstats table. Which pair applies is decided by the plot type.
+PARENT_KEYS = ("parent_id", "parent_name")
+NAMESPACE_KEY = "namespace"
+
+# What the four stages render between them today: one generalstats table each, plus
+# five bargraphs and four linegraphs. Counted so a reflective assertion over the
+# payloads cannot pass by having collected none of them.
+CARMACK_GENERALSTATS_PAYLOAD_COUNT = 4
+CARMACK_CHART_PAYLOAD_COUNT = 9
 
 
 def renderable_payload(payload_id: str) -> dict[str, object]:
@@ -52,6 +81,134 @@ def renderable_payload(payload_id: str) -> dict[str, object]:
         "parent_name": CARMACK_PARENT_NAME,
         "data": {SAMPLE_PREFIX: {"0": 1200, "1": 340, "2": 56}},
     }
+
+
+def sibling_stats() -> tuple[ExtractionStats, UmiExtractionStats, AssignStats]:
+    """Build one populated stats object for each carmack stage other than prepare-reads.
+
+    Each is populated richly enough that none of its builders suppress their
+    payload, so reflecting over these reaches every MultiQC payload those stages
+    render rather than only the ones a degenerate run happens to produce.
+    Prepare-reads is built separately by ``prepare_stats``, so that these three
+    are also the id space prepare-reads' own ids have to stay clear of.
+
+    Returns:
+        The barcode, UMI and assign-targets stats objects.
+    """
+    return (
+        ExtractionStats(
+            overall=OverallStats(total_reads=1, perfect=1, corrok=0, fail=0, top_10_barcodes=[]),
+            per_barcode=[
+                PerBarcodeStats(
+                    bc_name="BC1",
+                    method=MatchMethod.EXACTMATCH,
+                    attempts=1,
+                    success=1,
+                    fail=0,
+                    edit_distance_dist=Counter({0: 1}),
+                    reads_w_ambiguous_match=0,
+                    spacer_present=0,
+                )
+            ],
+            bc_names=["BC1"],
+        ),
+        UmiExtractionStats(
+            total_reads=1,
+            accepted=1,
+            missing_left_anchor=0,
+            truncated=0,
+            umi_length=12,
+            homopolymer_base="G",
+            homopolymer_run_counts={4: 1},
+        ),
+        AssignStats(
+            total_reads=1,
+            matched=1,
+            unmatched_no_match=0,
+            unmatched_no_left_anchor_pos=0,
+            unmatched_short_window=0,
+            target_counts={"targetA": 1},
+            edit_distance_counts={0: 1},
+            homopolymer_base="G",
+            homopolymer_run_counts={4: 1},
+        ),
+    )
+
+
+def prepare_stats() -> PrepareStats:
+    """Build the fourth stage's stats object, reconciling the way its producer must.
+
+    Returns:
+        A prepare-reads stats object whose unmatched count and per-target
+        distribution sum to ``total_reads``, so neither of its builders is
+        rendering a degenerate run.
+    """
+    return PrepareStats(total_reads=2, unmatched_written=1, target_written={"targetA": 1})
+
+
+def mqc_payloads(stats_objects: Sequence[object]) -> list[dict[str, Any]]:
+    """Render every MultiQC payload the given stats objects build.
+
+    The builders are found by reflection rather than named here, so a stage that
+    renames or adds one is covered without this file being edited. A builder
+    returning ``None`` measured nothing and renders no payload, so it contributes
+    nothing.
+
+    Args:
+        stats_objects: Stats objects whose ``to_mqc_`` builders are called.
+
+    Returns:
+        Every payload rendered, in stats-object then builder-name order.
+    """
+    payloads: list[dict[str, Any]] = []
+    for stats in stats_objects:
+        for name in dir(stats):
+            if not name.startswith("to_mqc_"):
+                continue
+            payload = getattr(stats, name)(SAMPLE_PREFIX)
+            if payload is not None:
+                payloads.append(payload)
+    return payloads
+
+
+def carmack_mqc_payloads() -> list[dict[str, Any]]:
+    """Render every MultiQC payload carmack builds, over all four reporting stages.
+
+    Returns:
+        The payloads the barcode, UMI, assign-targets and prepare-reads stats
+        objects render between them.
+    """
+    return mqc_payloads([*sibling_stats(), prepare_stats()])
+
+
+def generalstats_mqc_payloads() -> list[dict[str, Any]]:
+    """Return the carmack payloads MultiQC renders as General Statistics columns.
+
+    Returns:
+        Every payload whose plot type is generalstats.
+    """
+    return [p for p in carmack_mqc_payloads() if p["plot_type"] == GENERALSTATS_PLOT_TYPE]
+
+
+def chart_mqc_payloads() -> list[dict[str, Any]]:
+    """Return the carmack payloads MultiQC renders as a section of their own.
+
+    Returns:
+        Every payload whose plot type is something other than generalstats.
+    """
+    return [p for p in carmack_mqc_payloads() if p["plot_type"] != GENERALSTATS_PLOT_TYPE]
+
+
+def mqc_payload_id(payload: dict[str, Any]) -> str:
+    """Name a parametrized payload case after the MultiQC module id it declares.
+
+    Args:
+        payload: Payload the case runs against.
+
+    Returns:
+        The payload's module id, so a failure names the stage and chart at fault.
+    """
+    return str(payload["id"])
 
 
 class TestCarmackParentConstants:
@@ -315,6 +472,25 @@ class TestWriteMqcPayloadsRejectsUnrenderablePayloads:
         assert_that(str(error.value)).contains("carmack_tgidx_edit_distance")
         assert_that(list(tmp_path.iterdir())).is_empty()
 
+    def test_write_mqc_payloads_writes_nothing_when_a_later_payload_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that a good payload ahead of a rejected one still leaves the directory empty.
+
+        Checking each payload as its file went out would leave everything before
+        the bad one on disk, so a raising run would still publish a partial set of
+        files -- and a partial set is exactly what MultiQC would read as the whole
+        report. Validating the whole sequence first makes the write all-or-nothing.
+        """
+        good = renderable_payload("carmack_tgidx_edit_distance")
+        bad = {"id": "carmack_tgidx_anchor_run", "plot_type": "linegraph", "data": {}}
+
+        with pytest.raises(ValueError) as error:
+            write_mqc_payloads(tmp_path, SAMPLE_PREFIX, [good, bad])
+
+        assert_that(str(error.value)).contains("carmack_tgidx_anchor_run")
+        assert_that(list(tmp_path.iterdir())).is_empty()
+
     def test_write_mqc_payloads_writes_a_payload_whose_per_sample_data_is_empty(
         self, tmp_path: Path
     ) -> None:
@@ -336,3 +512,64 @@ class TestWriteMqcPayloadsRejectsUnrenderablePayloads:
         assert_that(written).is_equal_to([tmp_path / "SK609.tgidx_edit_distance_mqc.json"])
         with open(written[0]) as handle:
             assert_that(json.load(handle)).is_equal_to(payload)
+
+
+class TestCarmackMqcPayloadAttribution:
+    """How every carmack payload, at every stage, attributes itself to the Carmack parent.
+
+    Two different keys do that job, and a payload's plot type decides which one
+    applies. MultiQC's custom-content parser branches on the generalstats plot type
+    and returns before the point where ``parent_id`` is read, so on a generalstats
+    payload the parent keys are inert: the columns come out attributed to the raw
+    payload id, as ``custom_content_carmack_extraction_general_stats-pct_perfect``
+    rather than as one Carmack column among four stages'. The key that does control
+    that attribution is ``namespace``, which falls back to the module id when unset.
+
+    Every other plot type takes the branch that does read ``parent_id``, and there
+    the parent pair is live config: it is what nests the five bargraphs and four
+    linegraphs as sibling sections under one Carmack heading. The two shapes are
+    therefore not interchangeable, and tidying the charts into the generalstats
+    shape would scatter their sections without any error being raised.
+
+    The rule is about the two constants this module exposes, so it is stated here
+    once over every stage rather than four times over one, and reached by
+    reflecting over the builders, so a payload added later is held to the same rule
+    without this file being edited.
+    """
+
+    @pytest.mark.parametrize("payload", generalstats_mqc_payloads(), ids=mqc_payload_id)
+    def test_generalstats_payload_declares_the_carmack_namespace(
+        self, payload: dict[str, Any]
+    ) -> None:
+        """Test that every stage's General Statistics columns are attributed to Carmack."""
+        assert_that(payload).contains_entry({NAMESPACE_KEY: CARMACK_PARENT_NAME})
+
+    @pytest.mark.parametrize("payload", generalstats_mqc_payloads(), ids=mqc_payload_id)
+    def test_generalstats_payload_carries_no_parent_keys(self, payload: dict[str, Any]) -> None:
+        """Test that no generalstats payload keeps parent keys its branch of the parser ignores."""
+        assert_that(payload).does_not_contain_key(*PARENT_KEYS)
+
+    @pytest.mark.parametrize("payload", chart_mqc_payloads(), ids=mqc_payload_id)
+    def test_chart_payload_carries_the_shared_carmack_parent_identifiers(
+        self, payload: dict[str, Any]
+    ) -> None:
+        """Test that every bargraph and linegraph still nests under the shared Carmack parent."""
+        assert_that(payload).contains_entry(
+            {"parent_id": CARMACK_PARENT_ID}, {"parent_name": CARMACK_PARENT_NAME}
+        )
+
+    @pytest.mark.parametrize("payload", chart_mqc_payloads(), ids=mqc_payload_id)
+    def test_chart_payload_declares_no_namespace(self, payload: dict[str, Any]) -> None:
+        """Test that no chart payload takes on the generalstats shape, which would not nest it."""
+        assert_that(payload).does_not_contain_key(NAMESPACE_KEY)
+
+    def test_reflection_reaches_every_payload_the_four_stages_render(self) -> None:
+        """Test that the attribution rules above are stated over payloads that were found.
+
+        They are parametrized over payloads gathered by reflection, so a reflection
+        that reached none of them would leave every one of those cases passing
+        vacuously. This counts what was reached: one General Statistics table per
+        stage, and the nine charts between them.
+        """
+        assert_that(generalstats_mqc_payloads()).is_length(CARMACK_GENERALSTATS_PAYLOAD_COUNT)
+        assert_that(chart_mqc_payloads()).is_length(CARMACK_CHART_PAYLOAD_COUNT)
