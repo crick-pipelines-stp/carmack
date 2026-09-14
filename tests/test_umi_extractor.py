@@ -9,7 +9,6 @@ wiring.
 """
 
 import gzip
-import json
 from pathlib import Path
 from unittest import mock
 
@@ -25,6 +24,7 @@ from carmack.io.read_annotation import ReadAnnotation
 from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.umi.umi_reporting import UmiExtractionStats
+from tests.utils import assert_mqc_payload_file, assert_no_mqc_file_bundles_payloads
 
 CHEMISTRY = "carmack_custom_seq_1_0"
 DUMMY_FASTQ = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
@@ -44,6 +44,9 @@ UMI_LENGTH = 8
 BC1_SEQ = "AAAAAAAAAA"
 BC2_SEQ = "CCCCCCCCCC"
 BC3_SEQ = "GGGGGGGGGG"
+
+# The keys a bundled UMI payload would have nested its charts under.
+UMI_BUNDLE_KEYS = ("general_stats", "breakdown")
 
 
 def make_read_header(
@@ -353,8 +356,9 @@ class TestExtractUmis:
             [
                 "out.r1_umi.fastq.gz",
                 "out.umi_anchor_run_mqc.json",
+                "out.umi_breakdown_mqc.json",
+                "out.umi_general_stats_mqc.json",
                 "out.umi_stats.txt",
-                "out.umi_stats_mqc.json",
             ]
         )
 
@@ -404,18 +408,21 @@ class TestExtractUmis:
     def test_mqc_stats_and_anchor_run_are_written_when_a_run_is_present(
         self, build_extractor, tmp_path
     ) -> None:
-        """Both MultiQC files appear for a run whose accepted reads carry an anchor run."""
+        """Every MultiQC payload appears in a file of its own for a run carrying an anchor run.
+
+        The stats payloads are split across two files rather than bundled into one
+        because MultiQC reads a custom-content file as a single section and drops
+        anything nested inside it.
+        """
         records = [make_read("a", "ACTACTAC", 4)]
         build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
 
-        stats_path = tmp_path / "out.umi_stats_mqc.json"
-        anchor_run_path = tmp_path / "out.umi_anchor_run_mqc.json"
-        assert_that(stats_path.exists()).is_true()
-        assert_that(anchor_run_path.exists()).is_true()
-
-        payload = json.loads(stats_path.read_text())
-        assert_that(payload).contains_key("general_stats")
-        assert_that(payload).contains_key("breakdown")
+        assert_mqc_payload_file(
+            tmp_path / "out.umi_general_stats_mqc.json", "carmack_umi_general_stats"
+        )
+        assert_mqc_payload_file(tmp_path / "out.umi_breakdown_mqc.json", "carmack_umi_breakdown")
+        assert_that((tmp_path / "out.umi_anchor_run_mqc.json").exists()).is_true()
+        assert_that((tmp_path / "out.umi_stats_mqc.json").exists()).is_false()
 
     def test_mqc_anchor_run_is_not_written_when_the_chemistry_has_no_homopolymer_neighbour(
         self, tmp_path
@@ -438,11 +445,19 @@ class TestExtractUmis:
         stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
 
         assert_that(stats.homopolymer_run_counts).is_empty()
-        stats_path = tmp_path / "out.umi_stats_mqc.json"
-        anchor_run_path = tmp_path / "out.umi_anchor_run_mqc.json"
-        assert_that(anchor_run_path.exists()).is_false()
-        assert_that(stats_path.exists()).is_true()
-        json.loads(stats_path.read_text())
+        assert_that((tmp_path / "out.umi_anchor_run_mqc.json").exists()).is_false()
+        assert_mqc_payload_file(
+            tmp_path / "out.umi_general_stats_mqc.json", "carmack_umi_general_stats"
+        )
+        assert_mqc_payload_file(tmp_path / "out.umi_breakdown_mqc.json", "carmack_umi_breakdown")
+
+    def test_no_mqc_file_bundles_more_than_one_payload(self, build_extractor, tmp_path) -> None:
+        """Every MultiQC file the run emits is a single payload, never a bundle of several."""
+        build_extractor([make_read("a", "ACTACTAC", 4)]).extract_umis(
+            output_dir=str(tmp_path), prefix="out"
+        )
+
+        assert_no_mqc_file_bundles_payloads(tmp_path, UMI_BUNDLE_KEYS)
 
     def test_output_preserves_input_order_seq_and_qual(self, build_extractor, tmp_path) -> None:
         r_first = make_read("first", "ACTACTAC", 4)
@@ -575,6 +590,14 @@ class TestUmiExtractionStatsMqcReporting:
         assert_that(data["pct_accepted"]).is_equal_to(0.0)
         assert_that(data["pct_missing_left_anchor"]).is_equal_to(0.0)
         assert_that(data["pct_truncated"]).is_equal_to(0.0)
+
+    def test_to_mqc_general_stats_attributes_its_columns_with_a_namespace(self) -> None:
+        """to_mqc_general_stats names carmack as its columns' source through ``namespace``."""
+        payload = TestUmiExtractionStatsReport.build().to_mqc_general_stats(self.SAMPLE_PREFIX)
+
+        assert_that(payload).contains_entry({"namespace": CARMACK_PARENT_NAME})
+        assert_that(payload).does_not_contain_key("parent_id")
+        assert_that(payload).does_not_contain_key("parent_name")
 
     # ===== to_mqc_breakdown =====
 

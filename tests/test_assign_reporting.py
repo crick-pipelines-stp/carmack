@@ -501,6 +501,14 @@ class TestAssignStatsMqcReporting:
         assert_that(data["pct_no_left_anchor_pos"]).is_equal_to(0.0)
         assert_that(data["pct_short_window"]).is_equal_to(0.0)
 
+    def test_to_mqc_general_stats_attributes_its_columns_with_a_namespace(self) -> None:
+        """Test that to_mqc_general_stats names carmack as its columns' source via ``namespace``."""
+        payload = make_stats().to_mqc_general_stats(self.SAMPLE_PREFIX)
+
+        assert_that(payload).contains_entry({"namespace": CARMACK_PARENT_NAME})
+        assert_that(payload).does_not_contain_key("parent_id")
+        assert_that(payload).does_not_contain_key("parent_name")
+
     # ===== to_mqc_breakdown =====
 
     def test_to_mqc_breakdown_has_bargraph_plot_type_and_parent(self) -> None:

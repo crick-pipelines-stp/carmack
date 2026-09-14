@@ -150,7 +150,11 @@ class ExtractionStats:
 
         Returns:
             MultiQC custom-content payload with a single row of headline percentages
-            (perfect, corrected, failed, ambiguous) for this sample.
+            (perfect, corrected, failed, ambiguous) for this sample. ``namespace`` is
+            what attributes those columns to Carmack: the custom-content parser
+            branches on the generalstats plot type and returns before it reads
+            ``parent_id``, so the parent keys that nest this stage's chart sections are
+            inert here, and a namespace left unset falls back to the raw payload id.
         """
         pct_perfect = 100 * self.overall.perfect / self.overall.total_reads
         pct_corrected = 100 * self.overall.corrok / self.overall.total_reads
@@ -164,6 +168,7 @@ class ExtractionStats:
         return {
             "id": "carmack_extraction_general_stats",
             "plot_type": "generalstats",
+            "namespace": CARMACK_PARENT_NAME,
             "pconfig": [
                 {
                     "pct_perfect": {

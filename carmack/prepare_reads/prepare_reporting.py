@@ -111,32 +111,42 @@ class PrepareStats:
         return section
 
     def get_detected_targets(self) -> str:
-        """Render the arms and buckets that actually received reads, one token per line.
+        """Render the arms and buckets that received reads, one token and count per line.
 
-        This stage's machine-readable companion to :meth:`get_report`: bare tokens
-        with no header, no comment lines and no counts, each either ``NO_TARGET``
-        for the scRNA arm or a target index whitelist entry, and each naming an
-        output the run actually wrote a read into. A consumer fanning out over the
-        buckets a dataset really has reads this file rather than globbing the
-        output directory -- every whitelisted target's bucket is opened, and so
-        exists, whether or not a read ever landed in it -- or parsing the
-        human-readable distribution section for the same answer.
+        This stage's machine-readable companion to :meth:`get_report`: tab-separated
+        ``token<TAB>count`` lines with no header and no comment lines, the token
+        either ``NO_TARGET`` for the scRNA arm or a target index whitelist entry,
+        and each line naming an output the run actually wrote a read into. A
+        consumer fanning out over the buckets a dataset really has reads this file
+        rather than globbing the output directory -- every whitelisted target's
+        bucket is opened, and so exists, whether or not a read ever landed in it --
+        or parsing the human-readable distribution section for the same answer.
+
+        The count rides alongside the token because a fan-out that has to size the
+        work per bucket otherwise has to read the MultiQC report to get it, which
+        turns a report-shaped artefact into pipeline control flow and makes any
+        change to how the report is shaped a breaking change downstream. The
+        tallies are already held here, so carrying them gives that consumer a
+        contract that only moves when the buckets themselves do.
 
         Targets are sorted by name, the order :meth:`target_section` renders them
-        in, so the two files line up row for row. A target carrying a zero count
-        is treated as undetected, exactly like one absent from ``target_written``
-        altogether: both describe a bucket no read reached.
+        in, so the two agree on the order of the targets they share. A target
+        carrying a zero count is treated as undetected, exactly like one absent
+        from ``target_written`` altogether: both describe a bucket no read
+        reached, so neither is rendered at all, not even as a zero-count row.
 
         Returns:
-            One newline-terminated token per detected arm or bucket, the scRNA
-            arm's ``NO_TARGET`` first when it received any read. Empty when the
-            run wrote no reads at all.
+            One newline-terminated ``token<TAB>count`` line per detected arm or
+            bucket, the scRNA arm's ``NO_TARGET`` first when it received any read.
+            Empty when the run wrote no reads at all.
         """
-        detected = [NO_TARGET] if self.unmatched_written else []
+        detected = [(NO_TARGET, self.unmatched_written)] if self.unmatched_written else []
         detected += [
-            target for target in sorted(self.target_written) if self.target_written[target]
+            (target, self.target_written[target])
+            for target in sorted(self.target_written)
+            if self.target_written[target]
         ]
-        return "".join(f"{token}\n" for token in detected)
+        return "".join(f"{token}\t{count}\n" for token, count in detected)
 
     def to_mqc_general_stats(self, prefix: str) -> dict[str, Any]:
         """Render a MultiQC generalstats payload of the run's unmatched and matched percentages.
@@ -150,14 +160,54 @@ class PrepareStats:
                 caller reporting several runs can tell them apart.
 
         Returns:
-            A MultiQC custom content payload attached to the shared Carmack
-            parent module, carrying ``pct_unmatched`` and ``pct_matched`` as
-            percentages of ``total_reads``.
+            A MultiQC custom content payload carrying ``pct_unmatched`` and
+            ``pct_matched`` as percentages of ``total_reads``. ``namespace`` is
+            what attributes those columns to Carmack, and the only key that can:
+            the custom content parser branches on the generalstats plot type and
+            returns before it reads ``parent_id``, so the parent keys that nest
+            this stage's chart sections are inert here, and a namespace left
+            unset falls back to the raw payload id -- one per stage, rather than
+            one Carmack heading over all four. ``id`` names the payload's own
+            MultiQC module: without it the custom content parser falls back to
+            the cleaned filename, so the module varies with the sample and an
+            N-sample run renders N one-row tables rather than one table with N
+            rows. ``pconfig`` declares a header per data column: without it
+            MultiQC guesses the columns from the raw data keys and renders them
+            untitled, unsuffixed and unscaled beside the sibling stages' fully
+            configured percentage columns.
         """
         return {
+            "id": "carmack_prepare_general_stats",
             "plot_type": "generalstats",
-            "parent_id": CARMACK_PARENT_ID,
-            "parent_name": CARMACK_PARENT_NAME,
+            "namespace": CARMACK_PARENT_NAME,
+            "pconfig": [
+                # Scaled informationally rather than as a warning, unlike the
+                # sibling stages' leftover columns: a read on the scRNA arm is
+                # one of this stage's two legitimate destinations, not a read
+                # lost, so a red tail would report a problem that is not one.
+                {
+                    "pct_unmatched": {
+                        "title": "% scRNA Arm",
+                        "description": "Percentage of reads written to the scRNA arm, carrying no scTIP target index.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlGnBu",
+                    }
+                },
+                {
+                    "pct_matched": {
+                        "title": "% scTIP Arms",
+                        "description": "Percentage of reads written to a scTIP target bucket.",
+                        "min": 0,
+                        "max": 100,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "RdYlGn",
+                    }
+                },
+            ],
             "data": {
                 prefix: {
                     "pct_unmatched": self.fraction(self.unmatched_written, self.total_reads) * 100,
@@ -181,15 +231,41 @@ class PrepareStats:
             A MultiQC custom content payload attached to the shared Carmack
             parent module, carrying one category per target in
             ``target_written`` plus the unmatched arm, keyed by ``NO_TARGET``.
+            ``id`` names the payload's own MultiQC module: without it the
+            custom content parser falls back to the cleaned filename, so an
+            N-sample run renders N single-sample bargraphs rather than one
+            chart carrying every sample's bars. ``section_name`` and
+            ``description`` head the section that chart renders as: this chart
+            and assign-targets' hang off the same parent and are both "the
+            target distribution" for their stage, so the heading has to say
+            whose numbers these are and the description has to say what the
+            bars count and against what denominator. ``pconfig`` names the plot
+            itself, keeping it addressable separately from the section it sits
+            in, and labels the axis for the reads the bars count.
         """
         categories = {
             target: self.target_written[target] for target in sorted(self.target_written)
         }
         categories[NO_TARGET] = self.unmatched_written
         return {
+            "id": "carmack_prepare_target_distribution",
             "plot_type": "bargraph",
             "parent_id": CARMACK_PARENT_ID,
             "parent_name": CARMACK_PARENT_NAME,
+            "section_name": "Prepare Reads Output Arm Distribution",
+            "description": (
+                "Read counts per output arm: one category per scTIP target bucket, plus "
+                "the scRNA arm. This stage never filters, so the categories partition "
+                "every read the run saw and the denominator is the whole run, unlike "
+                "assign-targets' target distribution, which is a fraction of matched "
+                "reads alone. These are the arms reads were actually written to, not a "
+                "record of what the target index matched."
+            ),
+            "pconfig": {
+                "id": "carmack_prepare_target_distribution_plot",
+                "title": "Prepare Reads: Output Arm Distribution",
+                "ylab": "Reads",
+            },
             "data": {prefix: categories},
         }
 

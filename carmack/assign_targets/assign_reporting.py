@@ -195,6 +195,11 @@ class AssignStats:
         Returns:
             MultiQC custom-content payload with a single row of headline percentages
             (matched, no_match, no_left_anchor_pos, short_window) for this sample.
+            ``namespace`` is what attributes those columns to Carmack: the
+            custom-content parser branches on the generalstats plot type and returns
+            before it reads ``parent_id``, so the parent keys that nest this stage's
+            chart sections are inert here, and a namespace left unset falls back to the
+            raw payload id.
         """
         pct_matched = 100 * self.fraction(self.matched, self.total_reads)
         pct_no_match = 100 * self.fraction(self.unmatched_no_match, self.total_reads)
@@ -206,6 +211,7 @@ class AssignStats:
         return {
             "id": "carmack_tgidx_general_stats",
             "plot_type": "generalstats",
+            "namespace": CARMACK_PARENT_NAME,
             "pconfig": [
                 {
                     "pct_matched": {

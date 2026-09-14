@@ -36,7 +36,7 @@ from carmack.chemistry.read_component import ReadComponentType
 from carmack.io.fastq_file import FastqFile
 from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
-from carmack.mqc_report import write_mqc_json
+from carmack.mqc_report import write_mqc_payloads
 from carmack.umi.umi_reporting import UmiExtractionStats
 from carmack.utils import get_prefix, homopolymer_run_length
 
@@ -141,8 +141,6 @@ class UmiExtractor:
         output_path = Path(output_dir)
         umi_fastq_path = output_path / f"{prefix}.r1_umi.fastq.gz"
         umi_stats_path = output_path / f"{prefix}.umi_stats.txt"
-        umi_stats_mqc_path = output_path / f"{prefix}.umi_stats_mqc.json"
-        umi_anchor_run_mqc_path = output_path / f"{prefix}.umi_anchor_run_mqc.json"
 
         total = 0
         accepted = 0
@@ -204,16 +202,17 @@ class UmiExtractor:
         with umi_stats_path.open("w") as report_file:
             report_file.write(stats.get_report())
 
-        write_mqc_json(
-            umi_stats_mqc_path,
-            {
-                "general_stats": stats.to_mqc_general_stats(prefix),
-                "breakdown": stats.to_mqc_breakdown(prefix),
-            },
+        # The anchor-run payload is None for a chemistry with no homopolymer neighbour
+        # to measure, and the writer skips it rather than emitting an empty chart.
+        write_mqc_payloads(
+            output_path,
+            prefix,
+            [
+                stats.to_mqc_general_stats(prefix),
+                stats.to_mqc_breakdown(prefix),
+                stats.to_mqc_anchor_run(prefix),
+            ],
         )
-        anchor_run_payload = stats.to_mqc_anchor_run(prefix)
-        if anchor_run_payload is not None:
-            write_mqc_json(umi_anchor_run_mqc_path, anchor_run_payload)
 
         log.info(f"Extracted UMIs for {accepted}/{total} reads")
         return stats
