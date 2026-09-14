@@ -36,7 +36,6 @@ UMI extraction and target assignment over a committed golden input.
 
 import gzip
 import importlib.util
-import json
 import multiprocessing
 import os
 import pickle
@@ -88,7 +87,12 @@ from carmack.io.subprocess_stream import SubprocessStream
 from carmack.parallel import map_batches_in_order
 from carmack.umi.umi_extractor import UmiExtractor
 from carmack.utils import get_cpu_count
-from tests.utils import read_gzip_text, strip_report_run_details
+from tests.utils import (
+    assert_mqc_payload_file,
+    assert_no_mqc_file_bundles_payloads,
+    read_gzip_text,
+    strip_report_run_details,
+)
 
 CHEMISTRY = "carmack_custom_seq_1_0"
 
@@ -552,6 +556,9 @@ INPUT_FASTQ_NAME = "SK462.r1_umi.fastq.gz"
 INPUT_PREFIX = "SK462"
 OUT_PREFIX = "out"
 
+# The keys a bundled assign-targets payload would have nested its charts under.
+TGIDX_BUNDLE_KEYS = ("general_stats", "breakdown", "target_distribution")
+
 
 class ChemistryLeadingAnchorTargets(ChemistryCarmackCustomSeq10):
     """Shipped chemistry whose target whitelist varies the leading anchor bases."""
@@ -664,9 +671,19 @@ def tgidx_stats(directory: Path, prefix: str = OUT_PREFIX) -> Path:
     return directory / f"{prefix}.tgidx_stats.txt"
 
 
-def tgidx_stats_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
-    """Return the path of the MultiQC stats payload the stage writes for ``prefix``."""
-    return directory / f"{prefix}.tgidx_stats_mqc.json"
+def tgidx_general_stats_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
+    """Return the path of the MultiQC general-stats payload the stage writes for ``prefix``."""
+    return directory / f"{prefix}.tgidx_general_stats_mqc.json"
+
+
+def tgidx_breakdown_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
+    """Return the path of the MultiQC breakdown payload the stage writes for ``prefix``."""
+    return directory / f"{prefix}.tgidx_breakdown_mqc.json"
+
+
+def tgidx_target_distribution_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
+    """Return the path of the MultiQC target-distribution payload written for ``prefix``."""
+    return directory / f"{prefix}.tgidx_target_distribution_mqc.json"
 
 
 def tgidx_edit_distance_mqc(directory: Path, prefix: str = OUT_PREFIX) -> Path:
@@ -1124,15 +1141,18 @@ class TestAssignTargetsOutputs:
         assert_that(report).contains("Unmatched (short_window): 1")
         assert_that(report).contains(f"\t{TARGET_SEQ}\t1")
 
-    def test_mqc_stats_json_is_written_and_parses_with_the_expected_top_level_keys(
+    def test_every_mqc_payload_is_written_to_a_parseable_file_of_its_own(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
     ) -> None:
-        """A real assignment with at least one matched read produces a parseable
-        ``{prefix}.tgidx_stats_mqc.json`` carrying the general stats, breakdown
-        and target distribution payloads, plus the conditional edit-distance and
-        anchor-run payloads this fixture's matched and anchor-measured reads
-        genuinely populate. This is a wiring check, not an arithmetic one -- the
-        payload contents are pinned in detail against ``AssignStats`` directly in
+        """A real assignment with at least one matched read writes one parseable MultiQC
+        file per payload: the general stats, the breakdown and the target distribution,
+        plus the conditional edit-distance and anchor-run payloads this fixture's matched
+        and anchor-measured reads genuinely populate.
+
+        Each payload needs a file to itself because MultiQC reads one custom-content file
+        as one section and never walks payloads nested inside it, so a bundle would cost
+        every chart in it. This is a wiring check, not an arithmetic one -- the payload
+        contents are pinned in detail against ``AssignStats`` directly in
         ``tests/test_assign_reporting.py``.
         """
         records = [
@@ -1146,16 +1166,47 @@ class TestAssignTargetsOutputs:
         stats = assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
 
         assert_that(stats.matched).is_greater_than(0)
-        mqc_stats_path = tgidx_stats_mqc(tmp_path)
-        assert_that(mqc_stats_path.exists()).is_true()
-
-        payload = json.loads(mqc_stats_path.read_text())
-        assert_that(payload).contains_key("general_stats")
-        assert_that(payload).contains_key("breakdown")
-        assert_that(payload).contains_key("target_distribution")
+        assert_mqc_payload_file(tgidx_general_stats_mqc(tmp_path), "carmack_tgidx_general_stats")
+        assert_mqc_payload_file(tgidx_breakdown_mqc(tmp_path), "carmack_tgidx_breakdown")
+        assert_mqc_payload_file(
+            tgidx_target_distribution_mqc(tmp_path), "carmack_tgidx_target_distribution"
+        )
+        assert_that((tmp_path / f"{OUT_PREFIX}.tgidx_stats_mqc.json").exists()).is_false()
 
         assert_that(tgidx_edit_distance_mqc(tmp_path).exists()).is_true()
         assert_that(tgidx_anchor_run_mqc(tmp_path).exists()).is_true()
+
+    def test_target_distribution_is_written_even_when_nothing_matched(
+        self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
+    ) -> None:
+        """A run in which no read matched still gets a target-distribution file.
+
+        Its ``data`` maps the sample to an empty mapping, which is empty per sample but
+        populated at the top level, so it is a payload MultiQC renders rather than one
+        the writer suppresses. A hopping signal that is absent from a run is worth
+        showing, and an empty plot says so where a missing section says nothing.
+        """
+        records = [make_annotated_read("nomatch", index="", tail=NO_INDEX_TAIL)]
+        assigner = build_assigner(records)
+
+        stats = assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_that(stats.matched).is_equal_to(0)
+        payload = assert_mqc_payload_file(
+            tgidx_target_distribution_mqc(tmp_path), "carmack_tgidx_target_distribution"
+        )
+        assert_that(payload["data"]).is_equal_to({OUT_PREFIX: {}})
+        assert_that(tgidx_edit_distance_mqc(tmp_path).exists()).is_false()
+
+    def test_no_mqc_file_bundles_more_than_one_payload(
+        self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path
+    ) -> None:
+        """Every MultiQC file the run emits is a single payload, never a bundle of several."""
+        assigner = build_assigner([make_annotated_read("matched")])
+
+        assigner.assign_targets(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_no_mqc_file_bundles_payloads(tmp_path, TGIDX_BUNDLE_KEYS)
 
     def test_prefix_defaults_to_the_input_filename(
         self, build_assigner: Callable[..., TargetAssigner], tmp_path: Path

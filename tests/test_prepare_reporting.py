@@ -17,10 +17,15 @@ per-target distribution sorted by target name.
 
 The same object renders ``detected_targets.txt``, the machine-readable list of
 the arms and buckets a run actually wrote a read into, and those tests pin what
-a downstream consumer of that file depends on: bare tokens and nothing else, the
-``NONE`` sentinel first and only when a read was unmatched, an undetected target
-omitted whether it is absent from the tallies or present with a zero count, and
-an ordering that agrees with the report's own distribution.
+a downstream consumer of that file depends on: one tab-separated token and count
+per line and nothing else, the ``NONE`` sentinel first and only when a read was
+unmatched, an undetected target omitted whether it is absent from the tallies or
+present with a zero count, and an ordering that agrees with the report's own
+distribution. The count is what makes the file a contract a consumer can hold
+to: a consumer fanning out over the buckets a run really has needs the per-bucket
+totals as well as their names, and with only names here it read the counts off
+the MultiQC artefact instead, making a report-shaped file into pipeline control
+flow that moves whenever the report changes shape.
 
 The same value object also renders MultiQC custom content payloads for the run:
 ``to_mqc_general_stats`` reduces the unmatched and matched counts to the two
@@ -265,6 +270,44 @@ def outcome_sum(counts: PrepareCounts) -> int:
         The sum of the unmatched tally and every value in the target counter.
     """
     return counts.unmatched + sum(counts.target_counts.values())
+
+
+def detected_rows(stats: PrepareStats) -> list[list[str]]:
+    """Split a detected-targets rendering into the tab-separated fields of each line.
+
+    Args:
+        stats: Stats whose detected-targets rendering is read.
+
+    Returns:
+        One list of fields per rendered line, in rendered order and left
+        unparsed, so a line carrying the wrong number of fields stays visible to
+        the caller instead of raising here.
+    """
+    return [line.split("\t") for line in stats.get_detected_targets().splitlines()]
+
+
+def detected_tokens(stats: PrepareStats) -> list[str]:
+    """Return the arm or bucket each detected-targets line names, dropping its count.
+
+    Args:
+        stats: Stats whose detected-targets rendering is read.
+
+    Returns:
+        One token per rendered line, in rendered order.
+    """
+    return [fields[0] for fields in detected_rows(stats)]
+
+
+def detected_counts(stats: PrepareStats) -> dict[str, int]:
+    """Return the count each detected-targets line carries, keyed by the token naming it.
+
+    Args:
+        stats: Stats whose detected-targets rendering is read.
+
+    Returns:
+        A mapping of each rendered token to the parsed count on its line.
+    """
+    return {fields[0]: int(fields[1]) for fields in detected_rows(stats)}
 
 
 def build_mqc_payload(builder_name: str) -> dict[str, Any]:
@@ -604,13 +647,15 @@ class TestPrepareStatsReportDistributions:
 
 
 class TestPrepareStatsDetectedTargets:
-    """The machine-readable list of arms and buckets that received reads."""
+    """The machine-readable list of arms and buckets that received reads, and how many."""
 
     def test_every_seen_arm_and_target_is_listed_once(self) -> None:
         """Test that the unmatched arm and each target seen appear exactly once each."""
         lines = make_stats().get_detected_targets().splitlines()
 
-        assert_that(lines).is_equal_to([NO_TARGET, "targetA", "targetB", "targetC"])
+        assert_that(lines).is_equal_to(
+            [f"{NO_TARGET}\t4", "targetA\t3", "targetB\t1", "targetC\t2"]
+        )
 
     def test_the_unmatched_arm_is_listed_first(self) -> None:
         """Test that the scRNA arm's sentinel precedes every target bucket.
@@ -620,20 +665,18 @@ class TestPrepareStatsDetectedTargets:
         """
         lines = make_stats(target_written={"AAAA": 1}).get_detected_targets().splitlines()
 
-        assert_that(lines).is_equal_to([NO_TARGET, "AAAA"])
+        assert_that(lines).is_equal_to([f"{NO_TARGET}\t{UNMATCHED_WRITTEN}", "AAAA\t1"])
 
     def test_targets_are_sorted_by_name_not_insertion_order(self) -> None:
         """Test that targets render sorted, so two runs of one chemistry diff cleanly."""
-        lines = make_stats().get_detected_targets().splitlines()
+        tokens = detected_tokens(make_stats())
 
-        assert_that(lines[1:]).is_equal_to(sorted(lines[1:]))
+        assert_that(tokens[1:]).is_equal_to(sorted(tokens[1:]))
 
     def test_target_order_agrees_with_the_report_distribution(self) -> None:
         """Test that the two files order the same targets the same way, row for row."""
         stats = make_stats()
-        detected = [
-            line for line in stats.get_detected_targets().splitlines() if line != NO_TARGET
-        ]
+        detected = [token for token in detected_tokens(stats) if token != NO_TARGET]
         distribution = [
             line.split("\t")[1]
             for line in stats.get_report().split("# Target Distribution")[1].splitlines()
@@ -646,34 +689,39 @@ class TestPrepareStatsDetectedTargets:
         """Test that a run with no unmatched read does not claim the scRNA arm."""
         stats = make_stats(unmatched_written=0, total_reads=sum(TARGET_WRITTEN.values()))
 
-        assert_that(stats.get_detected_targets().splitlines()).does_not_contain(NO_TARGET)
+        assert_that(detected_tokens(stats)).does_not_contain(NO_TARGET)
 
     def test_scrna_only_run_lists_the_unmatched_arm_alone(self) -> None:
-        """Test that a chemistry with no target index yields exactly the one sentinel."""
+        """Test that a chemistry with no target index yields exactly the one sentinel row."""
         stats = make_stats(target_written={}, unmatched_written=TOTAL_READS)
 
-        assert_that(stats.get_detected_targets()).is_equal_to(f"{NO_TARGET}\n")
+        assert_that(stats.get_detected_targets()).is_equal_to(f"{NO_TARGET}\t{TOTAL_READS}\n")
 
     def test_zero_count_target_is_treated_as_undetected(self) -> None:
         """Test that a target tallied at zero is omitted, like one absent altogether.
 
         A bucket no read reached is undetected however it came to be recorded, so
         an explicit zero must not name an empty output file as one worth fanning
-        out over.
+        out over -- not as a token of its own, and not as a zero-count row either.
         """
         stats = make_stats(target_written={"targetA": 3, "targetB": 0}, total_reads=7)
 
-        assert_that(stats.get_detected_targets().splitlines()).is_equal_to([NO_TARGET, "targetA"])
+        rendered = stats.get_detected_targets()
+
+        assert_that(rendered.splitlines()).is_equal_to([f"{NO_TARGET}\t4", "targetA\t3"])
+        assert_that(rendered).does_not_contain("targetB")
 
     def test_a_run_that_wrote_nothing_renders_an_empty_string(self) -> None:
         """Test that no read written means no token, rather than a placeholder line."""
         assert_that(make_empty_stats().get_detected_targets()).is_equal_to("")
 
-    def test_every_line_is_a_bare_newline_terminated_token(self) -> None:
-        """Test that the file carries tokens only -- no header, comments, counts or blanks.
+    def test_every_line_carries_exactly_one_token_and_one_count(self) -> None:
+        """Test that the file carries token-count pairs only -- no header, comments or blanks.
 
         This is the whole contract a consumer reads the file under, so it is
-        asserted on the rendered text rather than inferred from the token list.
+        asserted on the rendered text rather than inferred from the parsed rows.
+        The single tab is what separates the two fields, so a line carrying more
+        than one, or none at all, is a row the consumer cannot split.
         """
         rendered = make_stats().get_detected_targets()
 
@@ -681,13 +729,47 @@ class TestPrepareStatsDetectedTargets:
         for line in rendered.splitlines():
             assert_that(line).is_equal_to(line.strip())
             assert_that(line).is_not_empty()
-            assert_that(line).does_not_contain("#", "\t", "%", " ")
+            assert_that(line.count("\t")).is_equal_to(1)
+            assert_that(line).does_not_contain("#", "%", " ")
+
+    def test_every_count_is_a_positive_whole_number(self) -> None:
+        """Test that each count parses as an integer above zero, the file's only value type.
+
+        A consumer sizing its fan-out reads the second field as a number, and a
+        bucket listed at all is one a read actually reached, so a zero or a
+        percentage here would both be rows it cannot act on.
+        """
+        for fields in detected_rows(make_stats()):
+            assert_that(fields).is_length(2)
+            assert_that(fields[1]).matches(r"^\d+$")
+            assert_that(int(fields[1])).is_greater_than(0)
+
+    def test_each_count_is_the_tally_the_stats_already_hold(self) -> None:
+        """Test that the counts are the run's own tallies, not a second record free to drift."""
+        stats = make_stats()
+
+        counts = detected_counts(stats)
+
+        assert_that(counts).is_equal_to(
+            {NO_TARGET: stats.unmatched_written, **stats.target_written}
+        )
+
+    def test_counts_sum_to_total_reads_because_the_stage_never_filters(self) -> None:
+        """Test that the listed counts account for every read the run saw, not a subset.
+
+        This stage dispatches each input read to exactly one arm, so a consumer
+        can treat the listed counts as a partition of the run rather than a
+        sample of it, and check that reading against the report's own total.
+        """
+        stats = make_stats()
+
+        assert_that(sum(detected_counts(stats).values())).is_equal_to(stats.total_reads)
 
     def test_listed_tokens_are_the_sentinel_or_a_target_name(self) -> None:
         """Test that nothing but the sentinel and the run's own target keys is emitted."""
         stats = make_stats()
 
-        tokens = set(stats.get_detected_targets().splitlines())
+        tokens = set(detected_tokens(stats))
 
         assert_that(tokens).is_subset_of({NO_TARGET, *stats.target_written})
 

@@ -96,6 +96,30 @@ def read_fastq(path) -> list[tuple[str, str, str, str]]:
     return [tuple(lines[i : i + 4]) for i in range(0, len(lines), 4)]
 
 
+def check_mqc_payload_file(path: Path, payload_id: str) -> dict[str, object]:
+    """Assert that a file holds exactly one renderable MultiQC payload, and return it.
+
+    MultiQC builds one section from one custom-content file, out of that file's own
+    top-level ``id``, ``plot_type`` and ``data``. It never walks payloads nested under
+    keys of carmack's own choosing, and loses them to a warning rather than an error,
+    so those three top-level keys are what separate a file MultiQC renders from one it
+    silently discards.
+
+    Args:
+        path: Path of the MultiQC payload file to check.
+        payload_id: Section id the payload is expected to declare.
+
+    Returns:
+        The parsed payload.
+    """
+    assert_that(path.exists()).described_as(f"missing MultiQC payload: {path}").is_true()
+    payload = json.loads(path.read_text())
+    assert_that(payload).contains_key("id", "plot_type", "data")
+    assert_that(payload["id"]).is_equal_to(payload_id)
+    assert_that(payload["data"]).is_not_empty()
+    return payload
+
+
 def extracted_umis(path) -> dict[str, str]:
     """Return the ``read_id -> UMI`` mapping from an output FASTQ."""
     return {
@@ -353,8 +377,9 @@ class TestExtractUmis:
             [
                 "out.r1_umi.fastq.gz",
                 "out.umi_anchor_run_mqc.json",
+                "out.umi_breakdown_mqc.json",
+                "out.umi_general_stats_mqc.json",
                 "out.umi_stats.txt",
-                "out.umi_stats_mqc.json",
             ]
         )
 
@@ -404,18 +429,21 @@ class TestExtractUmis:
     def test_mqc_stats_and_anchor_run_are_written_when_a_run_is_present(
         self, build_extractor, tmp_path
     ) -> None:
-        """Both MultiQC files appear for a run whose accepted reads carry an anchor run."""
+        """Every MultiQC payload appears in a file of its own for a run carrying an anchor run.
+
+        The stats payloads are split across two files rather than bundled into one
+        because MultiQC reads a custom-content file as a single section and drops
+        anything nested inside it.
+        """
         records = [make_read("a", "ACTACTAC", 4)]
         build_extractor(records).extract_umis(output_dir=str(tmp_path), prefix="out")
 
-        stats_path = tmp_path / "out.umi_stats_mqc.json"
-        anchor_run_path = tmp_path / "out.umi_anchor_run_mqc.json"
-        assert_that(stats_path.exists()).is_true()
-        assert_that(anchor_run_path.exists()).is_true()
-
-        payload = json.loads(stats_path.read_text())
-        assert_that(payload).contains_key("general_stats")
-        assert_that(payload).contains_key("breakdown")
+        check_mqc_payload_file(
+            tmp_path / "out.umi_general_stats_mqc.json", "carmack_umi_general_stats"
+        )
+        check_mqc_payload_file(tmp_path / "out.umi_breakdown_mqc.json", "carmack_umi_breakdown")
+        assert_that((tmp_path / "out.umi_anchor_run_mqc.json").exists()).is_true()
+        assert_that((tmp_path / "out.umi_stats_mqc.json").exists()).is_false()
 
     def test_mqc_anchor_run_is_not_written_when_the_chemistry_has_no_homopolymer_neighbour(
         self, tmp_path
@@ -438,11 +466,30 @@ class TestExtractUmis:
         stats = extractor.extract_umis(output_dir=str(tmp_path), prefix="out")
 
         assert_that(stats.homopolymer_run_counts).is_empty()
-        stats_path = tmp_path / "out.umi_stats_mqc.json"
-        anchor_run_path = tmp_path / "out.umi_anchor_run_mqc.json"
-        assert_that(anchor_run_path.exists()).is_false()
-        assert_that(stats_path.exists()).is_true()
-        json.loads(stats_path.read_text())
+        assert_that((tmp_path / "out.umi_anchor_run_mqc.json").exists()).is_false()
+        check_mqc_payload_file(
+            tmp_path / "out.umi_general_stats_mqc.json", "carmack_umi_general_stats"
+        )
+        check_mqc_payload_file(tmp_path / "out.umi_breakdown_mqc.json", "carmack_umi_breakdown")
+
+    def test_no_mqc_file_bundles_more_than_one_payload(self, build_extractor, tmp_path) -> None:
+        """Every MultiQC file the run emits is a single payload, never a bundle of several.
+
+        Bundling costs every nested chart silently, so the emitted set is checked as a
+        whole rather than file by file: a stage that regressed to writing one combined
+        file would still satisfy the per-file assertions above.
+        """
+        build_extractor([make_read("a", "ACTACTAC", 4)]).extract_umis(
+            output_dir=str(tmp_path), prefix="out"
+        )
+
+        mqc_paths = sorted(Path(tmp_path).glob("*_mqc.json"))
+        assert_that(mqc_paths).is_not_empty()
+        for path in mqc_paths:
+            payload = json.loads(path.read_text())
+            assert_that(payload).described_as(path.name).does_not_contain_key(
+                "general_stats", "breakdown"
+            )
 
     def test_output_preserves_input_order_seq_and_qual(self, build_extractor, tmp_path) -> None:
         r_first = make_read("first", "ACTACTAC", 4)

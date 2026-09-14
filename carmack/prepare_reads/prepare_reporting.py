@@ -111,32 +111,42 @@ class PrepareStats:
         return section
 
     def get_detected_targets(self) -> str:
-        """Render the arms and buckets that actually received reads, one token per line.
+        """Render the arms and buckets that received reads, one token and count per line.
 
-        This stage's machine-readable companion to :meth:`get_report`: bare tokens
-        with no header, no comment lines and no counts, each either ``NO_TARGET``
-        for the scRNA arm or a target index whitelist entry, and each naming an
-        output the run actually wrote a read into. A consumer fanning out over the
-        buckets a dataset really has reads this file rather than globbing the
-        output directory -- every whitelisted target's bucket is opened, and so
-        exists, whether or not a read ever landed in it -- or parsing the
-        human-readable distribution section for the same answer.
+        This stage's machine-readable companion to :meth:`get_report`: tab-separated
+        ``token<TAB>count`` lines with no header and no comment lines, the token
+        either ``NO_TARGET`` for the scRNA arm or a target index whitelist entry,
+        and each line naming an output the run actually wrote a read into. A
+        consumer fanning out over the buckets a dataset really has reads this file
+        rather than globbing the output directory -- every whitelisted target's
+        bucket is opened, and so exists, whether or not a read ever landed in it --
+        or parsing the human-readable distribution section for the same answer.
+
+        The count rides alongside the token because a fan-out that has to size the
+        work per bucket otherwise has to read the MultiQC report to get it, which
+        turns a report-shaped artefact into pipeline control flow and makes any
+        change to how the report is shaped a breaking change downstream. The
+        tallies are already held here, so carrying them gives that consumer a
+        contract that only moves when the buckets themselves do.
 
         Targets are sorted by name, the order :meth:`target_section` renders them
-        in, so the two files line up row for row. A target carrying a zero count
-        is treated as undetected, exactly like one absent from ``target_written``
-        altogether: both describe a bucket no read reached.
+        in, so the two agree on the order of the targets they share. A target
+        carrying a zero count is treated as undetected, exactly like one absent
+        from ``target_written`` altogether: both describe a bucket no read
+        reached, so neither is rendered at all, not even as a zero-count row.
 
         Returns:
-            One newline-terminated token per detected arm or bucket, the scRNA
-            arm's ``NO_TARGET`` first when it received any read. Empty when the
-            run wrote no reads at all.
+            One newline-terminated ``token<TAB>count`` line per detected arm or
+            bucket, the scRNA arm's ``NO_TARGET`` first when it received any read.
+            Empty when the run wrote no reads at all.
         """
-        detected = [NO_TARGET] if self.unmatched_written else []
+        detected = [(NO_TARGET, self.unmatched_written)] if self.unmatched_written else []
         detected += [
-            target for target in sorted(self.target_written) if self.target_written[target]
+            (target, self.target_written[target])
+            for target in sorted(self.target_written)
+            if self.target_written[target]
         ]
-        return "".join(f"{token}\n" for token in detected)
+        return "".join(f"{token}\t{count}\n" for token, count in detected)
 
     def to_mqc_general_stats(self, prefix: str) -> dict[str, Any]:
         """Render a MultiQC generalstats payload of the run's unmatched and matched percentages.

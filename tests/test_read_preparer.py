@@ -1327,8 +1327,35 @@ def detected_targets_path(directory: Path, prefix: str) -> Path:
     return directory / f"{prefix}.detected_targets.txt"
 
 
-def prepare_stats_mqc_path(directory: Path, prefix: str) -> Path:
-    """Return the path of the MultiQC-readable stats JSON `prepare_reads` writes for `prefix`."""
+def detected_token(line: str) -> str:
+    """Return the arm or bucket one detected-targets line names, dropping its count."""
+    return line.split("\t")[0]
+
+
+# The MultiQC module id each of this stage's two payloads declares. The id is
+# what MultiQC anchors the section on and what the writer names the file from,
+# so the file and the section it defines cannot drift apart.
+PREPARE_GENERAL_STATS_MQC_ID = "carmack_prepare_general_stats"
+PREPARE_TARGET_DISTRIBUTION_MQC_ID = "carmack_prepare_target_distribution"
+
+
+def prepare_general_stats_mqc_path(directory: Path, prefix: str) -> Path:
+    """Return the path of the generalstats MultiQC payload `prepare_reads` writes for `prefix`."""
+    return directory / f"{prefix}.prepare_general_stats_mqc.json"
+
+
+def prepare_target_distribution_mqc_path(directory: Path, prefix: str) -> Path:
+    """Return the path of the target-distribution MultiQC payload written for `prefix`."""
+    return directory / f"{prefix}.prepare_target_distribution_mqc.json"
+
+
+def bundled_mqc_path(directory: Path, prefix: str) -> Path:
+    """Return the path of the bundle of both payloads this stage must no longer write.
+
+    MultiQC reads one custom-content file as one section, taking that file's
+    top-level `data` and never walking nested payloads, so a bundle of the two
+    payloads renders neither chart and says so only in a warning.
+    """
     return directory / f"{prefix}.prepare_stats_mqc.json"
 
 
@@ -1923,12 +1950,12 @@ class TestReadPreparerOutputs:
     def test_detected_targets_omits_a_bucket_that_received_no_reads(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
     ) -> None:
-        """The listed tokens name the arm and bucket that got reads, not the empty bucket.
+        """The listed rows name the arm and bucket that got reads, not the empty bucket.
 
         The pair to the test above, and the reason this file exists at all: an
         undetected target still leaves a valid, empty bucket on disk, so the
         output directory cannot be globbed to learn which buckets a dataset
-        really has.
+        really has, nor how many reads each of them took.
         """
         chemistry = ChemistryTwoTargets()
         target_a, target_b = TWO_TARGET_WHITELIST
@@ -1942,13 +1969,18 @@ class TestReadPreparerOutputs:
 
         listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
 
-        assert_that(listed).is_equal_to([NO_TARGET, target_a])
+        assert_that(listed).is_equal_to([f"{NO_TARGET}\t1", f"{target_a}\t1"])
         assert_that(target_r1_path(tmp_path, OUT_PREFIX, target_b).exists()).is_true()
 
     def test_detected_targets_lists_every_bucket_that_received_reads(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
     ) -> None:
-        """Both arms and both filled buckets are named, each exactly once."""
+        """Both arms and both filled buckets are named once each, with the reads they took.
+
+        The counts are what a consumer sizes its fan-out from, so they are read
+        back off disk against the composition this run was built from rather
+        than against the stats object that wrote them.
+        """
         chemistry = ChemistryTwoTargets()
         target_a, target_b = TWO_TARGET_WHITELIST
         anchor_length = chemistry.tgidx_right_anchor().length
@@ -1960,7 +1992,10 @@ class TestReadPreparerOutputs:
 
         listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
 
-        assert_that(listed).is_equal_to([NO_TARGET, *sorted(TWO_TARGET_WHITELIST)])
+        written = {target_a: 2, target_b: 1}
+        assert_that(listed).is_equal_to(
+            [f"{NO_TARGET}\t1", *(f"{target}\t{written[target]}" for target in sorted(written))]
+        )
 
     def test_detected_targets_omits_the_unmatched_arm_when_every_read_matched(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
@@ -1976,13 +2011,17 @@ class TestReadPreparerOutputs:
 
         listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
 
-        assert_that(listed).is_equal_to([target_a])
+        assert_that(listed).is_equal_to([f"{target_a}\t1"])
         assert_that(none_r1_path(tmp_path, OUT_PREFIX).exists()).is_true()
 
     def test_detected_targets_on_disk_matches_the_returned_stats(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
     ) -> None:
-        """The file written is exactly what the returned stats render, byte for byte."""
+        """The file written is exactly what the returned stats render, byte for byte.
+
+        The rows themselves are spelled out as well as compared, so the equality
+        cannot pass on two identically wrong renderings.
+        """
         chemistry = ChemistryTwoTargets()
         target_a, target_b = TWO_TARGET_WHITELIST
         anchor_length = chemistry.tgidx_right_anchor().length
@@ -1992,14 +2031,21 @@ class TestReadPreparerOutputs:
 
         stats = preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
 
-        assert_that(detected_targets_path(tmp_path, OUT_PREFIX).read_text()).is_equal_to(
-            stats.get_detected_targets()
+        rendered = detected_targets_path(tmp_path, OUT_PREFIX).read_text()
+
+        assert_that(rendered).is_equal_to(stats.get_detected_targets())
+        assert_that(rendered.splitlines()).is_equal_to(
+            [f"{NO_TARGET}\t1", *(f"{target}\t1" for target in sorted(TWO_TARGET_WHITELIST))]
         )
 
     def test_every_detected_token_names_the_unmatched_arm_or_a_whitelisted_target(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
     ) -> None:
-        """Nothing but the NONE sentinel and real whitelist entries is ever listed."""
+        """Nothing but the NONE sentinel and real whitelist entries is ever named.
+
+        Read off the token alone, so the count column cannot smuggle a name the
+        chemistry never declared past a consumer that splits each row.
+        """
         chemistry = ChemistryTwoTargets()
         target_a, target_b = TWO_TARGET_WHITELIST
         anchor_length = chemistry.tgidx_right_anchor().length
@@ -2011,7 +2057,9 @@ class TestReadPreparerOutputs:
 
         listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
 
-        assert_that(set(listed)).is_subset_of({NO_TARGET, *chemistry.tgidx_whitelist()})
+        assert_that({detected_token(line) for line in listed}).is_subset_of(
+            {NO_TARGET, *chemistry.tgidx_whitelist()}
+        )
 
     def test_chemistry_without_target_assignment_writes_only_the_scrna_files(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
@@ -2042,7 +2090,7 @@ class TestReadPreparerOutputs:
         assert_that(none_barcodes_path(tmp_path, OUT_PREFIX).exists()).is_true()
         assert_that(prepare_stats_path(tmp_path, OUT_PREFIX).exists()).is_true()
         assert_that(detected_targets_path(tmp_path, OUT_PREFIX).read_text()).is_equal_to(
-            f"{NO_TARGET}\n"
+            f"{NO_TARGET}\t{len(ids)}\n"
         )
 
         input_names = {"input.r1.fastq.gz", "input.r2.fastq.gz"}
@@ -2057,7 +2105,8 @@ class TestReadPreparerOutputs:
                     f"{OUT_PREFIX}.none.barcodes.fastq.gz",
                     f"{OUT_PREFIX}.prepare_stats.txt",
                     f"{OUT_PREFIX}.detected_targets.txt",
-                    f"{OUT_PREFIX}.prepare_stats_mqc.json",
+                    f"{OUT_PREFIX}.prepare_general_stats_mqc.json",
+                    f"{OUT_PREFIX}.prepare_target_distribution_mqc.json",
                 ]
             )
         )
@@ -2097,17 +2146,36 @@ class TestReadPreparerOutputs:
         )
         assert_that(report_on_disk).is_equal_to(strip_report_run_details(stats.get_report()))
 
-    def test_prepare_stats_mqc_json_is_written_and_parses_with_the_expected_shape(
-        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    @pytest.mark.parametrize(
+        "mqc_path, expected_id, expected_plot_type",
+        [
+            (prepare_general_stats_mqc_path, PREPARE_GENERAL_STATS_MQC_ID, "generalstats"),
+            (
+                prepare_target_distribution_mqc_path,
+                PREPARE_TARGET_DISTRIBUTION_MQC_ID,
+                "bargraph",
+            ),
+        ],
+    )
+    def test_each_mqc_payload_is_written_to_a_file_of_its_own(
+        self,
+        build_full_run_preparer: Callable[..., ReadPreparer],
+        tmp_path: Path,
+        mqc_path: Callable[[Path, str], Path],
+        expected_id: str,
+        expected_plot_type: str,
     ) -> None:
-        """The written `.prepare_stats_mqc.json` exists, parses, and carries both payloads.
+        """Each payload lands in a file of its own, carrying its id, plot type and data.
 
-        The exact percentages and per-target counts this file carries are
-        already pinned, method by method, against `PrepareStats.to_mqc_general_stats`
-        and `PrepareStats.to_mqc_target_distribution` in `tests/test_prepare_reporting.py`.
-        This run-level assertion only confirms the wiring writes one real,
-        parseable file that carries recognisable shape from both, keyed by the
-        run's own prefix, rather than re-testing the payload internals here.
+        MultiQC reads one custom-content file as one section: it takes that file's
+        own top-level `data` and never walks payloads nested inside it, so a stage
+        gets one section per file it writes and no more. The exact percentages and
+        per-target counts are already pinned, method by method, against
+        `PrepareStats.to_mqc_general_stats` and
+        `PrepareStats.to_mqc_target_distribution` in `tests/test_prepare_reporting.py`;
+        this run-level assertion confirms only that the wiring puts each of them
+        where MultiQC will read it as its own section, under the id that names
+        that section, keyed by the run's own prefix.
         """
         chemistry = ChemistryTwoTargets()
         target_a, target_b = TWO_TARGET_WHITELIST
@@ -2122,20 +2190,41 @@ class TestReadPreparerOutputs:
 
         preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
 
-        mqc_path = prepare_stats_mqc_path(tmp_path, OUT_PREFIX)
-        assert_that(mqc_path.exists()).is_true()
+        path = mqc_path(tmp_path, OUT_PREFIX)
+        assert_that(path.exists()).is_true()
 
-        rendered = mqc_path.read_text()
-        payload = json.loads(rendered)
+        payload = json.loads(path.read_text())
 
         assert_that(payload).is_instance_of(dict)
-        assert_that(payload).is_not_empty()
-        # Loose, run-level shape checks only, format-agnostic to however the
-        # two payloads are nested together: the general stats percentages and
-        # the target distribution's bargraph both show up somewhere in the
-        # file, keyed by this run's own prefix.
-        assert_that(rendered).contains(f'"{OUT_PREFIX}"', "pct_unmatched", "pct_matched")
-        assert_that(rendered).contains("generalstats", "bargraph")
+        assert_that(payload).contains_entry({"id": expected_id})
+        assert_that(payload).contains_entry({"plot_type": expected_plot_type})
+        assert_that(payload["data"]).is_not_empty()
+        assert_that(payload["data"]).contains_key(OUT_PREFIX)
+
+    def test_the_two_payloads_are_not_bundled_into_one_file(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """No single bundled stats JSON is written, since MultiQC would render neither chart.
+
+        A file holding both payloads under keys of this stage's own choosing has
+        no top-level `data` of its own, so MultiQC drops both charts -- and drops
+        them to a warning rather than an error, which is why the absence of the
+        bundle is asserted here rather than left to be noticed downstream.
+        """
+        chemistry = ChemistryTwoTargets()
+        target_a, target_b = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        ids_and_targets = [
+            ("u1", None),
+            ("ma1", target_a),
+            ("mb1", target_b),
+        ]
+        r1_records, r2_records = make_prepare_records(ids_and_targets, anchor_length)
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_that(bundled_mqc_path(tmp_path, OUT_PREFIX).exists()).is_false()
 
     def test_prefix_defaults_to_the_r1_input_filename(
         self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
@@ -3145,12 +3234,23 @@ class TestReadPreparerMultiTargetGoldenEndToEnd:
         """Read off a real annotated FASTQ pair, the file names all three filled outputs.
 
         The one property the real single-entry whitelist cannot show: more than
-        one detected target listed, in sorted order, behind the sentinel.
+        one detected target listed, in sorted order, behind the sentinel, each
+        carrying the reads the fixture's own composition sent to it.
         """
         target_a, target_b = TWO_TARGET_WHITELIST
+        unmatched = sum(1 for _, tgidx in MULTI_TARGET_IDS_AND_TARGETS if tgidx is None)
+        written = {
+            target: sum(1 for _, tgidx in MULTI_TARGET_IDS_AND_TARGETS if tgidx == target)
+            for target in (target_a, target_b)
+        }
 
         preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
 
         listed = detected_targets_path(tmp_path, OUT_PREFIX).read_text().splitlines()
 
-        assert_that(listed).is_equal_to([NO_TARGET, *sorted([target_a, target_b])])
+        assert_that(listed).is_equal_to(
+            [
+                f"{NO_TARGET}\t{unmatched}",
+                *(f"{target}\t{written[target]}" for target in sorted(written)),
+            ]
+        )

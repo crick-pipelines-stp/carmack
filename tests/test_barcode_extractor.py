@@ -26,9 +26,16 @@ from carmack.barcode.hybrid_extractor import HybridExtractor
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.read_component import ReadComponentType
-from tests.utils import read_gzip_text
+from tests.utils import (
+    assert_mqc_payload_file,
+    assert_no_mqc_file_bundles_payloads,
+    read_gzip_text,
+)
 
 R1_PATH = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
+
+# The keys a bundled extraction payload would have nested its charts under.
+EXTRACTION_BUNDLE_KEYS = ("general_stats", "breakdown")
 
 
 class TestBarcodeExtractor:
@@ -462,17 +469,24 @@ class TestBarcodeExtractor:
             "test.bc_stats.txt",
         ):
             assert_that((tmp_path / name).exists()).is_true()
-        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 4))
-        assert_that(write_progress.update_calls).is_length(4)
+        # Three legacy summary files plus one file per MultiQC payload written, and this
+        # fixture writes the general-stats and breakdown payloads but no edit-distance one.
+        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 5))
+        assert_that(write_progress.update_calls).is_length(5)
 
         # This fixture's single result is an all-exact-match success, so every
-        # edit_distance_dist stays empty: the general MultiQC report is always written,
-        # but the edit-distance report is skipped entirely.
-        assert_that((tmp_path / "test.extraction_stats_mqc.json").exists()).is_true()
-        with (tmp_path / "test.extraction_stats_mqc.json").open() as f:
-            mqc_stats_payload = json.load(f)
-        assert_that(mqc_stats_payload).contains_key("general_stats")
-        assert_that(mqc_stats_payload).contains_key("breakdown")
+        # edit_distance_dist stays empty: the general-stats and breakdown reports are
+        # always written, but the edit-distance report is skipped entirely. Each payload
+        # gets a file to itself because MultiQC builds one section from one file and
+        # discards whatever a stage nests inside it.
+        assert_mqc_payload_file(
+            tmp_path / "test.extraction_general_stats_mqc.json",
+            "carmack_extraction_general_stats",
+        )
+        assert_mqc_payload_file(
+            tmp_path / "test.extraction_breakdown_mqc.json", "carmack_extraction_breakdown"
+        )
+        assert_that((tmp_path / "test.extraction_stats_mqc.json").exists()).is_false()
         assert_that((tmp_path / "test.extraction_edit_distance_mqc.json").exists()).is_false()
 
         # bc_all / bc_valid are written as gzip; decompressed contents must match
@@ -504,7 +518,8 @@ class TestBarcodeExtractor:
         hydrop_chemistry: ChemistryHydrop,
     ) -> None:
         """When at least one barcode component required KMERMATCH correction, extract_barcodes
-        writes a linegraph extraction_edit_distance_mqc.json alongside the general stats file.
+        writes a linegraph extraction_edit_distance_mqc.json alongside the general-stats and
+        breakdown files.
 
         This mirrors test_extract_barcodes_produces_all_output_files's monkeypatch pattern
         exactly, but with a result carrying a non-empty edit_distance_dist, so the branch that
@@ -572,8 +587,10 @@ class TestBarcodeExtractor:
         prefix = "edit_dist_test"
         barcode_extractor.extract_barcodes(output_dir=str(tmp_path), prefix=prefix)
 
-        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 5))
-        assert_that(write_progress.update_calls).is_length(5)
+        # Three legacy summary files plus a file for each of the three payloads this
+        # fixture populates: general stats, breakdown and edit distance.
+        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 6))
+        assert_that(write_progress.update_calls).is_length(6)
 
         edit_distance_path = tmp_path / f"{prefix}.extraction_edit_distance_mqc.json"
         assert_that(edit_distance_path.exists()).is_true()
@@ -582,8 +599,10 @@ class TestBarcodeExtractor:
         assert_that(edit_distance_payload["plot_type"]).is_equal_to("linegraph")
         assert_that(edit_distance_payload["data"][prefix]).is_not_empty()
 
-    def test_extract_barcodes_real_run_writes_mqc_stats_json(self, tmp_path) -> None:
-        """A real, non-monkeypatched extraction writes a parseable extraction_stats_mqc.json
+    def test_extract_barcodes_real_run_writes_each_mqc_payload_to_its_own_file(
+        self, tmp_path
+    ) -> None:
+        """A real, non-monkeypatched extraction writes one parseable MultiQC file per payload
         alongside the existing legacy outputs.
 
         The full R1_PATH fixture takes minutes to extract for real once the alignment tier
@@ -609,10 +628,9 @@ class TestBarcodeExtractor:
         files = self.get_output_files(tmp_path, prefix)
         self.check_output_files(files)
 
-        with files["mqc_stats"].open() as f:
-            mqc_stats_payload = json.load(f)
-        assert_that(mqc_stats_payload).contains_key("general_stats")
-        assert_that(mqc_stats_payload).contains_key("breakdown")
+        assert_mqc_payload_file(files["mqc_general_stats"], "carmack_extraction_general_stats")
+        assert_mqc_payload_file(files["mqc_breakdown"], "carmack_extraction_breakdown")
+        assert_that((tmp_path / f"{prefix}.extraction_stats_mqc.json").exists()).is_false()
 
     def test_extract_barcodes_writes_annotated_r1_fastq(
         self,
@@ -884,7 +902,8 @@ class TestBarcodeExtractor:
             "bc_counts": out_dir / f"{prefix}.bc_counts.csv",
             "bc_rank_plot": out_dir / f"{prefix}.bc_rank.png",
             "bc_stats": out_dir / f"{prefix}.bc_stats.txt",
-            "mqc_stats": out_dir / f"{prefix}.extraction_stats_mqc.json",
+            "mqc_general_stats": out_dir / f"{prefix}.extraction_general_stats_mqc.json",
+            "mqc_breakdown": out_dir / f"{prefix}.extraction_breakdown_mqc.json",
         }
 
     def check_output_files(self, file_dict: dict[str, Path]) -> None:
@@ -1714,6 +1733,10 @@ class TestBarcodeExtractorRealProcessPool:
 
         assert_that(bc_all_lines).is_length(REAL_POOL_READS)
         assert_that(len(bc_valid_lines)).is_less_than_or_equal_to(REAL_POOL_READS)
+
+    def test_no_mqc_file_bundles_more_than_one_payload(self, extraction_output: Path) -> None:
+        """Every MultiQC file the run emits is a single payload, never a bundle of several."""
+        assert_no_mqc_file_bundles_payloads(extraction_output, EXTRACTION_BUNDLE_KEYS)
 
 
 EQUIVALENCE_INPUT = Path(__file__).parent / "data" / "golden" / "custom_seq_1_0_small_R1.fastq.gz"

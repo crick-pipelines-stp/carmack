@@ -2,8 +2,8 @@
 
 Every reporting module under carmack builds its own MultiQC payloads inline --
 this module supplies only the two constants naming carmack's MultiQC parent
-section and the thin JSON-writing helpers, so each stage's reporting stays a
-sibling implementation rather than a subclass.
+section and the writer that puts finished payloads on disk, so each stage's
+reporting stays a sibling implementation rather than a subclass.
 
 ``write_mqc_payloads`` is the writer a stage hands its finished payloads to.
 It gives each payload a file of its own because MultiQC reads one
@@ -24,17 +24,6 @@ from pathlib import Path
 
 CARMACK_PARENT_ID = "carmack"
 CARMACK_PARENT_NAME = "Carmack"
-
-
-def write_mqc_json(path: str | Path, payload: Mapping[str, object]) -> None:
-    """Write a MultiQC custom-content payload to disk as JSON.
-
-    Args:
-        path: Output file path. Its parent directory must already exist.
-        payload: JSON-serialisable MultiQC custom-content payload.
-    """
-    with Path(path).open("w") as f:
-        json.dump(payload, f, indent=2)
 
 
 def write_mqc_payloads(

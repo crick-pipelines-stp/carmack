@@ -6,10 +6,14 @@ Helper functions for tests
 
 import functools
 import gzip
+import json
 import os
 import tempfile
+from collections.abc import Sequence
 from io import BytesIO
 from pathlib import Path
+
+from assertpy import assert_that
 
 REGEN_GOLDEN_ENV_VAR = "CARMACK_REGEN_GOLDEN"
 
@@ -199,3 +203,68 @@ def assert_is_png(path: str | Path) -> None:
         f"Expected a PNG file at {png}, but it starts with {header!r} "
         f"rather than the PNG signature {PNG_MAGIC_BYTES!r}."
     )
+
+
+def assert_mqc_payload_file(path: str | Path, payload_id: str) -> dict[str, object]:
+    """
+    Assert that a file holds exactly one renderable MultiQC payload, and return it.
+
+    MultiQC builds one section from one custom-content file, out of that file's own
+    top-level ``id``, ``plot_type`` and ``data``. It never walks payloads nested under
+    keys of carmack's own choosing, and loses them to a warning rather than an error,
+    so those three top-level keys are what separate a file MultiQC renders from one it
+    silently discards. Every stage asserts the same three keys, so the check lives here
+    rather than once per stage's test module.
+
+    Args:
+        path: Path of the MultiQC payload file to check.
+        payload_id: Section id the payload is expected to declare.
+
+    Returns:
+        The parsed payload.
+
+    Raises:
+        AssertionError: If the file is missing, or its payload lacks any of the three
+            top-level keys, declares a different id, or carries empty top-level data.
+    """
+
+    payload_path = Path(path)
+
+    assert_that(payload_path.exists()).described_as(
+        f"missing MultiQC payload: {payload_path}"
+    ).is_true()
+    payload = json.loads(payload_path.read_text())
+    assert_that(payload).contains_key("id", "plot_type", "data")
+    assert_that(payload["id"]).is_equal_to(payload_id)
+    assert_that(payload["data"]).is_not_empty()
+    return payload
+
+
+def assert_no_mqc_file_bundles_payloads(
+    output_dir: str | Path, bundle_keys: Sequence[str]
+) -> None:
+    """
+    Assert that every MultiQC file in a directory is one payload, never a bundle.
+
+    Bundling costs every nested chart silently, so the emitted set is checked as a
+    whole rather than file by file: a stage that regressed to writing one combined
+    file would still satisfy that stage's per-file assertions. The bundle keys are
+    the stage's own, since a bundle would nest its payloads under exactly the names
+    that stage's builders are known by.
+
+    Args:
+        output_dir: Directory the run wrote its ``*_mqc.json`` files into.
+        bundle_keys: Keys the stage would have nested its payloads under, none of
+            which may appear at the top level of any emitted file.
+
+    Raises:
+        AssertionError: If the run emitted no MultiQC files at all, or any of them
+            carries one of the bundle keys at its top level.
+    """
+
+    mqc_paths = sorted(Path(output_dir).glob("*_mqc.json"))
+
+    assert_that(mqc_paths).is_not_empty()
+    for path in mqc_paths:
+        payload = json.loads(path.read_text())
+        assert_that(payload).described_as(path.name).does_not_contain_key(*bundle_keys)
