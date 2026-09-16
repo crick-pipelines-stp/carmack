@@ -16,6 +16,25 @@ three branches of the matched arm's trim-point arithmetic, and the counters
 both arms bump -- and the invariant that holds across repeated calls into the
 same accumulator.
 
+Both arms work out their own insert cut here, in the worker. The matched arm
+always did; the unmatched arm's is asked of the scRNA writer that this stage
+already builds once at construction, and is carried out on the outcome, so the
+trim point is decided in the pool while the single writer thread is left with
+nothing to do but slice at it. `TestPrepareReadUnmatchedCut` covers that cut,
+the full untrimmed read it travels beside, and the header guard that now fires
+here rather than on the writer thread.
+
+Both arms then put one guard over that cut, and it is the only case this stage
+filters. A read whose insert start has reached the end of the read has nothing
+left to write, so it is answered with no outcome at all, counted as
+`insert_not_sequenced`, and written to neither arm -- taking its R2 mate and its
+synthesized barcodes record with it, which is what keeps the scRNA arm's three
+files positionally in register. `TestPrepareReadInsertNotSequenced` covers the
+guard read by read, `TestPrepareReadBatchWithDrops` the `None` a dropped read
+leaves in its batch's slot, and `TestReadPreparerDropsKeepTheArmsInRegister` a
+whole run: the files, the reconciling stats, and the two run-level artefacts a
+drop must and must not appear in.
+
 Finally it covers the two streaming helpers a later driver runs `prepare_read`
 inside: pairing an R1 stream thinned by upstream filtering against the full R2
 stream it was cut down from, skipping the R2 reads that no longer have an R1
@@ -35,7 +54,7 @@ from collections.abc import Callable, Iterable, Iterator
 from functools import cached_property
 from inspect import signature
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, get_args
 from unittest import mock
 
 import pytest
@@ -88,6 +107,13 @@ from tests.utils import strip_report_run_details
 
 CHEMISTRY = "carmack_custom_seq_1_0"
 
+# Both chemistries whose reads reach this stage. They declare the same UMI right
+# anchor but seat the UMI at different read offsets, so driving both is what shows
+# an insert cut following the span the read itself records rather than an offset
+# fixed by one chemistry's layout. hydrop is absent deliberately: it declares no UMI
+# at all, and the constructor refuses to build a preparer against it.
+SHIPPED_CHEMISTRIES = (CHEMISTRY, "carmack_custom_seq_1_0_primd")
+
 # The constructor only wraps these paths in FastqFile objects, it never reads
 # them, so any path shaped like a real FASTQ will do.
 DUMMY_R1_FASTQ = "tests/data/hydrop_scatac_1_S1_R1_001.fastq.gz"
@@ -128,6 +154,15 @@ DEFAULT_UMI = "ACGTACGT"
 # matched-arm test read, so a wrong cut is caught by its content, not only by
 # its length.
 INSERT_SEQ = "ACGTACGTAC"
+
+# The UMI span written onto every deliberately dumb test read that reaches the
+# unmatched arm. That arm computes its own insert cut off the UMI's recorded span
+# now, in the worker, so a read reaching it without a `UMI_POS` tag raises where it
+# used to sail through. `build_read` bodies are arbitrary filler that no component
+# was ever laid out in, so the only thing this span has to do is sit inside the
+# shortest of them and leave an insert behind it; reads that need a faithful layout
+# are built by `build_full_r1_read` instead, which has always written its own spans.
+DEFAULT_UMI_SPAN = format_span(0, len(DEFAULT_UMI))
 
 
 def make_qual(length: int) -> str:
@@ -197,7 +232,8 @@ def build_matched_read(
         tgidx_pos_start: Start coordinate of the TGIDX_POS span. Defaults to
             `TGIDX_LENGTH` bases before the end; never read by `insert_start`.
         barcodes: Barcode tag values, defaulting to `DEFAULT_BARCODES`.
-        umi: UMI tag value.
+        umi: UMI tag value, written alongside the `UMI_POS` span a real
+            extract-umis run always writes beside it.
 
     Returns:
         The rendered header, the sequence, and a position-varying quality
@@ -208,6 +244,11 @@ def build_matched_read(
     ann = ReadAnnotation(read_id=read_id)
     for key, value in {**(barcodes or DEFAULT_BARCODES), "UMI": umi}.items():
         ann.set(key, value)
+    # Written even though the matched arm never reads it: the same read is routed to
+    # the unmatched arm by any test that swaps in a chemistry with no target index,
+    # and that arm computes its insert cut off this span. Everything before
+    # `tgidx_pos_end` is filler, so the span sits at the head of it.
+    ann.set("UMI_POS", format_span(0, len(umi)))
     ann.set("TGIDX", tgidx_value)
     ann.set("TGIDX_POS", format_span(start, tgidx_pos_end))
     return ann.render(), seq, make_qual(len(seq))
@@ -577,7 +618,9 @@ class TestPrepareReadUnmatched:
     """The scRNA (unmatched) arm: every path that never reaches a real target value."""
 
     def test_read_with_no_tgidx_tag_is_unmatched(self) -> None:
-        name, seq, qual = build_read("notag", {"UMI": DEFAULT_UMI}, "ACGTACGTAC" * 4)
+        name, seq, qual = build_read(
+            "notag", {"UMI": DEFAULT_UMI, "UMI_POS": DEFAULT_UMI_SPAN}, "ACGTACGTAC" * 4
+        )
         preparer = build_preparer()
         counts = PrepareCounts()
 
@@ -593,7 +636,9 @@ class TestPrepareReadUnmatched:
 
     def test_read_with_tgidx_none_is_unmatched(self) -> None:
         name, seq, qual = build_read(
-            "nonetag", {"UMI": DEFAULT_UMI, "TGIDX": NO_TARGET}, "ACGTACGTAC" * 4
+            "nonetag",
+            {"UMI": DEFAULT_UMI, "UMI_POS": DEFAULT_UMI_SPAN, "TGIDX": NO_TARGET},
+            "ACGTACGTAC" * 4,
         )
         preparer = build_preparer()
         counts = PrepareCounts()
@@ -617,7 +662,9 @@ class TestPrepareReadUnmatched:
         otherwise look like a real target.
         """
         name, seq, qual = build_read(
-            "strayta", {"UMI": DEFAULT_UMI, "TGIDX": "SHOULDBEIGNORED"}, "ACGTACGTAC" * 4
+            "strayta",
+            {"UMI": DEFAULT_UMI, "UMI_POS": DEFAULT_UMI_SPAN, "TGIDX": "SHOULDBEIGNORED"},
+            "ACGTACGTAC" * 4,
         )
         preparer = build_preparer(chemistry=ChemistryNoTargetIndex())
         counts = PrepareCounts()
@@ -632,6 +679,123 @@ class TestPrepareReadUnmatched:
         assert_that(counts.total).is_equal_to(1)
         assert_that(counts.unmatched).is_equal_to(1)
         assert_that(counts.target_counts).is_empty()
+
+
+class TestPrepareReadUnmatchedCut:
+    """The unmatched arm's insert cut: computed here, carried out on the outcome.
+
+    The scRNA arm trims R1 off the UMI's own span, and that trim point used to be
+    worked out inside the writer -- on the single thread that writes every
+    unmatched read, after dispatch was already over. It is worked out here
+    instead, in the worker, and carried out on the outcome, so both arms compute
+    their cut in the same place and the per-read scan comes off the writer
+    thread. The matched arm has always computed its cut here, so this is the
+    unmatched arm catching up rather than a new kind of work.
+
+    The value is asked of the scRNA writer this stage already builds once at
+    construction rather than derived from a second copy of the same chemistry
+    facts, which is what stops one read ever getting two answers, and the tests
+    below assert exactly that identity against a separately constructed writer.
+
+    Two consequences follow. The sequence and quality on the outcome stay full
+    and untrimmed even though a cut now rides along beside them, because the
+    writer slices the barcodes record's quality at each component's recorded
+    start, in the original read's coordinates, and those coordinates mean nothing
+    against an already-trimmed string. And a read reaching this arm with no
+    `UMI_POS` tag now raises here rather than on the writer thread: the same
+    `ValueError`, from the same guard, a step earlier, and symmetrical with the
+    matched arm, which has always raised here for a missing `TGIDX_POS`.
+    """
+
+    @pytest.mark.parametrize("chemistry_name", SHIPPED_CHEMISTRIES)
+    def test_unmatched_outcome_carries_the_scrna_writers_insert_cut(
+        self, chemistry_name: str
+    ) -> None:
+        """The cut on the outcome is the writer's own answer for the same read.
+
+        Checked against two independent expectations. The first is arithmetic
+        this test already knows and the dispatcher plays no part in -- the UMI's
+        recorded span end plus the anchor run the read was built to carry after
+        it, with the marker insert left behind it -- so the assertion cannot be
+        satisfied by the code agreeing with itself. The second is
+        `ScrnaWriter.insert_cut` called directly, on a writer built here rather
+        than the one the preparer holds, which pins the two as the same
+        computation instead of two that merely coincide on this read.
+
+        Both shipped chemistries are driven because they seat the UMI at
+        different read offsets: a cut taken from the span the read records
+        answers both, while one taken from an offset fixed by a chemistry could
+        only ever answer one.
+        """
+        preparer = build_preparer(chemistry=ChemistryFactory.get_chemistry(chemistry_name))
+        umi_end = len(DEFAULT_UMI)
+        polyg_run_length = POLYG_MIN_RUN + 2
+        name, seq, qual = build_read(
+            "withcut",
+            {"UMI": DEFAULT_UMI, "UMI_POS": format_span(0, umi_end)},
+            "A" * umi_end + POLYG_BASE * polyg_run_length + INSERT_SEQ,
+        )
+        counts = PrepareCounts()
+
+        outcome = preparer.prepare_read(name, seq, qual, counts)
+
+        assert_that(outcome).is_instance_of(UnmatchedOutcome)
+        assert_that(outcome.cut).is_equal_to(umi_end + polyg_run_length)
+        assert_that(outcome.cut).is_equal_to(
+            ScrnaWriter(preparer.chemistry).insert_cut(outcome.ann, seq)
+        )
+        assert_that(seq[outcome.cut :]).is_equal_to(INSERT_SEQ)
+        assert_that(counts.unmatched).is_equal_to(1)
+
+    def test_unmatched_outcome_keeps_the_full_untrimmed_sequence_and_quality(self) -> None:
+        """The read travels whole beside its cut, not already trimmed to it.
+
+        The writer slices the synthesized barcodes record's quality at each
+        component's recorded start, and those starts are coordinates in the
+        original read; trimming R1 before handing it over would leave every one
+        of them pointing at the wrong base. So the cut travels as a number and
+        the read travels intact, and the two are only brought together where R1
+        itself is written. The read used here has a cut well inside it, and the
+        trimmed sequence is asserted to differ from the whole one, so this cannot
+        pass on a read where the distinction does not arise.
+        """
+        preparer = build_preparer()
+        umi_end = len(DEFAULT_UMI)
+        polyg_run_length = POLYG_MIN_RUN + 2
+        name, seq, qual = build_read(
+            "untrimmed",
+            {"UMI": DEFAULT_UMI, "UMI_POS": format_span(0, umi_end)},
+            "A" * umi_end + POLYG_BASE * polyg_run_length + INSERT_SEQ,
+        )
+
+        outcome = preparer.prepare_read(name, seq, qual, PrepareCounts())
+
+        assert_that(outcome.cut).is_greater_than(0)
+        assert_that(outcome.r1_seq).is_equal_to(seq)
+        assert_that(outcome.r1_qual).is_equal_to(qual)
+        assert_that(outcome.r1_seq).is_not_equal_to(seq[outcome.cut :])
+
+    def test_unmatched_read_missing_umi_pos_raises_naming_the_read_and_the_tag(self) -> None:
+        """A read with no UMI span is a corrupt input, and is now refused here.
+
+        It used to reach the writer thread and fail there, one dispatch later,
+        and it fails with the same message from the same guard now that the cut
+        is taken while the read is still in the worker. That is a strict gain in
+        symmetry -- the matched arm has always refused a read carrying no
+        `TGIDX_POS` here -- and the message must still name the read and the tag,
+        since a corrupt header is diagnosed from the log line and nothing else.
+        The total is already counted by then, as it is for every read the stage
+        looks at, whatever becomes of it afterwards.
+        """
+        name, seq, qual = build_read("nopos", {"UMI": DEFAULT_UMI}, "A" * 40)
+        preparer = build_preparer()
+        counts = PrepareCounts()
+
+        with pytest.raises(ValueError) as excinfo:
+            preparer.prepare_read(name, seq, qual, counts)
+
+        assert_that(str(excinfo.value)).contains("nopos", "UMI_POS")
+        assert_that(counts.total).is_equal_to(1)
 
 
 class TestPrepareReadMatched:
@@ -823,9 +987,9 @@ class TestPrepareReadCountsAccumulate:
         preparer = build_preparer()
         anchor = preparer.tgidx_right_anchor
         reads = [
-            build_read("u1", {}, "A" * 20),
+            build_read("u1", {"UMI_POS": DEFAULT_UMI_SPAN}, "A" * 20),
             build_matched_read("m1", TGIDX_VALUE, 30, "N" * anchor.length + INSERT_SEQ),
-            build_read("u2", {"TGIDX": NO_TARGET}, "A" * 20),
+            build_read("u2", {"UMI_POS": DEFAULT_UMI_SPAN, "TGIDX": NO_TARGET}, "A" * 20),
             build_matched_read("m2", TGIDX_VALUE, 30, "N" * anchor.length + INSERT_SEQ),
         ]
         counts = PrepareCounts()
@@ -1875,6 +2039,7 @@ class TestReadPreparerOutputs:
             outcome.ann,
             outcome.r1_seq,
             outcome.r1_qual,
+            outcome.cut,
             r2_name,
             r2_seq,
             r2_qual,
@@ -1891,6 +2056,38 @@ class TestReadPreparerOutputs:
         )
         assert_that(read_fastq(none_barcodes_path(tmp_path, OUT_PREFIX))).is_equal_to(
             [tuple(expected_barcodes.getvalue().decode("UTF-8").splitlines())]
+        )
+
+    def test_unmatched_r1_is_written_cut_at_the_cut_its_outcome_carries(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """The R1 on disk is the input read sliced at the cut its outcome carried.
+
+        The cut is computed in the worker and travels on the outcome, so the
+        driver's job is to hand the writer the value it was given rather than
+        leave the writer to work one out again for itself. Asserting the bytes on
+        disk against `seq[outcome.cut:]` ties the two ends of that journey
+        together: the number the dispatcher produced is the number the record was
+        cut at. The oracle test above already pins the three files against a
+        direct writer call; this one names the cut itself, so a driver that
+        dropped it would fail here with the trim point on show rather than as a
+        byte mismatch.
+        """
+        chemistry = ChemistryTwoTargets()
+        read_id = "unmatched-cut"
+        name, seq, qual = build_full_r1_read(
+            read_id, tgidx=None, polyg_run_length=POLYG_MIN_RUN + 1, after_polyg=INSERT_SEQ
+        )
+        r2_record = build_r2_read(read_id)
+        preparer = build_full_run_preparer([(name, seq, qual)], [r2_record], chemistry=chemistry)
+
+        preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        outcome = preparer.prepare_read(name, seq, qual, PrepareCounts())
+        assert_that(outcome.cut).is_greater_than(0)
+        assert_that(seq[outcome.cut :]).is_equal_to(INSERT_SEQ)
+        assert_that(read_fastq(none_r1_path(tmp_path, OUT_PREFIX))).is_equal_to(
+            [(f"@{read_id}", seq[outcome.cut :], "+", qual[outcome.cut :])]
         )
 
     def test_matched_arm_files_match_a_direct_dispatch_and_writer_call_across_two_buckets(
@@ -2281,6 +2478,735 @@ class TestReadPreparerOutputs:
         assert_that(detected_targets_path(tmp_path, OUT_PREFIX).read_text()).is_equal_to("")
 
 
+# ---------------------------------------------------------------------------
+# The stage's one filtering case: a read whose computed insert start has
+# already reached the end of the read, leaving no insert to write.
+#
+# `prepare_read` answers `None` for such a read and counts it as
+# `insert_not_sequenced`; the driver skips that slot's write entirely, which is
+# what takes the R2 mate and the synthesized barcodes record down with the R1
+# and keeps the scRNA arm's three files positionally in register. None of that
+# exists yet, so every test below is expected to fail -- the per-read ones on an
+# outcome handed back where `None` was due, the run-level ones on a zero-length
+# record written into an output file. That failure is the correct, expected
+# state for this stage of the work.
+# ---------------------------------------------------------------------------
+
+# The third shipped chemistry, absent from `SHIPPED_CHEMISTRIES` because it
+# declares no UMI at all. Named here so the reason it never reaches the guard
+# below can be pinned rather than assumed.
+HYDROP_CHEMISTRY = "hydrop"
+
+# A single base planted inside an otherwise unbroken anchor tract, standing in
+# for the one sequencing error the insert-boundary scan is built to bridge. It
+# is asserted to differ from the resolved anchor's own base wherever it is used,
+# so it can never quietly become part of the run it was meant to interrupt.
+INTERRUPTING_BASE = "A"
+
+# The shortest insert there is. A read carrying it is written, not dropped: the
+# guard asks whether anything at all was sequenced past the cut, never whether
+# enough was, and this stage introduces no length threshold of any kind.
+ONE_BASE_INSERT = "A"
+
+# An arbitrary TGIDX span end for a matched-arm read built by
+# `build_matched_read`, whose body is filler up to that coordinate. It is a
+# coordinate this test chooses, not one any chemistry declares, so nothing about
+# a read layout is encoded in it.
+MATCHED_SPAN_END = 30
+
+
+def make_prepare_records_with_inserts(
+    ids_targets_and_inserts: list[tuple[str, str | None, str]], anchor_length: int
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """Build paired R1/R2 records for a run whose reads carry the inserts given.
+
+    `make_prepare_records` always plants `INSERT_SEQ` behind the anchor, which is
+    exactly what makes it unusable here: a read is dropped precisely when nothing
+    follows the anchor, so the insert has to be something the caller chooses per
+    read rather than a constant the builder supplies. An empty insert is what the
+    instrument leaves behind when the cluster died before the insert was ever
+    sequenced -- on 2-colour chemistry the unsequenced tail comes back as the
+    anchor base, so the run written ahead of it simply carries on to the read's
+    last base.
+
+    Args:
+        ids_targets_and_inserts: `(read_id, tgidx, insert)` triples, in the order
+            both streams should carry them. `tgidx=None` builds an unmatched read
+            carrying no TGIDX tag at all; any other value builds a matched read
+            whose TGIDX span is followed by an `anchor_length` filler. The insert
+            is written after that, and an empty one leaves the read ending on its
+            anchor.
+        anchor_length: Length of the chemistry's TGIDX right anchor, sizing the
+            filler a matched read plants after its TGIDX span.
+
+    Returns:
+        The R1 records and their paired R2 records, in the given order.
+    """
+    r1_records = [
+        build_full_r1_read(
+            read_id,
+            tgidx=tgidx,
+            polyg_run_length=POLYG_MIN_RUN,
+            after_polyg=(
+                insert if tgidx is None else ("A" * TGIDX_LENGTH) + ("N" * anchor_length) + insert
+            ),
+        )
+        for read_id, tgidx, insert in ids_targets_and_inserts
+    ]
+    r2_records = [build_r2_read(read_id) for read_id, _, _ in ids_targets_and_inserts]
+    return r1_records, r2_records
+
+
+def written_read_ids(path: Path) -> list[str]:
+    """Return the read ids an output FASTQ carries, in file order.
+
+    Args:
+        path: Path of the gzipped output FASTQ to read.
+
+    Returns:
+        One read id per record, in the order the file carries them.
+    """
+    return [extract_read_id(record[0][1:]) for record in read_fastq(path)]
+
+
+class TestPrepareReadInsertNotSequenced:
+    """The one case this stage filters: a read whose insert was never sequenced.
+
+    On a 2-colour instrument the absence of signal is read as a base call rather
+    than as nothing, so a cluster that dies just after the scaffold comes back
+    with the whole remainder of R1 as a run of the anchor base. Every tag the
+    upstream stages wrote is intact, so the read arrives here looking perfectly
+    healthy, and the forward scan that settles where the insert begins walks that
+    run to the last base of the read. Cutting there leaves an empty sequence, and
+    an empty FASTQ record is syntactically valid -- its sequence and quality lines
+    agree at length zero -- so it clears every framing and length check downstream
+    before desyncing the next reader that meets it. The read is therefore written
+    to no arm at all, and counted instead.
+
+    Every case below asserts BOTH halves of that, and neither half stands alone: a
+    read silently dropped and never counted breaks the reconciliation the whole
+    report is built on, and a read counted but still written out is the defect
+    itself. What is deliberately never asserted anywhere in this class is that the
+    written insert equals `seq[cut:]` -- the empty string satisfies that form
+    vacuously, and that is precisely how this defect survived a suite that already
+    covered both arms' trim arithmetic read by read.
+
+    The ordering inside `prepare_read` is what the counter assertions pin.
+    `counts.total` is bumped first and for every read alike, whatever becomes of
+    it; the arm counter is bumped only once the guard has passed. So
+    `unmatched + sum(target_counts.values()) + insert_not_sequenced == total`
+    holds after every single call rather than only once a run is over.
+    """
+
+    @pytest.mark.parametrize("chemistry_name", SHIPPED_CHEMISTRIES)
+    def test_unmatched_read_whose_anchor_run_terminates_the_read_is_dropped_and_counted(
+        self, chemistry_name: str
+    ) -> None:
+        """The reported case, reduced to one read: a poly-G tail running to the read end.
+
+        The read is built with the anchor run written and nothing whatsoever
+        after it, which is the shape a died-early cluster hands back once the
+        unsequenced tail has been read as the anchor base. Its run length and its
+        anchor base both come from the component the chemistry resolves, and the
+        read ends where the builder stops writing, so no offset belonging to one
+        chemistry's layout appears anywhere in this test.
+
+        Both shipped chemistries are driven for that reason. They seat the UMI at
+        different read offsets, so the coordinate the run starts at differs
+        between them while the defect is identical: a guard reading the read's own
+        recorded span answers both, and one written against either layout's
+        numbers could only ever answer one.
+        """
+        preparer = build_preparer(chemistry=ChemistryFactory.get_chemistry(chemistry_name))
+        anchor = preparer.scrna_writer.umi_right_anchor
+        name, seq, qual = build_full_r1_read(
+            "unsequenced", tgidx=None, polyg_run_length=anchor.min_run, after_polyg=""
+        )
+        counts = PrepareCounts()
+
+        outcome = preparer.prepare_read(name, seq, qual, counts)
+
+        assert_that(outcome).is_none()
+        assert_that(counts.total).is_equal_to(1)
+        assert_that(counts.insert_not_sequenced).is_equal_to(1)
+        assert_that(counts.unmatched).is_equal_to(0)
+        assert_that(counts.target_counts).is_empty()
+
+    def test_matched_read_whose_homopolymer_right_anchor_terminates_the_read_is_dropped(
+        self,
+    ) -> None:
+        """The matched arm drops on the same terms, with the run read off the read itself.
+
+        A homopolymer right anchor has no length of its own, so the matched arm's
+        cut is a forward scan exactly like the unmatched arm's, and it saturates
+        at the read end exactly like it. The run planted here is deliberately
+        longer than the anchor's declared `min_run`, so an implementation that
+        added `min_run` instead of scanning would compute a cut still inside the
+        read and fail this test rather than pass it by coincidence.
+        """
+        preparer = build_preparer(chemistry=ChemistryTgidxHomopolymerRightAnchor())
+        anchor = preparer.tgidx_right_anchor
+        run_length = anchor.min_run + 2
+        name, seq, qual = build_matched_read(
+            "matched-unsequenced",
+            TGIDX_VALUE,
+            MATCHED_SPAN_END,
+            anchor.homopolymer_base * run_length,
+        )
+        counts = PrepareCounts()
+
+        assert_that(MATCHED_SPAN_END + run_length).is_equal_to(len(seq))
+
+        outcome = preparer.prepare_read(name, seq, qual, counts)
+
+        assert_that(outcome).is_none()
+        assert_that(counts.total).is_equal_to(1)
+        assert_that(counts.insert_not_sequenced).is_equal_to(1)
+        assert_that(counts.unmatched).is_equal_to(0)
+        assert_that(counts.target_counts).is_empty()
+
+    @pytest.mark.parametrize(
+        "bases_missing",
+        [
+            pytest.param(0, id="cut_reaches_the_read_end"),
+            pytest.param(1, id="cut_passes_the_read_end"),
+        ],
+    )
+    def test_matched_read_with_a_fixed_length_right_anchor_past_the_read_end_is_dropped(
+        self, bases_missing: int
+    ) -> None:
+        """A fixed-length right anchor never consults the read, so its cut can overshoot it.
+
+        This is the real chemistry's own matched arm: the target index is
+        followed by the Mosaic End, whose length is declared by the chemistry and
+        added to the span end as plain arithmetic. Nothing verifies the anchor is
+        present, so a read that ended inside it -- or exactly at its end -- still
+        gets the full length added, and the cut lands at or past the last base.
+
+        Both cases are driven from the anchor's own declared length, one filler
+        base short of it and exactly at it, so the two sit either side of the
+        distinction the guard is written for: a cut equal to the read length and
+        a cut strictly greater than it both mean the same thing, that nothing is
+        left to write, which is why the predicate tests `>=` rather than `==`.
+        """
+        preparer = build_preparer()
+        anchor = preparer.tgidx_right_anchor
+        name, seq, qual = build_matched_read(
+            "me-unsequenced",
+            TGIDX_VALUE,
+            MATCHED_SPAN_END,
+            "N" * (anchor.length - bases_missing),
+        )
+        counts = PrepareCounts()
+
+        assert_that((MATCHED_SPAN_END + anchor.length) - len(seq)).is_equal_to(bases_missing)
+
+        outcome = preparer.prepare_read(name, seq, qual, counts)
+
+        assert_that(outcome).is_none()
+        assert_that(counts.total).is_equal_to(1)
+        assert_that(counts.insert_not_sequenced).is_equal_to(1)
+        assert_that(counts.unmatched).is_equal_to(0)
+        assert_that(counts.target_counts).is_empty()
+
+    @pytest.mark.parametrize("chemistry_name", SHIPPED_CHEMISTRIES)
+    def test_unmatched_read_leaving_a_single_base_insert_is_written_not_dropped(
+        self, chemistry_name: str
+    ) -> None:
+        """One sequenced base is an insert, and a read carrying one is written.
+
+        The positive half of the pair, and the reason it is worth its own test:
+        the guard is a test of emptiness, not of length, and nothing in this
+        change introduces a minimum insert length. A guard written as "too short
+        to be useful" rather than "nothing was measured" would drop this read,
+        and a short insert is an aligner's problem to handle rather than this
+        stage's to discard.
+
+        The read is the previous test's read with one base appended, so the two
+        differ by exactly the thing under test and by nothing else.
+        """
+        preparer = build_preparer(chemistry=ChemistryFactory.get_chemistry(chemistry_name))
+        anchor = preparer.scrna_writer.umi_right_anchor
+        name, seq, qual = build_full_r1_read(
+            "shortest", tgidx=None, polyg_run_length=anchor.min_run, after_polyg=ONE_BASE_INSERT
+        )
+        counts = PrepareCounts()
+
+        outcome = preparer.prepare_read(name, seq, qual, counts)
+
+        assert_that(outcome).is_instance_of(UnmatchedOutcome)
+        assert_that(len(seq) - outcome.cut).is_equal_to(len(ONE_BASE_INSERT))
+        assert_that(counts.total).is_equal_to(1)
+        assert_that(counts.unmatched).is_equal_to(1)
+        assert_that(counts.insert_not_sequenced).is_equal_to(0)
+
+    @pytest.mark.parametrize("chemistry_name", SHIPPED_CHEMISTRIES)
+    def test_unmatched_read_whose_interrupted_anchor_tract_resumes_to_the_read_end_is_dropped(
+        self, chemistry_name: str
+    ) -> None:
+        """A tract carrying one sequencing error still runs to the read end, and still drops.
+
+        The read here is the kept read above -- an anchor run, then one base that
+        is not the anchor base -- with the tract resuming behind that base for the
+        chemistry's own `min_run` copies and then stopping at the read end. The
+        scan behind the cut bridges a single interruption when the run resumes,
+        so it walks across the planted base and on to the last base of the read,
+        and the read has no insert after all.
+
+        This is the pair of tests that pins WHICH scan the guard sits over. The
+        unbridged scan that extract-umis reports its anchor-run distribution with
+        would stop at the interrupting base, leave a cut well inside the read and
+        keep this read, which is why the two stages' counts for one phenomenon
+        differ and why this case cannot be left to the plain saturating run
+        above.
+        """
+        preparer = build_preparer(chemistry=ChemistryFactory.get_chemistry(chemistry_name))
+        anchor = preparer.scrna_writer.umi_right_anchor
+        counts = PrepareCounts()
+
+        assert_that(INTERRUPTING_BASE).is_not_equal_to(anchor.homopolymer_base)
+
+        name, seq, qual = build_full_r1_read(
+            "interrupted",
+            tgidx=None,
+            polyg_run_length=anchor.min_run,
+            after_polyg=INTERRUPTING_BASE + anchor.homopolymer_base * anchor.min_run,
+        )
+
+        outcome = preparer.prepare_read(name, seq, qual, counts)
+
+        assert_that(outcome).is_none()
+        assert_that(counts.total).is_equal_to(1)
+        assert_that(counts.insert_not_sequenced).is_equal_to(1)
+        assert_that(counts.unmatched).is_equal_to(0)
+
+    def test_three_term_invariant_holds_after_every_call_across_a_mix_including_drops(
+        self,
+    ) -> None:
+        """`unmatched + sum(target_counts.values()) + insert_not_sequenced == total`, every call.
+
+        The two-term version of this check already ran over a mix of written
+        outcomes; this is that check widened by the third destination a read can
+        now reach, which is no file at all. Checked call by call rather than once
+        at the end, for the same reason as before: a read tallied twice and a
+        read never tallied cancel out in a final total while leaving the
+        invariant broken after either of the two calls that caused it. Ordering
+        is what that catches here -- a `total` bumped after the guard, or an arm
+        counter bumped before it, both leave a call the invariant does not
+        survive.
+
+        The mix deliberately drops on both arms and keeps on both arms, so no
+        single ordering mistake can pass by being exercised on one arm only.
+        """
+        preparer = build_preparer()
+        anchor = preparer.tgidx_right_anchor
+        matched_filler = ("A" * TGIDX_LENGTH) + ("N" * anchor.length)
+        reads = [
+            build_full_r1_read(
+                "u-kept", tgidx=None, polyg_run_length=POLYG_MIN_RUN, after_polyg=INSERT_SEQ
+            ),
+            build_full_r1_read(
+                "u-dropped", tgidx=None, polyg_run_length=POLYG_MIN_RUN, after_polyg=""
+            ),
+            build_full_r1_read(
+                "m-kept",
+                tgidx=TGIDX_VALUE,
+                polyg_run_length=POLYG_MIN_RUN,
+                after_polyg=matched_filler + INSERT_SEQ,
+            ),
+            build_full_r1_read(
+                "m-dropped",
+                tgidx=TGIDX_VALUE,
+                polyg_run_length=POLYG_MIN_RUN,
+                after_polyg=matched_filler,
+            ),
+            build_full_r1_read(
+                "u-kept-again",
+                tgidx=None,
+                polyg_run_length=POLYG_MIN_RUN,
+                after_polyg=INSERT_SEQ,
+            ),
+        ]
+        counts = PrepareCounts()
+
+        for expected_total, (name, seq, qual) in enumerate(reads, start=1):
+            preparer.prepare_read(name, seq, qual, counts)
+
+            assert_that(counts.total).is_equal_to(expected_total)
+            assert_that(
+                counts.unmatched + sum(counts.target_counts.values()) + counts.insert_not_sequenced
+            ).is_equal_to(counts.total)
+
+        assert_that(counts.unmatched).is_equal_to(2)
+        assert_that(dict(counts.target_counts)).is_equal_to({TGIDX_VALUE: 1})
+        assert_that(counts.insert_not_sequenced).is_equal_to(2)
+
+    def test_prepared_outcome_names_the_two_outcome_types_a_written_read_can_take(self) -> None:
+        """The alias the dispatcher's return type is built out of covers both arms.
+
+        `prepare_read` now answers with one of two outcome types or with nothing
+        at all, and the driver branches on that `None` before it branches on
+        which arm the outcome belongs to. Naming the two-arm half of that union
+        once, here, is what keeps the per-read signature and the batch worker's
+        list from spelling it out twice and drifting apart.
+        """
+        assert_that(set(get_args(read_preparer.PreparedOutcome))).is_equal_to(
+            {UnmatchedOutcome, MatchedOutcome}
+        )
+
+    def test_hydrop_is_still_refused_at_construction_so_it_never_reaches_this_guard(self) -> None:
+        """The third shipped chemistry cannot reach this path at all, and still cannot.
+
+        `hydrop` declares no UMI component, so the unmatched arm has no span to
+        take a cut off and the constructor refuses to build a preparer over it at
+        all. That is what makes "both shipped chemistries" the whole of this
+        guard's exposure rather than two of three, and it is asserted rather than
+        assumed because the guard now runs on the arm that needs the UMI span,
+        which is a new reason for this refusal to matter.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            ReadPreparer(DUMMY_R1_FASTQ, DUMMY_R2_FASTQ, HYDROP_CHEMISTRY)
+
+        assert_that(str(excinfo.value)).contains(HYDROP_CHEMISTRY, "UMI")
+
+
+class TestPrepareReadBatchWithDrops:
+    """The batch worker keeps a dropped read's slot instead of omitting it.
+
+    The driver zips a batch's outcomes against the R2 half it kept out of the
+    pool, strictly, so the two lists have to stay the same length and the same
+    shape. Omitting a dropped read from the returned list would shorten one of
+    them and slide every outcome behind it onto the wrong mate -- silently, for
+    every read after the first drop, if the zip were not strict. A `None` in the
+    slot keeps the two index-for-index and lets the driver skip exactly the
+    entry it belongs to.
+    """
+
+    def test_batch_returns_one_entry_per_submitted_read_with_none_in_the_dropped_slots(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Length and shape both: as many entries back as reads in, `None` where a read dropped."""
+        preparer = build_preparer()
+        anchor_length = preparer.tgidx_right_anchor.length
+        r1_records, _ = make_prepare_records_with_inserts(
+            [
+                ("kept-before", None, INSERT_SEQ),
+                ("dropped-unmatched", None, ""),
+                ("kept-matched", TGIDX_VALUE, INSERT_SEQ),
+                ("dropped-matched", TGIDX_VALUE, ""),
+            ],
+            anchor_length,
+        )
+        monkeypatch.setattr(read_preparer, "WORKER_PREPARER", preparer)
+
+        outcomes, _ = read_preparer.prepare_read_batch(r1_records)
+
+        assert_that(outcomes).is_length(len(r1_records))
+        assert_that([outcome is None for outcome in outcomes]).is_equal_to(
+            [False, True, False, True]
+        )
+
+    def test_batch_counts_reconcile_over_a_batch_carrying_drops(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fold a worker hands back carries the drops, and still reconciles.
+
+        The parent adds one of these per batch into the run's running totals, so
+        a batch whose own three terms do not reconcile makes every total after it
+        wrong. Asserted on the batch's own counts rather than after a fold, so a
+        failure names the worker rather than the accumulator.
+        """
+        preparer = build_preparer()
+        anchor_length = preparer.tgidx_right_anchor.length
+        r1_records, _ = make_prepare_records_with_inserts(
+            [
+                ("kept-unmatched", None, INSERT_SEQ),
+                ("dropped-unmatched", None, ""),
+                ("kept-matched", TGIDX_VALUE, INSERT_SEQ),
+                ("dropped-matched", TGIDX_VALUE, ""),
+            ],
+            anchor_length,
+        )
+        monkeypatch.setattr(read_preparer, "WORKER_PREPARER", preparer)
+
+        _, counts = read_preparer.prepare_read_batch(r1_records)
+
+        assert_that(counts.total).is_equal_to(len(r1_records))
+        assert_that(counts.insert_not_sequenced).is_equal_to(2)
+        assert_that(counts.unmatched).is_equal_to(1)
+        assert_that(dict(counts.target_counts)).is_equal_to({TGIDX_VALUE: 1})
+        assert_that(
+            counts.unmatched + sum(counts.target_counts.values()) + counts.insert_not_sequenced
+        ).is_equal_to(counts.total)
+
+    def test_the_strict_zip_the_driver_uses_pairs_a_batch_carrying_drops_with_its_r2_half(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The driver's own pairing, run here: strict, and over a batch with drops in it.
+
+        `zip(outcomes, r2_batch, strict=True)` raises the moment the two lengths
+        disagree, which is the guarantee the sidecar's whole design rests on and
+        which must survive reads being dropped. Running the same zip here pins
+        that guarantee at the worker's own boundary, and reads the mates back out
+        of the `None` slots so a list that merely happened to be the right length
+        while being shifted along by one could not pass.
+        """
+        preparer = build_preparer()
+        anchor_length = preparer.tgidx_right_anchor.length
+        ids_targets_and_inserts = [
+            ("kept-first", None, INSERT_SEQ),
+            ("dropped-here", None, ""),
+            ("kept-last", TGIDX_VALUE, INSERT_SEQ),
+        ]
+        r1_records, r2_records = make_prepare_records_with_inserts(
+            ids_targets_and_inserts, anchor_length
+        )
+        monkeypatch.setattr(read_preparer, "WORKER_PREPARER", preparer)
+
+        outcomes, _ = read_preparer.prepare_read_batch(r1_records)
+        paired = list(zip(outcomes, r2_records, strict=True))
+
+        assert_that(paired).is_length(len(ids_targets_and_inserts))
+        assert_that(
+            [ReadAnnotation.parse(r2[0]).read_id for outcome, r2 in paired if outcome is None]
+        ).is_equal_to(["dropped-here"])
+
+
+class TestReadPreparerDropsKeepTheArmsInRegister:
+    """Whole `prepare_reads()` runs whose input carries reads with no sequenced insert.
+
+    A drop is not only a read that goes unwritten. The scRNA arm writes R1, its
+    R2 mate and a synthesized barcodes record in one call with no branch between
+    them, and STARsolo consumes that triple positionally, so a read dropped from
+    one file and not the other two would put every read behind it against the
+    wrong cell barcode -- a far worse failure than the zero-length record this
+    change exists to stop. Skipping the whole write is what takes all three down
+    together, and these runs read the three files back to prove it rather than
+    trusting that they were written from one call.
+
+    The run-level artefacts are checked here too, because each of them is read by
+    something that must not learn about the new outcome: `detected_targets.txt`
+    sizes a downstream consumer's arm fan-out and must name no token for reads
+    that reached no arm, while the General Statistics payload is where the count
+    has to surface, bounded so its colour ramp can fire at a rate this small.
+    """
+
+    def test_a_dropped_read_reaches_none_of_the_unmatched_arms_three_files(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """A run of kept, dropped, kept writes the two kept ids to all three files, in order.
+
+        Read back per file rather than pooled, and compared as an ordered list
+        rather than a set, because the failure this guards against is positional:
+        three files that each hold two records but pair the barcodes of one read
+        with the cDNA of another would satisfy any count- or membership-based
+        assertion while being completely wrong.
+        """
+        chemistry = ChemistryTwoTargets()
+        anchor_length = chemistry.tgidx_right_anchor().length
+        kept_ids = ["kept-before", "kept-after"]
+        dropped_id = "unsequenced"
+        r1_records, r2_records = make_prepare_records_with_inserts(
+            [
+                (kept_ids[0], None, INSERT_SEQ),
+                (dropped_id, None, ""),
+                (kept_ids[1], None, INSERT_SEQ),
+            ],
+            anchor_length,
+        )
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        stats = preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        for path in (
+            none_r1_path(tmp_path, OUT_PREFIX),
+            none_r2_path(tmp_path, OUT_PREFIX),
+            none_barcodes_path(tmp_path, OUT_PREFIX),
+        ):
+            assert_that(written_read_ids(path)).is_equal_to(kept_ids)
+            assert_that(written_read_ids(path)).does_not_contain(dropped_id)
+
+        assert_that(stats.total_reads).is_equal_to(len(r1_records))
+        assert_that(stats.unmatched_written).is_equal_to(len(kept_ids))
+        assert_that(stats.insert_not_sequenced).is_equal_to(1)
+
+    def test_a_run_dropping_on_both_arms_writes_neither_read_and_still_reconciles(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """Both arms drop, both keep, and the three terms still add up to the reads read.
+
+        Driven at a batch size that splits the run, so the drops do not all land
+        in one worker's batch and the per-batch folds have to carry the new term
+        as well as the per-read guard.
+        """
+        chemistry = ChemistryTwoTargets()
+        target_a, _ = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        r1_records, r2_records = make_prepare_records_with_inserts(
+            [
+                ("u-kept", None, INSERT_SEQ),
+                ("u-dropped", None, ""),
+                ("m-kept", target_a, INSERT_SEQ),
+                ("m-dropped", target_a, ""),
+            ],
+            anchor_length,
+        )
+        preparer = build_full_run_preparer(
+            r1_records, r2_records, chemistry=chemistry, batch_size=2
+        )
+
+        stats = preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        assert_that(written_read_ids(none_r1_path(tmp_path, OUT_PREFIX))).is_equal_to(["u-kept"])
+        assert_that(written_read_ids(target_r1_path(tmp_path, OUT_PREFIX, target_a))).is_equal_to(
+            ["m-kept"]
+        )
+        assert_that(written_read_ids(target_r2_path(tmp_path, OUT_PREFIX, target_a))).is_equal_to(
+            ["m-kept"]
+        )
+
+        assert_that(stats.insert_not_sequenced).is_equal_to(2)
+        assert_that(
+            stats.unmatched_written + stats.matched_written + stats.insert_not_sequenced
+        ).is_equal_to(stats.total_reads)
+
+    def test_prepare_stats_from_a_run_with_drops_reconciles_and_matches_the_report_on_disk(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """The returned stats carry the drops, reconcile, and are what the file says.
+
+        The run's own composition is asserted first and in full -- two reads kept,
+        two dropped, one of each per arm -- because everything after it is an
+        equality between two things the run produced, and two identically wrong
+        renderings satisfy those. A stage that dropped nothing would still
+        reconcile, still write a report matching its own stats, and still render
+        the rejected line, only at zero, so the count itself is what has to be
+        named.
+        """
+        chemistry = ChemistryTwoTargets()
+        target_a, _ = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        r1_records, r2_records = make_prepare_records_with_inserts(
+            [
+                ("u-kept", None, INSERT_SEQ),
+                ("u-dropped", None, ""),
+                ("m-kept", target_a, INSERT_SEQ),
+                ("m-dropped", target_a, ""),
+            ],
+            anchor_length,
+        )
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        stats = preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        report_on_disk = strip_report_run_details(
+            prepare_stats_path(tmp_path, OUT_PREFIX).read_text()
+        )
+
+        assert_that(stats.total_reads).is_equal_to(len(r1_records))
+        assert_that(stats.insert_not_sequenced).is_equal_to(2)
+        assert_that(stats.unmatched_written).is_equal_to(1)
+        assert_that(stats.matched_written).is_equal_to(1)
+        assert_that(
+            stats.unmatched_written + stats.matched_written + stats.insert_not_sequenced
+        ).is_equal_to(stats.total_reads)
+        assert_that(report_on_disk).is_equal_to(strip_report_run_details(stats.get_report()))
+        assert_that(report_on_disk).contains("Rejected (insert_not_sequenced): 2 ")
+
+    def test_detected_targets_from_a_run_with_drops_is_identical_to_the_same_run_without_them(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """A dropped read leaves no trace in the file a consumer sizes its fan-out from.
+
+        The same run is performed twice, once with two reads whose insert was
+        never sequenced added to it and once without them, and the two files are
+        compared whole. That is a stronger statement than checking the tokens
+        against a list: it catches a new token, a changed count on an existing
+        token and a reordering alike, and it does so without this test having to
+        restate what the file is supposed to contain. A phantom token here would
+        have a consumer size work for an output file that does not exist.
+        """
+        chemistry = ChemistryTwoTargets()
+        target_a, _ = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        kept_reads = [("u-kept", None, INSERT_SEQ), ("m-kept", target_a, INSERT_SEQ)]
+        with_drops = [
+            kept_reads[0],
+            ("u-dropped", None, ""),
+            kept_reads[1],
+            ("m-dropped", target_a, ""),
+        ]
+
+        rendered: dict[str, str] = {}
+        for label, composition in (("with_drops", with_drops), ("without_drops", kept_reads)):
+            output_dir = tmp_path / label
+            output_dir.mkdir()
+            r1_records, r2_records = make_prepare_records_with_inserts(composition, anchor_length)
+            preparer = build_full_run_preparer(
+                r1_records,
+                r2_records,
+                r1_name=f"{label}.r1.fastq.gz",
+                r2_name=f"{label}.r2.fastq.gz",
+                chemistry=chemistry,
+            )
+            preparer.prepare_reads(output_dir=str(output_dir), prefix=OUT_PREFIX)
+            rendered[label] = detected_targets_path(output_dir, OUT_PREFIX).read_text()
+
+        assert_that(rendered["with_drops"]).is_equal_to(rendered["without_drops"])
+        assert_that(
+            {detected_token(line) for line in rendered["with_drops"].splitlines()}
+        ).is_subset_of({NO_TARGET, *chemistry.tgidx_whitelist()})
+
+    def test_general_stats_payload_from_a_run_with_drops_carries_the_bounded_column(
+        self, build_full_run_preparer: Callable[..., ReadPreparer], tmp_path: Path
+    ) -> None:
+        """The drop count surfaces in MultiQC, as a percentage on a ramp bounded at one.
+
+        End to end rather than off a hand-built stats object, because this is the
+        only place the whole chain is exercised at once: a run drops reads, the
+        tallies carry the drops out of the pool, and the payload written to disk
+        is what a reader of the report actually sees. The column's ceiling is
+        read back with it: the value stays on the same 0-100 scale as its
+        neighbours, and bounding the ramp at one is what gives a metric that is
+        pathological at one read in half a million any colour resolution at all.
+
+        The percentage is asserted against the run's known composition rather
+        than against the stats object the same run returned, because a stage that
+        dropped nothing would agree with itself at zero and satisfy that
+        comparison exactly.
+        """
+        chemistry = ChemistryTwoTargets()
+        target_a, _ = TWO_TARGET_WHITELIST
+        anchor_length = chemistry.tgidx_right_anchor().length
+        r1_records, r2_records = make_prepare_records_with_inserts(
+            [
+                ("u-kept", None, INSERT_SEQ),
+                ("u-dropped", None, ""),
+                ("m-kept", target_a, INSERT_SEQ),
+                ("m-dropped", target_a, ""),
+            ],
+            anchor_length,
+        )
+        preparer = build_full_run_preparer(r1_records, r2_records, chemistry=chemistry)
+
+        stats = preparer.prepare_reads(output_dir=str(tmp_path), prefix=OUT_PREFIX)
+
+        payload = json.loads(prepare_general_stats_mqc_path(tmp_path, OUT_PREFIX).read_text())
+        column = next(
+            entry["pct_insert_not_sequenced"]
+            for entry in payload["pconfig"]
+            if "pct_insert_not_sequenced" in entry
+        )
+
+        dropped = 2
+        assert_that(stats.insert_not_sequenced).is_equal_to(dropped)
+        assert_that(payload["data"][OUT_PREFIX]).contains_key("pct_insert_not_sequenced")
+        assert_that(payload["data"][OUT_PREFIX]["pct_insert_not_sequenced"]).is_close_to(
+            dropped / len(r1_records) * 100, 1e-9
+        )
+        assert_that(column).contains_entry({"min": 0}, {"max": 1}, {"suffix": "%"})
+
+
 PREPARE_POOL_WORKERS = 3
 PREPARE_POOL_BATCH_SIZE = 2
 
@@ -2539,9 +3465,9 @@ class TestReadPreparerModuleWorkerPlumbing:
         preparer = build_preparer()
         anchor = preparer.tgidx_right_anchor
         reads = [
-            build_read("u1", {}, "A" * 20),
+            build_read("u1", {"UMI_POS": DEFAULT_UMI_SPAN}, "A" * 20),
             build_matched_read("m1", TGIDX_VALUE, 30, "N" * anchor.length + INSERT_SEQ),
-            build_read("u2", {"TGIDX": NO_TARGET}, "A" * 20),
+            build_read("u2", {"UMI_POS": DEFAULT_UMI_SPAN, "TGIDX": NO_TARGET}, "A" * 20),
         ]
         monkeypatch.setattr(read_preparer, "WORKER_PREPARER", preparer)
 

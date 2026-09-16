@@ -4,11 +4,14 @@ Holds the tallies that summarise a prepare-reads run and render both of the run'
 plain-text outputs, mirroring the assign-targets and UMI modules'
 ``assign_reporting``/``umi_reporting``: the human-readable ``prepare_stats.txt``
 report, and the machine-readable ``detected_targets.txt`` list of the arms and
-buckets that actually received reads. Unlike those stages, this stage never
-filters: every input read is dispatched to exactly one output arm - the scRNA
-(``TGIDX=NONE``) arm, or one scTIP target bucket - so ``total_reads`` is the
-denominator throughout, including for the per-target distribution, rather than
-just for the unmatched count.
+buckets that actually received reads. This stage dispatches every input read to
+one of two output arms - the scRNA (``TGIDX=NONE``) arm, or one scTIP target
+bucket - and filters in exactly one case: a read whose computed insert start
+reaches the end of the read has no insert left to write, so it is counted as
+``insert_not_sequenced`` and written to no arm at all. ``total_reads`` is
+therefore still the denominator throughout, including for the per-target
+distribution, rather than just for the unmatched count, and the reconciling
+invariant carries three terms rather than two.
 
 ``PrepareCounts`` is the mutable accumulator those tallies are gathered in
 while a run streams, and ``PrepareStats`` is the frozen value object it
@@ -34,15 +37,19 @@ class PrepareStats:
         unmatched_written: Reads written to the scRNA arm (``TGIDX=NONE``).
         target_written: Mapping of scTIP target to the number of reads written
             to that target's bucket.
+        insert_not_sequenced: Reads written to no arm because the computed
+            insert start reached the end of the read.
 
-    By construction ``unmatched_written + sum(target_written.values())``
-    always equals ``total_reads``: this stage never filters, so reads written
-    equals reads read.
+    By construction ``unmatched_written + sum(target_written.values()) +
+    insert_not_sequenced`` always equals ``total_reads``: a read is written to
+    exactly one arm, or dropped for having no sequenced insert and counted
+    here, and nothing else can happen to it.
     """
 
     total_reads: int
     unmatched_written: int
     target_written: dict[str, int]
+    insert_not_sequenced: int
 
     @staticmethod
     def fraction(numerator: int, denominator: int) -> float:
@@ -64,8 +71,9 @@ class PrepareStats:
 
         Returns:
             A plain-text report carrying the run details, the literal
-            reconciling invariant, the unmatched / matched counts as fractions
-            of ``total_reads``, and the per-target distribution.
+            reconciling invariant, the unmatched / matched counts and the count
+            of reads dropped for having no sequenced insert as fractions of
+            ``total_reads``, and the per-target distribution.
         """
         run_time = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
         report = f"# Carmack version: {carmack_version}\n"
@@ -81,6 +89,14 @@ class PrepareStats:
             f"Matched (scTIP arms): {self.matched_written} "
             f"({self.fraction(self.matched_written, self.total_reads):.2%})\n"
         )
+        # Rendered even at zero, in the rejected vocabulary the sibling stages
+        # already use: a reader of a healthy run's report can then tell "no read
+        # was dropped" from "this build does not check", which is the ambiguity
+        # that let zero-length records reach a consumer unnoticed.
+        report += (
+            f"Rejected (insert_not_sequenced): {self.insert_not_sequenced} "
+            f"({self.fraction(self.insert_not_sequenced, self.total_reads):.2%})\n"
+        )
         report += self.target_section()
         return report
 
@@ -91,16 +107,28 @@ class PrepareStats:
         report can check the invariant by eye rather than infer it from the
         numbers alone. Emitted before the counts so the formula is read before
         the numbers it reconciles.
+
+        Three terms, not two: a read is written to the scRNA arm, written to a
+        target bucket, or dropped for having no sequenced insert, and nothing
+        else can happen to it. The formula outgrew the line length once the
+        third term was added, so it is held here as two concatenated literals;
+        that is a detail of the source and never reaches the file, which carries
+        the formula on one line for a reader checking it against the counts
+        below it.
         """
-        return "# unmatched_written + sum(target_written.values()) == total_reads\n"
+        return (
+            "# unmatched_written + sum(target_written.values()) "
+            "+ insert_not_sequenced == total_reads\n"
+        )
 
     def target_section(self) -> str:
         """Render the per-target distribution over every read the run saw.
 
         Entries are sorted by target name rather than by count, so two runs of
         the same chemistry line up row for row when diffed. Unlike
-        assign-targets' equivalent section, this stage never filters, so every
-        row's denominator is ``total_reads``, not ``matched_written``. The
+        assign-targets' equivalent section, every row's denominator is
+        ``total_reads`` - every read the run saw, including the few dropped for
+        having no sequenced insert - rather than ``matched_written``. The
         heading is always rendered, even with no targets at all, so a
         scRNA-only chemistry's report still names the (empty) section.
         """
@@ -129,6 +157,11 @@ class PrepareStats:
         tallies are already held here, so carrying them gives that consumer a
         contract that only moves when the buckets themselves do.
 
+        A read dropped for having no sequenced insert reached no arm, so it is
+        named by no token here and moves no count: that omission is deliberate,
+        because the consumer that sizes its arm fan-out from this file would
+        otherwise size work for an output that does not exist.
+
         Targets are sorted by name, the order :meth:`target_section` renders them
         in, so the two agree on the order of the targets they share. A target
         carrying a zero count is treated as undetected, exactly like one absent
@@ -149,19 +182,37 @@ class PrepareStats:
         return "".join(f"{token}\t{count}\n" for token, count in detected)
 
     def to_mqc_general_stats(self, prefix: str) -> dict[str, Any]:
-        """Render a MultiQC generalstats payload of the run's unmatched and matched percentages.
+        """Render a MultiQC generalstats payload of the run's per-outcome percentages.
 
-        Reduces the run to the two percentages a generalstats table needs,
-        reusing :meth:`fraction` so these can never drift from the ones
-        :meth:`get_report` already prints.
+        Reduces the run to the three percentages a generalstats table needs -
+        the two arms a read can be written to, and the one outcome that reaches
+        neither - reusing :meth:`fraction` so these can never drift from the
+        ones :meth:`get_report` already prints.
+
+        ``pct_insert_not_sequenced`` is bounded at ``max: 1`` where its two
+        neighbours take the convention's ``100``, and that is a statement about
+        colour rather than about units. The value stays ``fraction(...) * 100``,
+        on the same 0-100 percentage scale every sibling column carries;
+        ``max`` is the colour ramp's ceiling in those same units, so it
+        rescales the colour and not the number. Spanning the ramp over 0-1% is
+        what gives a metric that is pathological at one read in half a million
+        its resolution over the range it actually varies in: against the
+        conventional 0-100 every healthy library sits in the bottom thousandth
+        of the scale and renders in one flat colour, saying nothing the
+        column's absence would not also have said. ``format`` is deliberately
+        left at the sibling convention's ``{:,.2f}``, so the cell still prints
+        ``0.00%`` at that rate - what the bound buys is that the cell is no
+        longer flat-coloured, and the exact integer is one line away in
+        ``prepare_stats.txt``.
 
         Args:
             prefix: Key the per-run section of ``data`` is filed under, so a
                 caller reporting several runs can tell them apart.
 
         Returns:
-            A MultiQC custom content payload carrying ``pct_unmatched`` and
-            ``pct_matched`` as percentages of ``total_reads``. ``namespace`` is
+            A MultiQC custom content payload carrying ``pct_unmatched``,
+            ``pct_matched`` and ``pct_insert_not_sequenced`` as percentages of
+            ``total_reads``. ``namespace`` is
             what attributes those columns to Carmack, and the only key that can:
             the custom content parser branches on the generalstats plot type and
             returns before it reads ``parent_id``, so the parent keys that nest
@@ -207,11 +258,38 @@ class PrepareStats:
                         "scale": "RdYlGn",
                     }
                 },
+                # Scaled like the sibling stages' reject columns rather than
+                # like either column above: those two count legitimate
+                # destinations, so neither of their ramps can stand in for one
+                # counting reads that were thrown away.
+                {
+                    "pct_insert_not_sequenced": {
+                        "title": "% Unsequenced Insert",
+                        "description": (
+                            "Percentage of reads dropped because the anchor run reached the end "
+                            "of the read, leaving no insert to write. On 2-colour chemistry an "
+                            "unsequenced tail reads as the anchor base, so these are clusters "
+                            "that died before the insert, not empty library fragments. The scan "
+                            "behind this number bridges a single interrupting base, so this "
+                            "count can exceed the extract-umis anchor-run distribution's count "
+                            "at the saturating run length, which is measured unbridged."
+                        ),
+                        "min": 0,
+                        "max": 1,
+                        "suffix": "%",
+                        "format": "{:,.2f}",
+                        "scale": "YlOrRd",
+                    }
+                },
             ],
             "data": {
                 prefix: {
                     "pct_unmatched": self.fraction(self.unmatched_written, self.total_reads) * 100,
                     "pct_matched": self.fraction(self.matched_written, self.total_reads) * 100,
+                    "pct_insert_not_sequenced": self.fraction(
+                        self.insert_not_sequenced, self.total_reads
+                    )
+                    * 100,
                 }
             },
         }
@@ -255,11 +333,15 @@ class PrepareStats:
             "section_name": "Prepare Reads Output Arm Distribution",
             "description": (
                 "Read counts per output arm: one category per scTIP target bucket, plus "
-                "the scRNA arm. This stage never filters, so the categories partition "
-                "every read the run saw and the denominator is the whole run, unlike "
-                "assign-targets' target distribution, which is a fraction of matched "
-                "reads alone. These are the arms reads were actually written to, not a "
-                "record of what the target index matched."
+                "the scRNA arm. The categories are the arms reads were written to, so "
+                "they sum to the reads the run wrote rather than to every read it saw: "
+                "a read dropped for having no sequenced insert reached no arm, and is "
+                "reported by the insert_not_sequenced column in the General Statistics "
+                "table and by the stats report rather than as a bar here. Every arm the "
+                "run wrote to is counted, unlike assign-targets' target distribution, "
+                "which is a fraction of matched reads alone. These are the arms reads "
+                "were actually written to, not a record of what the target index "
+                "matched."
             ),
             "pconfig": {
                 "id": "carmack_prepare_target_distribution_plot",
@@ -284,11 +366,14 @@ class PrepareCounts:
     Attributes:
         total: Reads tallied.
         unmatched: Reads written to the scRNA arm.
+        insert_not_sequenced: Reads written to no arm because the computed
+            insert start reached the end of the read.
         target_counts: Reads written per scTIP target bucket.
     """
 
     total: int = 0
     unmatched: int = 0
+    insert_not_sequenced: int = 0
     target_counts: Counter[str] = field(default_factory=Counter)
 
     def add(self, other: "PrepareCounts") -> None:
@@ -300,6 +385,7 @@ class PrepareCounts:
         """
         self.total += other.total
         self.unmatched += other.unmatched
+        self.insert_not_sequenced += other.insert_not_sequenced
         # Counter.update ADDS counts, where dict.update would overwrite them.
         # Overwriting would silently lose every count an earlier batch
         # recorded for a key a later batch also saw, leaving only the last
@@ -320,4 +406,5 @@ class PrepareCounts:
             total_reads=self.total,
             unmatched_written=self.unmatched,
             target_written=dict(self.target_counts),
+            insert_not_sequenced=self.insert_not_sequenced,
         )

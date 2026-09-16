@@ -48,6 +48,18 @@ BC3_SEQ = "GGGGGGGGGG"
 # The keys a bundled UMI payload would have nested its charts under.
 UMI_BUNDLE_KEYS = ("general_stats", "breakdown")
 
+# The words to_mqc_anchor_run's description has to carry. One phenomenon is counted
+# twice in one report: this distribution measures the anchor tract with a scan that
+# stops at the first non-anchor base, while prepare-reads finds the insert boundary
+# with one that walks through a single interrupting base, so prepare-reads' count of
+# reads whose insert was never sequenced can exceed the reads in this distribution's
+# saturating bin. Neither scan moves, so the description is what makes the difference
+# legible where the two numbers are read. ``unbridged`` is the negative form and
+# ``bridges``, pinned on prepare-reads' own column description, is the affirmative
+# one; neither is a substring of the other, so neither description can pass by making
+# the claim that belongs to the other.
+ANCHOR_RUN_SCAN_WORDS = ("unbridged", "interrupt", "insert_not_sequenced", "exceed")
+
 
 def make_read_header(
     read_id: str,
@@ -648,6 +660,37 @@ class TestUmiExtractionStatsMqcReporting:
         payload = stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)
 
         assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to({3: 1, 4: 2})
+
+    def test_to_mqc_anchor_run_description_says_its_scan_does_not_bridge_an_interruption(
+        self,
+    ) -> None:
+        """The anchor-run description states that this distribution is measured unbridged.
+
+        The scan behind these bins stops at the first non-anchor base, so a single
+        sequencing error inside the tract files the read under a shorter run than the
+        tract really has. Prepare-reads walks the same tract with a scan that bridges
+        exactly one such base, so the reads it drops for having no sequenced insert can
+        outnumber the reads this distribution puts in its saturating bin - two counts of
+        one phenomenon, in one report, differing for a reason that is invisible from the
+        numbers alone.
+
+        Neither scan moves; the description is what makes the difference legible where
+        the numbers are read, so the wording is pinned rather than left to the design
+        document that argued for it.
+        """
+        stats = TestUmiExtractionStatsReport.build(
+            total_reads=3,
+            accepted=3,
+            missing_left_anchor=0,
+            truncated=0,
+            homopolymer_base="G",
+            homopolymer_run_counts={3: 1, 4: 2},
+        )
+
+        payload = stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)
+
+        assert_that(payload).is_not_none()
+        assert_that(str(payload["description"])).contains_ignoring_case(*ANCHOR_RUN_SCAN_WORDS)
 
     def test_to_mqc_anchor_run_returns_none_when_run_counts_are_empty(self) -> None:
         """The dataclass default homopolymer_run_counts is an empty dict, not a Counter."""
