@@ -31,11 +31,21 @@ with no matched read must not leave an empty chart behind. The one shape that
 looks broken and is not is a payload whose ``data`` maps a sample to an empty
 mapping: the top-level ``data`` is there, MultiQC renders it, and
 assign-targets emits exactly that for a run in which nothing matched.
+
+``linegraph_xy_pairs`` is the other shared rule this module states, and it is
+about the shape of a linegraph's ``data`` rather than the file around it.
+MultiQC's custom-content linegraph path reads a ``data`` mapping as
+string-keyed and sorts it lexically, so a distribution reaching 10 draws its
+line as 0, 1, 10, 11, 2, 3 and zigzags. Sorting the mapping inside carmack
+cannot fix that, because the sort that decides the axis happens after carmack
+has handed the payload over. A list of ``[x, y]`` pairs takes the other branch:
+MultiQC recognises it by type and builds the mapping itself, keeping the x
+values numeric. These tests pin the properties that branch depends on.
 """
 
 import json
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +55,12 @@ from assertpy import assert_that
 from carmack.assign_targets.assign_reporting import AssignStats
 from carmack.barcode.extraction_dataclasses import MatchMethod
 from carmack.barcode.extraction_reporting import ExtractionStats, OverallStats, PerBarcodeStats
-from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME, write_mqc_payloads
+from carmack.mqc_report import (
+    CARMACK_PARENT_ID,
+    CARMACK_PARENT_NAME,
+    linegraph_xy_pairs,
+    write_mqc_payloads,
+)
 from carmack.prepare_reads.prepare_reporting import PrepareStats
 from carmack.umi.umi_reporting import UmiExtractionStats
 
@@ -79,7 +94,7 @@ def renderable_payload(payload_id: str) -> dict[str, object]:
         "plot_type": "linegraph",
         "parent_id": CARMACK_PARENT_ID,
         "parent_name": CARMACK_PARENT_NAME,
-        "data": {SAMPLE_PREFIX: {"0": 1200, "1": 340, "2": 56}},
+        "data": {SAMPLE_PREFIX: [[0, 1200], [1, 340], [2, 56]]},
     }
 
 
@@ -221,6 +236,88 @@ class TestCarmackParentConstants:
     def test_carmack_parent_name_is_carmack(self) -> None:
         """Test that CARMACK_PARENT_NAME is exactly the capitalised display name."""
         assert_that(CARMACK_PARENT_NAME).is_equal_to("Carmack")
+
+
+class TestLinegraphXyPairs:
+    """``linegraph_xy_pairs``: the one ``data`` shape MultiQC reads on a numeric x axis.
+
+    Every linegraph builder in carmack hands its counter to this helper, so the
+    rule lives here once rather than four times. The pairs come back sorted
+    ascending by x, which is the order the mapping shape could never get,
+    because MultiQC re-sorted it downstream as strings.
+    """
+
+    def test_linegraph_xy_pairs_orders_pairs_ascending_by_x(self) -> None:
+        """Test that out-of-order counts come back ordered numerically by x.
+
+        The x values have to reach 10 for numeric and lexical order to diverge
+        at all: a distribution stopping at 9 sorts identically either way and
+        would pass against the broken mapping shape as readily as the fixed
+        one. This is the case the rendered report actually got wrong.
+        """
+        pairs = linegraph_xy_pairs({10: 5, 2: 7, 1: 9})
+
+        assert_that(pairs).is_equal_to([[1, 9], [2, 7], [10, 5]])
+
+    def test_linegraph_xy_pairs_returns_a_list_of_lists_not_tuples(self) -> None:
+        """Test that the result is a list whose every element is a two-element ``list``.
+
+        MultiQC decides it has been handed pairs with ``isinstance(x_to_y[0],
+        list)``, so a tuple fails that check in memory and the payload silently
+        falls back to the mapping path. Serialising hides the difference, since
+        a tuple round-trips through JSON as an array, so the type has to be
+        pinned here, in the process that builds it.
+        """
+        pairs = linegraph_xy_pairs(Counter({3: 1, 4: 2}))
+
+        assert_that(pairs).is_instance_of(list)
+        for pair in pairs:
+            assert_that(pair).described_as(f"{pair!r}").is_type_of(list)
+            assert_that(isinstance(pair, tuple)).described_as(f"{pair!r} is a tuple").is_false()
+            assert_that(pair).is_length(2)
+
+    def test_linegraph_xy_pairs_keeps_x_and_y_as_ints(self) -> None:
+        """Test that both members of a pair stay ``int``.
+
+        The whole point of the pair shape is that MultiQC stops coercing the x
+        values to strings, so a helper that handed back floats or strings of
+        its own accord would give up the axis it was written to protect.
+        """
+        pairs = linegraph_xy_pairs({12: 4})
+
+        assert_that(pairs[0][0]).is_instance_of(int)
+        assert_that(pairs[0][1]).is_instance_of(int)
+
+    @pytest.mark.parametrize(
+        "counts",
+        [{3: 6, 5: 1, 4: 2}, Counter({3: 6, 5: 1, 4: 2})],
+        ids=["plain-dict", "counter"],
+    )
+    def test_linegraph_xy_pairs_accepts_a_plain_dict_and_a_counter(
+        self, counts: Mapping[int, int]
+    ) -> None:
+        """Test that both call shapes present in the callers are accepted.
+
+        Two of the four builders hold a plain ``dict`` on a frozen stats object
+        and the other two hold a ``Counter``, so the helper is typed on the
+        mapping they have in common rather than on either concrete type.
+        """
+        assert_that(linegraph_xy_pairs(counts)).is_equal_to([[3, 6], [4, 2], [5, 1]])
+
+    def test_linegraph_xy_pairs_raises_on_an_empty_mapping(self) -> None:
+        """Test that an empty mapping raises rather than returning an empty pair list.
+
+        An empty list is the one input MultiQC cannot survive: it reaches for
+        ``x_to_y[0]`` without guarding it, raises ``IndexError``, and loses the
+        entire report rather than the one section. Every caller guards its
+        counter before calling, so this is unreachable today; it exists so a
+        builder written later that forgets the guard fails loudly inside
+        carmack instead of taking the whole report down with it.
+        """
+        with pytest.raises(ValueError) as error:
+            linegraph_xy_pairs({})
+
+        assert_that(str(error.value)).is_not_empty()
 
 
 class TestWriteMqcPayloadsFilenames:

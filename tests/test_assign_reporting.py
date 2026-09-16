@@ -37,8 +37,16 @@ from tests.utils import strip_report_run_details
 # A whitelist entry seen three times, one seen twice, one seen once. They are
 # deliberately supplied out of lexical order so the report's sorting is tested.
 TARGET_COUNTS = {"GGGGCCCC": 2, "ACGTACGT": 3, "TTTTAAAA": 1}
+# Both distributions are deliberately out of ascending key order. The linegraph
+# payloads they feed have to come out sorted by x whatever order they went in, so
+# tidying these into ascending order would make those assertions pass on an
+# unsorted payload and stop testing the thing they exist to test.
 EDIT_DISTANCE_COUNTS = {2: 1, 0: 3, 1: 2}
 RUN_COUNTS = {5: 1, 3: 6, 4: 2}
+
+# The same two distributions as MultiQC has to receive them: ascending [x, y] pairs.
+EDIT_DISTANCE_PAIRS = [[0, 3], [1, 2], [2, 1]]
+RUN_PAIRS = [[3, 6], [4, 2], [5, 1]]
 
 RUN_DETAIL_LINES = 2
 VERSION_PREFIX = "# Carmack version:"
@@ -558,10 +566,28 @@ class TestAssignStatsMqcReporting:
         assert_that(payload["plot_type"]).is_equal_to("linegraph")
 
     def test_to_mqc_edit_distance_data_matches_edit_distance_counts(self) -> None:
-        """Test that the edit-distance data holds the plain dict as-is, with no Counter-summing needed."""
+        """Test that the edit-distance data holds every count, as pairs ascending by x.
+
+        The counts go in out of ascending order, so this also pins the sort:
+        MultiQC reads a ``data`` mapping's keys as strings and re-sorts them
+        lexically, and only the pair shape keeps the axis numeric.
+        """
         payload = make_stats().to_mqc_edit_distance(self.SAMPLE_PREFIX)
 
-        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(dict(EDIT_DISTANCE_COUNTS))
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(EDIT_DISTANCE_PAIRS)
+
+    def test_to_mqc_edit_distance_data_is_a_list_of_pairs_not_a_mapping(self) -> None:
+        """Test that the data is a list by type, which is how MultiQC tells the shapes apart.
+
+        MultiQC branches on ``isinstance(x_to_y[0], list)``, so a mapping -- or
+        a list of tuples -- takes the string-keyed path instead, and the chart
+        it draws is wrong rather than absent.
+        """
+        payload = make_stats().to_mqc_edit_distance(self.SAMPLE_PREFIX)
+        data = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(data).is_instance_of(list)
+        assert_that(data[0]).is_type_of(list)
 
     def test_to_mqc_edit_distance_returns_none_when_empty(self) -> None:
         """Test that a run with no edit-distance data returns None rather than an empty plot."""
@@ -577,10 +603,39 @@ class TestAssignStatsMqcReporting:
         assert_that(payload["plot_type"]).is_equal_to("linegraph")
 
     def test_to_mqc_anchor_run_data_matches_run_counts(self) -> None:
-        """Test that the anchor-run data holds the run-length distribution for the prefix."""
+        """Test that the anchor-run data holds the run-length distribution as ascending pairs.
+
+        The run counts go in out of ascending order, so the ordering here comes
+        from the payload builder's sort rather than from the order the fixture
+        happened to list them in.
+        """
         payload = make_stats().to_mqc_anchor_run(self.SAMPLE_PREFIX)
 
-        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(dict(RUN_COUNTS))
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(RUN_PAIRS)
+
+    def test_to_mqc_anchor_run_data_is_a_list_of_pairs_not_a_mapping(self) -> None:
+        """Test that the data is a list by type, not a mapping MultiQC would key by string."""
+        payload = make_stats().to_mqc_anchor_run(self.SAMPLE_PREFIX)
+        data = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(data).is_instance_of(list)
+        assert_that(data[0]).is_type_of(list)
+
+    def test_to_mqc_anchor_run_orders_double_digit_run_lengths_numerically(self) -> None:
+        """Test that a run length of 10 or more sorts after 9, not between 1 and 2.
+
+        Anchor runs are the distribution that reaches double digits in a real
+        run, and a lexical sort puts 10, 11 and 12 immediately after 1. That is
+        the zigzag the rendered report showed, so the regression needs a
+        distribution that straddles the boundary and arrives shuffled.
+        """
+        stats = make_stats(homopolymer_run_counts={12: 1, 3: 40, 10: 4, 9: 11, 11: 2})
+
+        payload = stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(
+            [[3, 40], [9, 11], [10, 4], [11, 2], [12, 1]]
+        )
 
     def test_to_mqc_anchor_run_returns_none_when_run_counts_are_empty(self) -> None:
         """Test that make_empty_stats' default homopolymer_run_counts ({}) yields None."""

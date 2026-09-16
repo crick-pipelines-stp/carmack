@@ -635,7 +635,7 @@ class TestUmiExtractionStatsMqcReporting:
         assert_that(payload["plot_type"]).is_equal_to("linegraph")
 
     def test_to_mqc_anchor_run_data_matches_run_counts(self) -> None:
-        """The anchor-run data holds the run-length distribution for the prefix."""
+        """The anchor-run data holds the run-length distribution as ascending [x, y] pairs."""
         stats = TestUmiExtractionStatsReport.build(
             total_reads=3,
             accepted=3,
@@ -647,7 +647,51 @@ class TestUmiExtractionStatsMqcReporting:
 
         payload = stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)
 
-        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to({3: 1, 4: 2})
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to([[3, 1], [4, 2]])
+
+    def test_to_mqc_anchor_run_data_is_a_list_of_pairs_not_a_mapping(self) -> None:
+        """The data is a list by type, which is how MultiQC tells a numeric x axis apart.
+
+        MultiQC branches on ``isinstance(x_to_y[0], list)``: a mapping, or a
+        list of tuples, takes the string-keyed path and the chart comes out
+        with a lexically sorted axis rather than not coming out at all.
+        """
+        stats = TestUmiExtractionStatsReport.build(
+            total_reads=3,
+            accepted=3,
+            missing_left_anchor=0,
+            truncated=0,
+            homopolymer_base="G",
+            homopolymer_run_counts={3: 1, 4: 2},
+        )
+
+        payload = stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)
+        data = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(data).is_instance_of(list)
+        assert_that(data[0]).is_type_of(list)
+
+    def test_to_mqc_anchor_run_orders_double_digit_run_lengths_numerically(self) -> None:
+        """A run length of 10 or more sorts after 9 rather than straight after 1.
+
+        Poly-G runs routinely reach double digits, and a lexically sorted axis
+        renders 0, 1, 10, 11, 2, 3 -- the zigzag the report showed. The counts
+        are supplied shuffled so the order can only have come from the sort.
+        """
+        stats = TestUmiExtractionStatsReport.build(
+            total_reads=30,
+            accepted=30,
+            missing_left_anchor=0,
+            truncated=0,
+            homopolymer_base="G",
+            homopolymer_run_counts={11: 3, 2: 12, 10: 6, 9: 9},
+        )
+
+        payload = stats.to_mqc_anchor_run(self.SAMPLE_PREFIX)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to(
+            [[2, 12], [9, 9], [10, 6], [11, 3]]
+        )
 
     def test_to_mqc_anchor_run_returns_none_when_run_counts_are_empty(self) -> None:
         """The dataclass default homopolymer_run_counts is an empty dict, not a Counter."""
