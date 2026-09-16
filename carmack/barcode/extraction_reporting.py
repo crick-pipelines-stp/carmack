@@ -18,7 +18,7 @@ from carmack.barcode.extraction_dataclasses import (
 )
 from carmack.barcode.matchers.matcher_base import MatcherBase
 from carmack.chemistry.read_component import ReadComponentType
-from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME, linegraph_xy_pairs
 
 
 @dataclass(frozen=True)
@@ -262,6 +262,9 @@ class ExtractionStats:
         """
         Build a MultiQC "linegraph" custom-content payload of the combined edit distance distribution.
 
+        The payload's ``data`` is pair-shaped rather than a mapping; see
+        :func:`carmack.mqc_report.linegraph_xy_pairs` for why.
+
         Args:
             prefix: Sample identifier used to key the payload's ``data`` section.
 
@@ -291,7 +294,7 @@ class ExtractionStats:
                 "xlab": "Edit distance",
                 "ylab": "Reads",
             },
-            "data": {prefix: dict(combined)},
+            "data": {prefix: linegraph_xy_pairs(combined)},
         }
 
 

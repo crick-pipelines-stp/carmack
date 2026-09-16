@@ -1,9 +1,17 @@
 """Shared helpers for writing MultiQC custom-content JSON payloads.
 
 Every reporting module under carmack builds its own MultiQC payloads inline --
-this module supplies only the two constants naming carmack's MultiQC parent
-section and the writer that puts finished payloads on disk, so each stage's
-reporting stays a sibling implementation rather than a subclass.
+this module supplies the two constants naming carmack's MultiQC parent section,
+the writer that puts finished payloads on disk, and the helper that shapes a
+linegraph's points, so each stage's reporting stays a sibling implementation
+rather than a subclass.
+
+``linegraph_xy_pairs`` earns its place here on the same grounds the constants
+do, rather than because four callers happen to want the same few lines. The
+shape a linegraph's ``data`` has to take is a fact about MultiQC's
+custom-content input contract, and that contract is identical for every stage
+carmack reports on; it is not a piece of any one stage's payload construction,
+the way the counter being plotted and the titles above it are.
 
 ``write_mqc_payloads`` is the writer a stage hands its finished payloads to.
 It gives each payload a file of its own because MultiQC reads one
@@ -26,6 +34,59 @@ CARMACK_PARENT_ID = "carmack"
 CARMACK_PARENT_NAME = "Carmack"
 
 
+def linegraph_xy_pairs(counts: Mapping[int, int]) -> list[list[int]]:
+    """Shape a numeric distribution into the ``[x, y]`` pairs MultiQC plots on a numeric axis.
+
+    A linegraph's ``data`` can be handed over as a mapping of x to y, and that
+    is the shape that looks natural in Python, but it is the shape that draws
+    the wrong line. JSON object keys are strings, and MultiQC's custom-content
+    linegraph path orders a mapping's keys lexically, so ``10`` sorts between
+    ``1`` and ``2`` and a distribution reaching double digits zigzags. Sorting
+    the mapping on carmack's side cannot help: the sort that decides the axis
+    happens downstream of the handover, after carmack has stopped having a say.
+    (MultiQC does compute a numeric coercion of the x values, but assigns it to
+    a rebound attribute while passing the pre-coercion object on to the plot,
+    so the line branch never sees it.)
+
+    A list of ``[x, y]`` pairs takes the other branch. It is a first-class
+    supported input shape that MultiQC recognises by type and builds the
+    mapping from itself, which keeps the x values numeric -- and keeps them
+    ``int`` rather than the floats the coercion would have produced.
+
+    The inner pairs are ``list`` and not ``tuple`` on purpose: MultiQC's
+    detection of the pair shape is ``isinstance(x_to_y[0], list)``, which a
+    tuple fails in memory even though JSON would round-trip it as an array.
+
+    The sorting is not what fixes the axis -- the shape is -- but it is done
+    here anyway so the emitted JSON reads in the order the plot draws it and
+    the payload on disk describes itself.
+
+    An empty mapping raises rather than returning an empty list, because an
+    empty pair list is the one input MultiQC cannot survive: it reaches for
+    ``x_to_y[0]`` unguarded, raises ``IndexError``, and takes down the entire
+    report rather than the one section. This is belt and braces -- every caller
+    guards its counter and returns ``None`` before reaching here, so it is
+    unreachable today -- and it exists so that a builder written later that
+    forgets its guard fails loudly and attributably inside carmack instead of
+    as a MultiQC crash, which is the same bargain ``write_mqc_payloads``
+    already strikes.
+
+    Args:
+        counts: Observed y value per integer x value, in any order.
+
+    Returns:
+        One ``[x, y]`` list per entry, ordered ascending by x.
+
+    Raises:
+        ValueError: If ``counts`` is empty, which would render as a pair list
+            MultiQC indexes without guarding.
+    """
+    if not counts:
+        raise ValueError("MultiQC linegraph data cannot be built from an empty distribution")
+
+    return [[x, counts[x]] for x in sorted(counts)]
+
+
 def write_mqc_payloads(
     output_dir: Path, prefix: str, payloads: Iterable[Mapping[str, object] | None]
 ) -> list[Path]:
@@ -40,7 +101,11 @@ def write_mqc_payloads(
 
     Only the top level of ``data`` is checked for emptiness. A payload mapping
     a sample to an empty mapping is a legitimate result for a run in which
-    nothing matched, and MultiQC renders it.
+    nothing matched, and MultiQC renders it. That check deliberately does not
+    catch a per-sample empty list either -- a dict holding one is still truthy
+    -- because the linegraph builders guard that case themselves by returning
+    ``None``, so those guards are load-bearing and must not be deleted on the
+    assumption that this writer would have caught it.
 
     Every payload is checked before any of them is written, so a rejected
     payload leaves the output directory exactly as it found it. Validating as

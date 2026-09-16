@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from carmack import __version__ as carmack_version
-from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME, linegraph_xy_pairs
 
 
 @dataclass(frozen=True)
@@ -341,6 +341,9 @@ class AssignStats:
     def to_mqc_edit_distance(self, prefix: str) -> dict[str, object] | None:
         """Build a MultiQC "linegraph" custom-content payload of the edit distance distribution.
 
+        The payload's ``data`` is pair-shaped rather than a mapping; see
+        :func:`carmack.mqc_report.linegraph_xy_pairs` for why.
+
         Args:
             prefix: Sample identifier used to key the payload's ``data`` section.
 
@@ -364,11 +367,14 @@ class AssignStats:
                 "xlab": "Edit distance",
                 "ylab": "Reads",
             },
-            "data": {prefix: dict(self.edit_distance_counts)},
+            "data": {prefix: linegraph_xy_pairs(self.edit_distance_counts)},
         }
 
     def to_mqc_anchor_run(self, prefix: str) -> dict[str, object] | None:
         """Build a MultiQC "linegraph" custom-content payload of the anchor run distribution.
+
+        The payload's ``data`` is pair-shaped rather than a mapping; see
+        :func:`carmack.mqc_report.linegraph_xy_pairs` for why.
 
         Args:
             prefix: Sample identifier used to key the payload's ``data`` section.
@@ -398,7 +404,7 @@ class AssignStats:
                 "xlab": "Run length",
                 "ylab": "Reads",
             },
-            "data": {prefix: dict(self.homopolymer_run_counts)},
+            "data": {prefix: linegraph_xy_pairs(self.homopolymer_run_counts)},
         }
 
 

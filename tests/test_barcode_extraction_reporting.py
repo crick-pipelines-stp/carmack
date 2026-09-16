@@ -907,11 +907,66 @@ class TestExtractionStatsMqcReporting:
     def test_to_mqc_edit_distance_combines_per_barcode_counters(
         self, sample_extraction_stats: ExtractionStats
     ) -> None:
-        """The edit distance data sums every per-barcode Counter into one combined Counter."""
+        """The edit distance data sums every per-barcode Counter into one list of [x, y] pairs."""
         payload = sample_extraction_stats.to_mqc_edit_distance(self.SAMPLE_PREFIX)
 
         assert_that(list(payload["data"].keys())).is_equal_to([self.SAMPLE_PREFIX])
-        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to({0: 2770})
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to([[0, 2770]])
+
+    def test_to_mqc_edit_distance_data_is_a_list_of_pairs_not_a_mapping(
+        self, sample_extraction_stats: ExtractionStats
+    ) -> None:
+        """The data is a list by type, which is how MultiQC tells a numeric x axis apart.
+
+        MultiQC branches on ``isinstance(x_to_y[0], list)``: a mapping, or a
+        list of tuples, takes the string-keyed path and the chart is rendered
+        with a lexically sorted axis rather than dropped, so nothing else
+        reports the mistake.
+        """
+        payload = sample_extraction_stats.to_mqc_edit_distance(self.SAMPLE_PREFIX)
+        data = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(data).is_instance_of(list)
+        assert_that(data[0]).is_type_of(list)
+
+    def test_to_mqc_edit_distance_orders_combined_counts_ascending_by_distance(self) -> None:
+        """Combining counters that arrive out of order still yields pairs ascending by x.
+
+        The shared fixture carries a single edit distance, so its ordering is
+        the same whatever the builder does. Here the first barcode contributes
+        10 and the second 2, which is the order ``Counter.update`` leaves them
+        in, so an unsorted payload would come out [[10, 1], [2, 3]] and the
+        ordering demonstrably comes from the sort. Ten is also the point where
+        a lexical sort starts disagreeing with a numeric one.
+        """
+        overall = OverallStats(total_reads=4, perfect=0, corrok=4, fail=0, top_10_barcodes=[])
+        per_barcode = [
+            PerBarcodeStats(
+                bc_name="BC1",
+                method=MatchMethod.EXACTMATCH,
+                attempts=1,
+                success=1,
+                fail=0,
+                edit_distance_dist=Counter({10: 1}),
+                reads_w_ambiguous_match=0,
+                spacer_present=0,
+            ),
+            PerBarcodeStats(
+                bc_name="BC2",
+                method=MatchMethod.EXACTMATCH,
+                attempts=3,
+                success=3,
+                fail=0,
+                edit_distance_dist=Counter({2: 3}),
+                reads_w_ambiguous_match=0,
+                spacer_present=0,
+            ),
+        ]
+        stats = ExtractionStats(overall=overall, per_barcode=per_barcode, bc_names=["BC1", "BC2"])
+
+        payload = stats.to_mqc_edit_distance(self.SAMPLE_PREFIX)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to([[2, 3], [10, 1]])
 
     @pytest.mark.parametrize(
         "edit_distance_dist",

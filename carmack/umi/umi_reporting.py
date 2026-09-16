@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from carmack import __version__ as carmack_version
-from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
+from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME, linegraph_xy_pairs
 
 
 @dataclass(frozen=True)
@@ -215,6 +215,9 @@ class UmiExtractionStats:
     def to_mqc_anchor_run(self, prefix: str) -> dict[str, object] | None:
         """Build a MultiQC "linegraph" custom-content payload of the anchor run distribution.
 
+        The payload's ``data`` is pair-shaped rather than a mapping; see
+        :func:`carmack.mqc_report.linegraph_xy_pairs` for why.
+
         The description names the scan that produced these bins because one
         phenomenon is counted twice in one report: a tract running to the end of
         the read is a saturating run here and a dropped read in prepare-reads,
@@ -254,5 +257,5 @@ class UmiExtractionStats:
                 "xlab": "Run length",
                 "ylab": "Reads",
             },
-            "data": {prefix: dict(self.homopolymer_run_counts)},
+            "data": {prefix: linegraph_xy_pairs(self.homopolymer_run_counts)},
         }
