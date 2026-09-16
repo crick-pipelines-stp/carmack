@@ -44,7 +44,12 @@ from assertpy import assert_that
 
 from carmack.assign_targets.assign_reporting import AssignStats
 from carmack.barcode.extraction_dataclasses import MatchMethod
-from carmack.barcode.extraction_reporting import ExtractionStats, OverallStats, PerBarcodeStats
+from carmack.barcode.extraction_reporting import (
+    ExtractionStats,
+    OverallStats,
+    PerBarcodeStats,
+    to_mqc_barcode_rank,
+)
 from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME, write_mqc_payloads
 from carmack.prepare_reads.prepare_reporting import PrepareStats
 from carmack.umi.umi_reporting import UmiExtractionStats
@@ -66,10 +71,10 @@ PARENT_KEYS = ("parent_id", "parent_name")
 NAMESPACE_KEY = "namespace"
 
 # What the four stages render between them today: one generalstats table each, plus
-# five bargraphs and four linegraphs. Counted so a reflective assertion over the
+# five bargraphs and five linegraphs. Counted so an assertion over the collected
 # payloads cannot pass by having collected none of them.
 CARMACK_GENERALSTATS_PAYLOAD_COUNT = 4
-CARMACK_CHART_PAYLOAD_COUNT = 9
+CARMACK_CHART_PAYLOAD_COUNT = 10
 
 
 def renderable_payload(payload_id: str) -> dict[str, object]:
@@ -174,11 +179,20 @@ def mqc_payloads(stats_objects: Sequence[object]) -> list[dict[str, Any]]:
 def carmack_mqc_payloads() -> list[dict[str, Any]]:
     """Render every MultiQC payload carmack builds, over all four reporting stages.
 
+    Most are reached by reflection. The barcode rank curve is appended by hand
+    because reflection cannot reach it: it is a module-level function rather than
+    a builder on a stats object, since the full barcode counts it plots are never
+    carried on the finalized stats object. Wiring it in here holds it to the same
+    attribution rules as every other chart.
+
     Returns:
         The payloads the barcode, UMI, assign-targets and prepare-reads stats
-        objects render between them.
+        objects render between them, plus the barcode rank curve.
     """
-    return mqc_payloads([*sibling_stats(), prepare_stats()])
+    return [
+        *mqc_payloads([*sibling_stats(), prepare_stats()]),
+        to_mqc_barcode_rank(SAMPLE_PREFIX, Counter({"ACGTACGTAC": 120, "TGCATGCATG": 45})),
+    ]
 
 
 def generalstats_mqc_payloads() -> list[dict[str, Any]]:
@@ -526,7 +540,7 @@ class TestCarmackMqcPayloadAttribution:
     that attribution is ``namespace``, which falls back to the module id when unset.
 
     Every other plot type takes the branch that does read ``parent_id``, and there
-    the parent pair is live config: it is what nests the five bargraphs and four
+    the parent pair is live config: it is what nests the five bargraphs and five
     linegraphs as sibling sections under one Carmack heading. The two shapes are
     therefore not interchangeable, and tidying the charts into the generalstats
     shape would scatter their sections without any error being raised.
@@ -563,13 +577,16 @@ class TestCarmackMqcPayloadAttribution:
         """Test that no chart payload takes on the generalstats shape, which would not nest it."""
         assert_that(payload).does_not_contain_key(NAMESPACE_KEY)
 
-    def test_reflection_reaches_every_payload_the_four_stages_render(self) -> None:
+    def test_payload_collection_reaches_every_payload_the_four_stages_render(self) -> None:
         """Test that the attribution rules above are stated over payloads that were found.
 
-        They are parametrized over payloads gathered by reflection, so a reflection
-        that reached none of them would leave every one of those cases passing
+        They are parametrized over the collected payloads, so a collection that
+        reached none of them would leave every one of those cases passing
         vacuously. This counts what was reached: one General Statistics table per
-        stage, and the nine charts between them.
+        stage, and the ten charts between them. The collection is no longer purely
+        reflective -- the barcode rank curve is a module-level builder reflection
+        cannot see, and is wired in by hand -- so this count is also what catches a
+        chart that stops being collected at all.
         """
         assert_that(generalstats_mqc_payloads()).is_length(CARMACK_GENERALSTATS_PAYLOAD_COUNT)
         assert_that(chart_mqc_payloads()).is_length(CARMACK_CHART_PAYLOAD_COUNT)

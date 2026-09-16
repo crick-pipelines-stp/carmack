@@ -470,9 +470,10 @@ class TestBarcodeExtractor:
         ):
             assert_that((tmp_path / name).exists()).is_true()
         # Three legacy summary files plus one file per MultiQC payload written, and this
-        # fixture writes the general-stats and breakdown payloads but no edit-distance one.
-        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 5))
-        assert_that(write_progress.update_calls).is_length(5)
+        # fixture writes the general-stats, breakdown and barcode-rank payloads but no
+        # edit-distance one.
+        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 6))
+        assert_that(write_progress.update_calls).is_length(6)
 
         # This fixture's single result is an all-exact-match success, so every
         # edit_distance_dist stays empty: the general-stats and breakdown reports are
@@ -587,10 +588,10 @@ class TestBarcodeExtractor:
         prefix = "edit_dist_test"
         barcode_extractor.extract_barcodes(output_dir=str(tmp_path), prefix=prefix)
 
-        # Three legacy summary files plus a file for each of the three payloads this
-        # fixture populates: general stats, breakdown and edit distance.
-        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 6))
-        assert_that(write_progress.update_calls).is_length(6)
+        # Three legacy summary files plus a file for each of the four payloads this
+        # fixture populates: general stats, breakdown, barcode rank and edit distance.
+        assert_that(write_progress.add_task_calls).contains(("Writing summary files...", 7))
+        assert_that(write_progress.update_calls).is_length(7)
 
         edit_distance_path = tmp_path / f"{prefix}.extraction_edit_distance_mqc.json"
         assert_that(edit_distance_path.exists()).is_true()
@@ -611,6 +612,10 @@ class TestBarcodeExtractor:
         run_extraction_in_process_group, exactly as TestBarcodeExtractorRealProcessPool does
         for its own real-pool coverage -- that keeps this a genuine, unmocked run while
         staying fast.
+
+        A head that small matches no full barcode, so the run also covers the other half of
+        the payload contract: the barcode rank payload is correctly absent while the static
+        rank PNG is still written.
         """
         small_fastq = tmp_path / "small_R1.fastq.gz"
         write_fastq_head(R1_PATH, small_fastq, REAL_POOL_READS)
@@ -631,6 +636,23 @@ class TestBarcodeExtractor:
         assert_mqc_payload_file(files["mqc_general_stats"], "carmack_extraction_general_stats")
         assert_mqc_payload_file(files["mqc_breakdown"], "carmack_extraction_breakdown")
         assert_that((tmp_path / f"{prefix}.extraction_stats_mqc.json").exists()).is_false()
+
+        # The head this test trims -- REAL_POOL_READS reads of the hydrop fixture -- yields
+        # no full barcode at all: every read fails at least one component, so the
+        # full-barcode counter stays empty and the rank payload is suppressed rather than
+        # written as an empty curve, which would take the whole MultiQC report down with it.
+        # The static PNG is written unconditionally and carries its own "No valid barcodes"
+        # empty state instead. That asymmetry is what is being pinned here, so do not
+        # "fix" this back into asserting the payload exists: enlarging the head until it
+        # matches something would cost this test minutes of real alignment work, and this
+        # is the only place in the suite where a real, unmocked extraction exercises the
+        # conditional suppression path at all.
+        assert_that(files["mqc_barcode_rank"].exists()).described_as(
+            "MultiQC barcode rank payload, suppressed because no read yielded a full barcode"
+        ).is_false()
+        assert_that(files["bc_rank_plot"].exists()).described_as(
+            "static barcode rank PNG, written whether or not any barcode was matched"
+        ).is_true()
 
     def test_extract_barcodes_writes_annotated_r1_fastq(
         self,
@@ -904,11 +926,24 @@ class TestBarcodeExtractor:
             "bc_stats": out_dir / f"{prefix}.bc_stats.txt",
             "mqc_general_stats": out_dir / f"{prefix}.extraction_general_stats_mqc.json",
             "mqc_breakdown": out_dir / f"{prefix}.extraction_breakdown_mqc.json",
+            "mqc_barcode_rank": out_dir / f"{prefix}.extraction_barcode_rank_mqc.json",
         }
 
+    # Output names the extractor writes only when it has something to put in them. The
+    # barcode rank payload is suppressed on a run where no read yielded a full barcode,
+    # since an empty rank curve would break the MultiQC report rather than inform it.
+    CONDITIONAL_OUTPUT_FILES = frozenset({"mqc_barcode_rank"})
+
     def check_output_files(self, file_dict: dict[str, Path]) -> None:
-        """Assert that every path in file_dict exists."""
+        """Assert that every unconditionally written path in file_dict exists.
+
+        Names listed in CONDITIONAL_OUTPUT_FILES are skipped: whether the extractor writes
+        those depends on what the input matched, so the tests that know their own input
+        assert on them directly instead.
+        """
         for name, path in file_dict.items():
+            if name in self.CONDITIONAL_OUTPUT_FILES:
+                continue
             assert_that(Path(path).exists()).described_as(
                 f"missing output file: {name} ({path})"
             ).is_true()
