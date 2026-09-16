@@ -7,11 +7,10 @@ BC3 (10bp) -> PRIMER_C (22bp) -> BC2 (10bp) -> PRIMER_A (22bp) -> BC1 (10bp)
 
 The UMI, poly-G and TGIDX components carry no known sequence, so barcode
 matching and spacer checks ignore them; they model the post-barcode layout for
-downstream UMI extraction only. ME's sequence is well known (see the ME
-constant below), but is deliberately left off its ReadComponent, so the same
-matching and spacer checks ignore it too, for the different reason explained
-where it is defined: ME anchors the target index's right edge for downstream
-insert-boundary arithmetic, not UMI extraction.
+downstream UMI extraction only. ME's sequence is well known and is registered
+on its ReadComponent (so it appears in read_structure.get_known_sequences()),
+but verify=False keeps it out of spacer verification, for the reason given
+where it is defined.
 """
 
 from functools import cached_property
@@ -39,21 +38,8 @@ POLYG_BASE = "G"
 POLYG_MIN_RUN = 3
 TGIDX_LENGTH = 8
 
-# Mosaic End, immediately 3' of the target index. Used only for its length by the
-# insert-boundary arithmetic elsewhere in the pipeline; no matcher is ever built over it, and
-# its component below deliberately omits `sequence` so it can never be matched even
-# incidentally. Two independent mechanisms protect this:
-# FixedPositionMatcher is the only matcher that reads .start unguarded, and
-# MatcherBase.__init__ structurally rejects any component whose type is not in
-# allowed_component_types (default {BARCODE}), so a PRIMER-typed component like this one can
-# never be constructed into a matcher directly. BarcodeExtractor.init_matchers() also explicitly
-# skips every non-BARCODE component before building matchers at all.
-# Separately, KmerMatcher widens allowed_component_types to include TGIDX, so TargetAssigner
-# builds a KmerMatcher directly over TGIDX; when that matcher hits a same-score tie, its
-# inherited check_spacers()/match_seq() looks at ReadStructure.get_next(TGIDX), which is this
-# ME component, and only performs a real comparison when the neighbour's `sequence` is truthy.
-# Leaving `sequence` unset on ME's component keeps that guard structurally false, so ME is never
-# read as a spacer sequence either, even though it now sits immediately after TGIDX.
+# Mosaic End, immediately 3' of the target index. Its sequence is known and registered below,
+# but verify=False on its ReadComponent keeps MatcherBase.check_spacers from ever comparing it.
 ME = "AGATGTGTATAAGAGACAG"
 
 # Barcode file paths
@@ -135,6 +121,8 @@ class ChemistryCarmackCustomSeq10(ChemistryBase):
                 name="ME",
                 type=ReadComponentType.PRIMER,
                 length=len(ME),
+                sequence=ME,
+                verify=False,
             ),
         ]
 

@@ -14,10 +14,13 @@ from carmack.barcode.extraction_dataclasses import (
     ReadMatchResult,
 )
 from carmack.barcode.extraction_reporting import (
+    BARCODE_RANK_MAX_POINTS,
     ExtractionStats,
     ExtractionStatsAccumulator,
     OverallStats,
     PerBarcodeStats,
+    log_spaced_ranks,
+    to_mqc_barcode_rank,
 )
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
@@ -984,12 +987,340 @@ class TestExtractionStatsMqcReporting:
     def test_mqc_payloads_are_keyed_by_the_given_prefix(
         self, sample_extraction_stats: ExtractionStats, prefix: str
     ) -> None:
-        """Every to_mqc_* payload's data dict is keyed by exactly the prefix supplied, not a
-        hard-coded sample name."""
+        """Every payload's data dict is keyed by exactly the prefix supplied, not a
+        hard-coded sample name.
+
+        The barcode rank builder is named here explicitly rather than picked up with
+        the others: it is a module-level function, not a method, because the full
+        barcode counts it plots never reach the finalized stats object. Enumerating
+        the methods on a stats instance therefore cannot reach it.
+        """
         general_stats_payload = sample_extraction_stats.to_mqc_general_stats(prefix)
         breakdown_payload = sample_extraction_stats.to_mqc_breakdown(prefix)
         edit_distance_payload = sample_extraction_stats.to_mqc_edit_distance(prefix)
+        barcode_rank_payload = to_mqc_barcode_rank(prefix, Counter({"ACGT": 9, "TGCA": 4}))
 
         assert_that(list(general_stats_payload["data"].keys())).is_equal_to([prefix])
         assert_that(list(breakdown_payload["data"].keys())).is_equal_to([prefix])
         assert_that(list(edit_distance_payload["data"].keys())).is_equal_to([prefix])
+        assert_that(list(barcode_rank_payload["data"].keys())).is_equal_to([prefix])
+
+
+class TestLogSpacedRanks:
+    """Tests for log_spaced_ranks, the rank downsampler behind the barcode rank curve."""
+
+    LARGE_N = 1_000_000
+
+    @pytest.fixture
+    def large_ranks(self) -> list[int]:
+        """Ranks for a barcode count far above the default budget, downsampled once per test."""
+        return log_spaced_ranks(self.LARGE_N)
+
+    # ===== Degenerate and small inputs =====
+
+    @pytest.mark.parametrize("n", [0, -1, -1000], ids=["zero", "negative", "very_negative"])
+    def test_log_spaced_ranks_returns_no_ranks_for_a_non_positive_n(self, n: int) -> None:
+        """Test that a run with nothing to rank produces no ranks at all.
+
+        The caller turns an empty result into a suppressed section, so this has
+        to be empty rather than a degenerate one-point curve.
+        """
+        assert_that(log_spaced_ranks(n)).is_equal_to([])
+
+    def test_log_spaced_ranks_returns_the_only_rank_for_a_single_barcode(self) -> None:
+        """Test that a single observed barcode yields exactly rank 1."""
+        assert_that(log_spaced_ranks(1)).is_equal_to([1])
+
+    @pytest.mark.parametrize("n", [2, 7, 299, BARCODE_RANK_MAX_POINTS])
+    def test_log_spaced_ranks_returns_every_rank_when_n_fits_the_budget(self, n: int) -> None:
+        """Test that a barcode count within the point budget is plotted rank by rank.
+
+        Downsampling a curve that already fits would throw away detail for no
+        gain, so every rank from 1 to n is kept, the boundary case n ==
+        max_points included.
+        """
+        assert_that(log_spaced_ranks(n)).is_equal_to(list(range(1, n + 1)))
+
+    # ===== Downsampling a curve larger than the budget =====
+
+    def test_log_spaced_ranks_stays_within_the_point_budget(self, large_ranks: list[int]) -> None:
+        """Test that a million barcodes are reduced to at most max_points ranks."""
+        assert_that(large_ranks).is_not_empty()
+        assert_that(len(large_ranks)).is_less_than_or_equal_to(BARCODE_RANK_MAX_POINTS)
+
+    def test_log_spaced_ranks_collapses_below_the_budget_through_deduplication(
+        self, large_ranks: list[int]
+    ) -> None:
+        """Test that the downsampled ranks come out strictly shorter than the budget.
+
+        The shortfall is deduplication at the low end: consecutive log steps
+        there are far less than one rank apart, so several of them round to the
+        same integer rank and collapse into one. That is why the budget is an
+        upper bound and not an exact count. The property is asserted rather than
+        an exact length, which would pin one particular spacing algorithm
+        instead of the behaviour that matters.
+        """
+        assert_that(len(large_ranks)).described_as(
+            "log-spaced ranks after deduplication"
+        ).is_less_than(BARCODE_RANK_MAX_POINTS)
+
+    def test_log_spaced_ranks_are_strictly_ascending_integers(
+        self, large_ranks: list[int]
+    ) -> None:
+        """Test that the ranks ascend strictly, which also proves they are deduplicated.
+
+        A repeated rank would plot the same barcode twice, and a rank out of
+        order would draw the curve backwards on a log x-axis.
+        """
+        for rank in large_ranks:
+            assert_that(rank).is_instance_of(int)
+        assert_that(large_ranks).is_equal_to(sorted(set(large_ranks)))
+
+    def test_log_spaced_ranks_keep_both_endpoints(self, large_ranks: list[int]) -> None:
+        """Test that the most and least abundant barcodes are always plotted.
+
+        The endpoints carry the two numbers a reader takes off this chart: the
+        top barcode's depth and the total number of barcodes observed. Log
+        spacing must never round either of them away.
+        """
+        assert_that(large_ranks[0]).is_equal_to(1)
+        assert_that(large_ranks[-1]).is_equal_to(self.LARGE_N)
+
+    # ===== max_points =====
+
+    @pytest.mark.parametrize("max_points", [1, 0, -5], ids=["one", "zero", "negative"])
+    def test_log_spaced_ranks_rejects_a_budget_below_two_points(self, max_points: int) -> None:
+        """Test that a budget too small to hold both endpoints raises.
+
+        Fewer than two points cannot carry rank 1 and rank n at once, so there
+        is no curve to draw and a silent truncation would misreport the run.
+        """
+        with pytest.raises(ValueError):
+            log_spaced_ranks(1000, max_points=max_points)
+
+    @pytest.mark.parametrize("max_points", [2, 10, 64])
+    def test_log_spaced_ranks_honours_a_non_default_budget(self, max_points: int) -> None:
+        """Test that a caller-supplied budget, not the module default, bounds the result."""
+        ranks = log_spaced_ranks(10_000, max_points=max_points)
+
+        assert_that(len(ranks)).is_less_than_or_equal_to(max_points)
+        assert_that(ranks[0]).is_equal_to(1)
+        assert_that(ranks[-1]).is_equal_to(10_000)
+        assert_that(ranks).is_equal_to(sorted(set(ranks)))
+
+
+class TestToMqcBarcodeRank:
+    """Tests for to_mqc_barcode_rank, the MultiQC payload for the barcode rank curve."""
+
+    SAMPLE_PREFIX = "SK123"
+
+    @staticmethod
+    def make_barcode_counts(n: int) -> Counter[str]:
+        """Build n barcodes whose counts strictly decrease, so the rank order is unambiguous."""
+        return Counter({f"BC{i:05d}": (n - i) * 10 for i in range(n)})
+
+    # ===== Data shape =====
+
+    def test_to_mqc_barcode_rank_renders_data_as_pairs_rather_than_a_mapping(self) -> None:
+        """Test that the series is a list of points, asserted by type, and not a mapping.
+
+        MultiQC's custom-content linegraph path renders an ``{x: y}`` mapping as
+        lexically sorted strings, putting '10' between '1' and '2' -- fatal for a
+        curve spanning rank 1 to rank one million. A list of ``[x, y]`` pairs is
+        a first-class input shape MultiQC builds the mapping from itself, which
+        keeps the ranks as integers.
+        """
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, self.make_barcode_counts(20))
+        series = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(series).is_instance_of(list)
+        assert_that(isinstance(series, dict)).described_as(
+            "series rendered as a mapping"
+        ).is_false()
+
+    def test_to_mqc_barcode_rank_renders_every_point_as_a_two_element_list(self) -> None:
+        """Test that each point is a list of exactly two values, not a tuple.
+
+        MultiQC inspects the first point with ``isinstance(x_to_y[0], list)`` to
+        decide it was handed pairs. A tuple fails that check in memory even
+        though it would round-trip through JSON as an array, so the payload has
+        to hold real lists before it is ever serialised.
+        """
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, self.make_barcode_counts(20))
+        series = payload["data"][self.SAMPLE_PREFIX]
+
+        for point in series:
+            assert_that(point).described_as(f"point {point}").is_instance_of(list)
+            assert_that(point).described_as(f"point {point}").is_length(2)
+
+    def test_to_mqc_barcode_rank_x_values_are_strictly_ascending_integers(self) -> None:
+        """Test that the ranks plotted are integers that ascend strictly."""
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, self.make_barcode_counts(500))
+        ranks = [x for x, _ in payload["data"][self.SAMPLE_PREFIX]]
+
+        for rank in ranks:
+            assert_that(rank).is_instance_of(int)
+        assert_that(ranks).is_equal_to(sorted(set(ranks)))
+
+    def test_to_mqc_barcode_rank_y_values_never_increase_with_rank(self) -> None:
+        """Test that counts fall off monotonically, which is what makes it a rank curve.
+
+        The counts are sorted descending before ranking, so a rise anywhere in
+        the series would mean the sort or the rank lookup is misaligned.
+        """
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, self.make_barcode_counts(500))
+        counts = [y for _, y in payload["data"][self.SAMPLE_PREFIX]]
+
+        for earlier, later in zip(counts, counts[1:]):
+            assert_that(later).is_less_than_or_equal_to(earlier)
+
+    def test_to_mqc_barcode_rank_starts_at_the_most_abundant_barcode(self) -> None:
+        """Test that the first point is rank 1 paired with the highest count observed."""
+        barcode_counts = self.make_barcode_counts(500)
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, barcode_counts)
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX][0]).is_equal_to(
+            [1, max(barcode_counts.values())]
+        )
+
+    def test_to_mqc_barcode_rank_ends_at_the_number_of_observed_barcodes(self) -> None:
+        """Test that the last rank plotted is the count of barcodes actually seen."""
+        barcode_counts = self.make_barcode_counts(500)
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, barcode_counts)
+        last_rank, _ = payload["data"][self.SAMPLE_PREFIX][-1]
+
+        assert_that(last_rank).is_equal_to(500)
+
+    def test_to_mqc_barcode_rank_renders_a_single_barcode_as_one_point(self) -> None:
+        """Test that one observed barcode yields exactly one point, at rank 1."""
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, Counter({"ACGTACGTAC": 42}))
+
+        assert_that(payload["data"][self.SAMPLE_PREFIX]).is_equal_to([[1, 42]])
+
+    # ===== Zero counts and empty input =====
+
+    def test_to_mqc_barcode_rank_excludes_zero_count_barcodes(self) -> None:
+        """Test that barcodes counted zero times are left out of the curve entirely.
+
+        A Counter can carry explicit zero entries, and a zero-depth barcode was
+        never observed: plotting it would extend the tail with barcodes the run
+        never saw and drag the last rank past the true total.
+        """
+        barcode_counts = Counter({"AAAA": 9, "CCCC": 4, "GGGG": 0, "TTTT": 0})
+
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, barcode_counts)
+        series = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(series).is_equal_to([[1, 9], [2, 4]])
+
+    def test_to_mqc_barcode_rank_returns_none_for_an_empty_counter(self) -> None:
+        """Test that a run that matched no full barcode renders no payload at all.
+
+        Returning an empty series instead would take down the whole report
+        rather than one section: MultiQC indexes the first point unguarded, so
+        an empty pair list raises IndexError. The writer's own emptiness check
+        does not catch it either, because a dict holding an empty list is
+        truthy -- so the suppression has to happen here, as ``None``.
+        """
+        assert_that(to_mqc_barcode_rank(self.SAMPLE_PREFIX, Counter())).is_none()
+
+    def test_to_mqc_barcode_rank_returns_none_when_every_count_is_zero(self) -> None:
+        """Test that a counter holding only zero-count barcodes also renders nothing.
+
+        Nothing survives the non-zero filter, so this reaches the same empty
+        series the report cannot survive, by a different route.
+        """
+        barcode_counts = Counter({"AAAA": 0, "CCCC": 0})
+
+        assert_that(to_mqc_barcode_rank(self.SAMPLE_PREFIX, barcode_counts)).is_none()
+
+    # ===== Payload identity and MultiQC config =====
+
+    def test_to_mqc_barcode_rank_has_linegraph_plot_type_and_id(self) -> None:
+        """Test that the payload declares the id its file and section are named from."""
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, self.make_barcode_counts(20))
+
+        assert_that(payload["id"]).is_equal_to("carmack_extraction_barcode_rank")
+        assert_that(payload["plot_type"]).is_equal_to("linegraph")
+
+    def test_to_mqc_barcode_rank_pconfig_names_the_plot_and_axes(self) -> None:
+        """Test that the plot config carries its own id, a title and both axis labels."""
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, self.make_barcode_counts(20))
+        pconfig = payload["pconfig"]
+
+        assert_that(pconfig["id"]).is_equal_to("carmack_extraction_barcode_rank_plot")
+        assert_that(pconfig["title"]).is_instance_of(str)
+        assert_that(pconfig["title"]).is_not_empty()
+        assert_that(pconfig["xlab"]).is_not_empty()
+        assert_that(pconfig["ylab"]).is_not_empty()
+
+    def test_to_mqc_barcode_rank_plots_both_axes_logarithmically(self) -> None:
+        """Test that both axes are logarithmic, which is what makes the knee readable.
+
+        Rank spans orders of magnitude and so does depth; on linear axes the
+        whole curve collapses against the origin.
+        """
+        pconfig = to_mqc_barcode_rank(self.SAMPLE_PREFIX, self.make_barcode_counts(20))["pconfig"]
+
+        assert_that(pconfig["xlog"]).is_true()
+        assert_that(pconfig["ylog"]).is_true()
+
+    @pytest.mark.parametrize("max_points", [None, 5, 12, 1000], ids=["default", "5", "12", "1000"])
+    def test_to_mqc_barcode_rank_sets_smooth_points_above_the_budget_in_force(
+        self, max_points: int | None
+    ) -> None:
+        """Test that the re-binning threshold always sits above the points actually sent.
+
+        MultiQC re-bins any series longer than this threshold onto uniform index
+        spacing, which would flatten exactly the log spacing this chart exists
+        to produce -- and ``smooth_points: null`` does not disable it. Keeping
+        the threshold derived from the budget in force, rather than a literal,
+        means a caller raising max_points cannot silently walk back into
+        re-binning.
+        """
+        barcode_counts = self.make_barcode_counts(50)
+        if max_points is None:
+            payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, barcode_counts)
+            budget = BARCODE_RANK_MAX_POINTS
+        else:
+            payload = to_mqc_barcode_rank(
+                self.SAMPLE_PREFIX, barcode_counts, max_points=max_points
+            )
+            budget = max_points
+
+        assert_that(payload["pconfig"]["smooth_points"]).is_greater_than(budget)
+
+    def test_to_mqc_barcode_rank_nests_under_the_shared_carmack_parent(self) -> None:
+        """Test that the chart attaches to Carmack's parent section, not a namespace.
+
+        ``parent_id``/``parent_name`` are what nest a chart section under the
+        one Carmack heading; ``namespace`` is the generalstats-only key, and is
+        inert on this branch of MultiQC's parser.
+        """
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, self.make_barcode_counts(20))
+
+        assert_that(payload["parent_id"]).is_equal_to(CARMACK_PARENT_ID)
+        assert_that(payload["parent_name"]).is_equal_to(CARMACK_PARENT_NAME)
+        assert_that(payload).does_not_contain_key("namespace")
+        assert_that(payload["section_name"]).is_not_empty()
+        assert_that(payload["description"]).is_not_empty()
+
+    # ===== Downsampling through the payload =====
+
+    def test_to_mqc_barcode_rank_downsamples_more_barcodes_than_the_budget(self) -> None:
+        """Test that a curve longer than the budget is thinned but keeps both endpoints.
+
+        Fifty barcodes into a five-point budget proves the payload runs its
+        counts through the downsampler rather than emitting one point per
+        barcode, while the first and last points stay exact so the chart still
+        reports the top barcode's depth and the true barcode total.
+        """
+        barcode_counts = self.make_barcode_counts(50)
+
+        payload = to_mqc_barcode_rank(self.SAMPLE_PREFIX, barcode_counts, max_points=5)
+        series = payload["data"][self.SAMPLE_PREFIX]
+
+        assert_that(len(series)).is_less_than_or_equal_to(5)
+        assert_that(len(series)).is_less_than(50)
+        assert_that(series[0]).is_equal_to([1, max(barcode_counts.values())])
+        assert_that(series[-1]).is_equal_to([50, min(barcode_counts.values())])

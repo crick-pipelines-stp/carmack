@@ -9,7 +9,10 @@ import matplotlib.pyplot as plt
 
 from carmack.barcode.barcode_utils import make_barcode_rank_plot
 from carmack.barcode.extraction_dataclasses import MatchMethod, ReadMatchResult
-from carmack.barcode.extraction_reporting import ExtractionStatsAccumulator
+from carmack.barcode.extraction_reporting import (
+    ExtractionStatsAccumulator,
+    to_mqc_barcode_rank,
+)
 from carmack.barcode.hybrid_extractor import HybridExtractor
 from carmack.barcode.matchers.alignment_matcher import AlignmentMatcher
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher, MatcherBase
@@ -231,11 +234,14 @@ class BarcodeExtractor:
 
         ex_stats = stats_acc.finalize()
 
-        # The edit-distance payload is None when no barcode needed correcting, and the
-        # writer skips it rather than emitting a chart for a signal never seen.
+        # Two of these are conditional. The barcode rank payload is None when no read
+        # yielded a full barcode, and the edit-distance payload is None when no barcode
+        # needed correcting; the writer skips either rather than emitting a chart for a
+        # measurement that was never taken.
         mqc_payloads = [
             ex_stats.to_mqc_general_stats(prefix),
             ex_stats.to_mqc_breakdown(prefix),
+            to_mqc_barcode_rank(prefix, stats_acc.full_barcode_counts),
             ex_stats.to_mqc_edit_distance(prefix),
         ]
 

@@ -1,8 +1,9 @@
 # Prepare Reads Stats
-# unmatched_written + sum(target_written.values()) == total_reads
+# unmatched_written + sum(target_written.values()) + insert_not_sequenced == total_reads
 Total reads: 1897
 Unmatched (scRNA arm): 304 (16.03%)
 Matched (scTIP arms): 1593 (83.97%)
+Rejected (insert_not_sequenced): 0 (0.00%)
 
 # Target Distribution
 	TATAGCCT	1593 (83.97%)

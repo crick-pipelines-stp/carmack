@@ -47,10 +47,23 @@ ever hardcoding BC3/BC2/BC1, using a fabricated chemistry double.
 two per-read guards, one over the position tags quality is sliced by and one over the
 value tags sequence is built from. ``TestScrnaWriterGoldenGzipRoundTrip`` is the only
 test here that writes through a real gzip subprocess rather than an ``io.BytesIO()``.
+
+The last two classes cover the split between deciding where R1 is cut and performing
+the cut, which fall in two different processes. ``TestScrnaWriterInsertCut`` covers
+``insert_cut``, the arithmetic side: the UMI's recorded span end handed to
+``insert_start`` along with the chemistry's UMI right anchor, returning exactly what
+that call returns for the caller to decide on. ``TestScrnaWriterCutIsGivenNotRecomputed``
+covers the writing side: ``write_read`` slices R1 at the cut it is handed rather than at
+one it derives for itself, which is pinned by handing it a cut that deliberately
+disagrees with the one it would have derived - an assertion no implementation that
+recomputes internally can pass. Those same tests pin that the barcodes record does not
+move with the cut at all, because its quality windows are sliced in the original,
+untrimmed read's coordinates rather than the trimmed insert's.
 """
 
 import io
 from functools import cached_property
+from inspect import signature
 from pathlib import Path
 
 import pytest
@@ -69,6 +82,13 @@ from carmack.prepare_reads.insert_locator import insert_start
 from carmack.prepare_reads.scrna_writer import ScrnaWriter
 
 CHEMISTRY = "carmack_custom_seq_1_0"
+
+# Both chemistries whose reads ever reach this writer. They declare the same UMI right
+# anchor but seat the UMI at different read offsets, so a cut derived from the span the
+# read itself records answers both, while one derived from a chemistry-fixed offset
+# could only ever answer one. hydrop is absent deliberately: it declares no UMI at all,
+# and ScrnaWriter refuses to be constructed against it.
+SHIPPED_CHEMISTRIES = (CHEMISTRY, "carmack_custom_seq_1_0_primd")
 
 # Barcode component names in the order the shipped chemistry's read structure
 # declares them - the order barcode_components must reproduce, and the order the
@@ -331,6 +351,26 @@ def build_scrna_read(
     return annotation, r1_seq, r1_qual
 
 
+def polyg_cut(annotation: ReadAnnotation, polyg_run_length: int) -> int:
+    """Return the R1 cut point for a read ``build_scrna_read`` laid out.
+
+    ``write_read`` is handed its cut rather than deriving one, so every call below has to
+    supply it. For a read this file built, the cut is arithmetic the test already knows -
+    the UMI's own recorded span end, plus however many poly-G bases the read was built to
+    carry after it - so it is spelled out here rather than read back out of the writer,
+    keeping each test's expected trim point independent of the code that produces the
+    real one.
+
+    Args:
+        annotation: The annotation ``build_scrna_read`` returned for the read.
+        polyg_run_length: The poly-G run length that read was built with.
+
+    Returns:
+        The 0-based coordinate that read's insert begins at.
+    """
+    return parse_span(annotation.get(position_key("UMI")))[1] + polyg_run_length
+
+
 class TestScrnaWriterWriteRead:
     """Tests for write_read's R1 trim, R2 passthrough, and barcode+UMI concatenation.
 
@@ -363,12 +403,14 @@ class TestScrnaWriterWriteRead:
     ) -> None:
         """Test that the R1 output is cut at the UMI's own homopolymer-anchored insert start.
 
-        write_read must derive the cut point the same way insert_start's own dedicated
-        test suite already verifies - the UMI span's end plus the real poly-G run length
-        observed in this specific read, not any nominal length - and then slice both
-        r1_seq and r1_qual identically from that point. Getting the cut wrong, or
-        slicing seq and qual by different amounts, would leave every downstream
-        STARsolo alignment reading a corrupted or misaligned insert.
+        The trim point arrives as an argument now, so what this test supplies is the cut
+        a real dispatcher would have supplied for this read: the UMI span's end plus the
+        real poly-G run length observed in this specific read, not any nominal length. It
+        is spelled out here and checked against insert_start so the expected value never
+        comes out of the code under test, and what write_read is then held to is slicing
+        both r1_seq and r1_qual identically from that one point. Slicing seq and qual by
+        different amounts would leave every downstream STARsolo alignment reading a
+        corrupted or misaligned insert.
         """
         run_length = 5
         insert_seq = "TATAGCCT" + "CTCTTATACACATCTCCTC"
@@ -381,8 +423,9 @@ class TestScrnaWriterWriteRead:
             polyg_run_length=run_length,
             insert_seq=insert_seq,
         )
-        umi_start, umi_end = parse_span(annotation.get(position_key("UMI")))
-        cut = umi_end + run_length
+        umi_end = parse_span(annotation.get(position_key("UMI")))[1]
+        cut = polyg_cut(annotation, run_length)
+        assert_that(cut).is_equal_to(umi_end + run_length)
         assert_that(cut).is_equal_to(
             insert_start(reference=umi_end, anchor=chemistry.umi_right_anchor(), seq=r1_seq)
         )
@@ -398,6 +441,7 @@ class TestScrnaWriterWriteRead:
             annotation,
             r1_seq,
             r1_qual,
+            cut,
             r2_name,
             r2_seq,
             r2_qual,
@@ -419,15 +463,17 @@ class TestScrnaWriterWriteRead:
         sequence and quality must reach the output byte-for-byte, since nothing about
         the scRNA arm's cDNA read needs, or is allowed, to trim R2.
         """
+        polyg_run_length = 4
         annotation, r1_seq, r1_qual = build_scrna_read(
             read_id="read7",
             bc3_seq="G" * BARCODE_LENGTH,
             bc2_seq="C" * BARCODE_LENGTH,
             bc1_seq="T" * BARCODE_LENGTH,
             umi_seq="ACTACTAT",
-            polyg_run_length=4,
+            polyg_run_length=polyg_run_length,
             insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
         )
+        cut = polyg_cut(annotation, polyg_run_length)
         r2_name = "read7"
         r2_seq = "GATTACAGATTACAGATTACA"
         r2_qual = "".join(chr(33 + (position % 40)) for position in range(len(r2_seq)))
@@ -440,6 +486,7 @@ class TestScrnaWriterWriteRead:
             annotation,
             r1_seq,
             r1_qual,
+            cut,
             r2_name,
             r2_seq,
             r2_qual,
@@ -469,15 +516,17 @@ class TestScrnaWriterWriteRead:
         bc2_seq = "C" * BARCODE_LENGTH
         bc1_seq = "T" * BARCODE_LENGTH
         umi_seq = "A" * UMI_LENGTH
+        polyg_run_length = 3
         annotation, r1_seq, r1_qual = build_scrna_read(
             read_id="read9",
             bc3_seq=bc3_seq,
             bc2_seq=bc2_seq,
             bc1_seq=bc1_seq,
             umi_seq=umi_seq,
-            polyg_run_length=3,
+            polyg_run_length=polyg_run_length,
             insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
         )
+        cut = polyg_cut(annotation, polyg_run_length)
 
         bc3_end = len(bc3_seq)
         bc2_end = bc3_end + len(bc2_seq)
@@ -502,6 +551,7 @@ class TestScrnaWriterWriteRead:
             annotation,
             r1_seq,
             r1_qual,
+            cut,
             r2_name,
             r2_seq,
             r2_qual,
@@ -528,16 +578,18 @@ class TestScrnaWriterWriteRead:
         assertion is meaningful rather than trivially true.
         """
         read_id = "read5"
+        polyg_run_length = 4
         annotation, r1_seq, r1_qual = build_scrna_read(
             read_id=read_id,
             bc3_seq="G" * BARCODE_LENGTH,
             bc2_seq="C" * BARCODE_LENGTH,
             bc1_seq="T" * BARCODE_LENGTH,
             umi_seq="ACTACTAT",
-            polyg_run_length=4,
+            polyg_run_length=polyg_run_length,
             insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
             extra_tag=("TGIDX", "NONE"),
         )
+        cut = polyg_cut(annotation, polyg_run_length)
         assert_that(annotation.render()).is_not_equal_to(annotation.read_id)
 
         r2_name = f"{read_id} TGIDX=NONE"
@@ -553,6 +605,7 @@ class TestScrnaWriterWriteRead:
             annotation,
             r1_seq,
             r1_qual,
+            cut,
             r2_name,
             r2_seq,
             r2_qual,
@@ -657,7 +710,11 @@ def write_barcodes_record(
     them in isolation, so all three streams are supplied here and the R1/R2 pair is
     discarded. R2 is a fixed stand-in rather than a per-test value because nothing in the
     barcodes record derives from it; the tests that do care about R1 and R2 live in
-    ``TestScrnaWriterWriteRead`` and spell their own calls out.
+    ``TestScrnaWriterWriteRead`` and spell their own calls out. The R1 cut is a fixed
+    stand-in for the same reason: the barcodes record's quality windows are sliced in the
+    original read's coordinates and so do not move with the cut at all, which
+    ``TestScrnaWriterCutIsGivenNotRecomputed`` pins directly rather than leaving to this
+    helper's choice of value.
 
     Args:
         writer: The writer under test.
@@ -674,6 +731,7 @@ def write_barcodes_record(
         annotation,
         r1_seq,
         r1_qual,
+        0,
         annotation.read_id,
         r2_seq,
         "I" * len(r2_seq),
@@ -1103,6 +1161,10 @@ class TestScrnaWriterBarcodeOrderIsStructural:
         annotation.set("UMI", umi_seq)
         annotation.set(position_key("UMI"), format_span(umi_start, umi_end))
 
+        # This fabricated chemistry declares no UMI right anchor at all, so the insert
+        # starts at the UMI's own span end - the value insert_start returns when handed
+        # no anchor, and the cut a dispatcher would hand write_read for such a read.
+        cut = umi_end
         r2_name = "read42"
         r2_seq = "ACGT" * 5
         r2_qual = "I" * len(r2_seq)
@@ -1114,6 +1176,7 @@ class TestScrnaWriterBarcodeOrderIsStructural:
             annotation,
             r1_seq,
             r1_qual,
+            cut,
             r2_name,
             r2_seq,
             r2_qual,
@@ -1195,8 +1258,10 @@ class TestScrnaWriterMissingPositionTag:
         umi_start = bc1_end
         umi_end = umi_start + len(umi_seq)
 
-        r1_seq = bc3_seq + bc2_seq + bc1_seq + umi_seq + ("G" * 4) + insert_seq
+        polyg_run_length = 4
+        r1_seq = bc3_seq + bc2_seq + bc1_seq + umi_seq + ("G" * polyg_run_length) + insert_seq
         r1_qual = "".join(chr(33 + (position % 50)) for position in range(len(r1_seq)))
+        cut = umi_end + polyg_run_length
 
         annotation = ReadAnnotation(read_id=read_id)
         annotation.set("BC3", bc3_seq)
@@ -1222,6 +1287,7 @@ class TestScrnaWriterMissingPositionTag:
                 annotation,
                 r1_seq,
                 r1_qual,
+                cut,
                 r2_name,
                 r2_seq,
                 r2_qual,
@@ -1438,13 +1504,13 @@ class TestScrnaWriterGoldenGzipRoundTrip:
                 polyg_run_length=spec["polyg_run_length"],
                 insert_seq=spec["insert_seq"],
             )
-            built_reads.append((annotation, r1_seq, r1_qual, spec["r2_seq"], r2_qual))
 
             bc3_end = len(spec["bc3_seq"])
             bc2_end = bc3_end + len(spec["bc2_seq"])
             bc1_end = bc2_end + len(spec["bc1_seq"])
             umi_end = bc1_end + len(spec["umi_seq"])
             cut = umi_end + spec["polyg_run_length"]
+            built_reads.append((annotation, r1_seq, r1_qual, cut, spec["r2_seq"], r2_qual))
 
             expected_r1_records.append((spec["read_id"], r1_seq[cut:], r1_qual[cut:]))
             expected_r2_records.append((spec["read_id"], spec["r2_seq"], r2_qual))
@@ -1468,11 +1534,12 @@ class TestScrnaWriterGoldenGzipRoundTrip:
             GzipFile(str(r2_path)).open_write_stream() as r2_stream,
             GzipFile(str(barcodes_path)).open_write_stream() as barcodes_stream,
         ):
-            for annotation, r1_seq, r1_qual, r2_seq, r2_qual in built_reads:
+            for annotation, r1_seq, r1_qual, cut, r2_seq, r2_qual in built_reads:
                 writer.write_read(
                     annotation,
                     r1_seq,
                     r1_qual,
+                    cut,
                     annotation.read_id,
                     r2_seq,
                     r2_qual,
@@ -1488,3 +1555,401 @@ class TestScrnaWriterGoldenGzipRoundTrip:
         assert_that(r1_records).is_equal_to(expected_r1_records)
         assert_that(r2_records).is_equal_to(expected_r2_records)
         assert_that(barcodes_records).is_equal_to(expected_barcodes_records)
+
+
+class TestScrnaWriterInsertCut:
+    """Tests for insert_cut, the one place the scRNA arm's R1 trim point is derived.
+
+    The trim point used to be worked out inside ``write_read``, which put it on the
+    single thread that writes every unmatched read and put it after the read had already
+    been dispatched. It is derived here, as a method of its own, so the dispatcher can
+    ask for it while the read is still in a worker and carry the answer along with the
+    read. Keeping the arithmetic on this class rather than rebuilding it beside the
+    dispatcher is what stops one read getting two answers: the UMI's position key and the
+    chemistry's UMI right anchor are already resolved and cached here, once, at
+    construction, and ``write_read`` slices at whatever this returns.
+
+    What the method must return is exactly ``insert_start``'s answer for the UMI's own
+    recorded span end, with nothing laid over it. That includes a run which consumes the
+    rest of the read, reported as reaching the read end rather than clamped back inside
+    it: reporting it honestly is ``insert_start``'s own tested contract, and a clamp
+    added here would quietly disagree with the arm that shares that function.
+    """
+
+    @pytest.fixture
+    def writer(self) -> ScrnaWriter:
+        """Provide a ScrnaWriter constructed against the shipped chemistry.
+
+        Returns:
+            A ``ScrnaWriter`` built from the ``carmack_custom_seq_1_0`` chemistry.
+        """
+        return ScrnaWriter(ChemistryFactory.get_chemistry(CHEMISTRY))
+
+    @pytest.mark.parametrize("chemistry_name", SHIPPED_CHEMISTRIES)
+    @pytest.mark.parametrize("polyg_run_length", [0, 1, 5])
+    def test_insert_cut_is_insert_start_taken_off_the_umi_spans_end(
+        self, chemistry_name: str, polyg_run_length: int
+    ) -> None:
+        """Test that insert_cut answers with insert_start's own answer for this read.
+
+        Two independent expectations are asserted against, deliberately. The first is
+        arithmetic this test already knows and the code under test does not participate
+        in - the UMI's recorded span end plus the poly-G run the read was built to carry
+        after it - which is what makes the assertion meaningful rather than circular. The
+        second is ``insert_start`` itself, called the way the method is contracted to
+        call it, which is what pins the two as the same computation rather than two that
+        merely agree on the reads this file happens to build.
+
+        A run length of zero is included because it is the one case where the anchor
+        contributes nothing and the cut has to fall exactly on the span end, and both
+        shipped chemistries are driven because they seat the UMI at different read
+        offsets: a cut derived from the span the read records answers both, while one
+        derived from an offset fixed by a chemistry could only ever answer one.
+        """
+        writer = ScrnaWriter(ChemistryFactory.get_chemistry(chemistry_name))
+        annotation, r1_seq, _ = build_scrna_read(
+            read_id="read-cut",
+            bc3_seq="A" * BARCODE_LENGTH,
+            bc2_seq="C" * BARCODE_LENGTH,
+            bc1_seq="T" * BARCODE_LENGTH,
+            umi_seq="ACTACTAT",
+            polyg_run_length=polyg_run_length,
+            insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
+        )
+        umi_end = parse_span(annotation.get(position_key("UMI")))[1]
+
+        cut = writer.insert_cut(annotation, r1_seq)
+
+        assert_that(cut).is_equal_to(umi_end + polyg_run_length)
+        assert_that(cut).is_equal_to(
+            insert_start(reference=umi_end, anchor=writer.umi_right_anchor, seq=r1_seq)
+        )
+
+    def test_insert_cut_is_the_umi_span_end_when_the_chemistry_declares_no_right_anchor(
+        self,
+    ) -> None:
+        """Test that a chemistry with no UMI right anchor cuts at the UMI span end itself.
+
+        ``insert_start``'s no-anchor branch returns its reference unchanged, and this is
+        the case that tells a method which really delegates to it apart from one that
+        reimplemented the homopolymer scan: the read here still carries a poly-G run
+        after its UMI, so an implementation that walked the run regardless of what the
+        chemistry declares would return the run's end and fail here, while every read in
+        the parametrized test above would still have passed.
+        """
+        components = [
+            ReadComponent(name=name, type=ReadComponentType.BARCODE, length=BARCODE_LENGTH)
+            for name in BARCODE_NAMES_IN_STRUCTURE_ORDER
+        ]
+        components.append(ReadComponent(name="UMI", type=ReadComponentType.UMI, length=UMI_LENGTH))
+        writer = ScrnaWriter(FabricatedChemistry(ReadStructure(components)))
+        assert_that(writer.umi_right_anchor).is_none()
+
+        polyg_run_length = 5
+        annotation, r1_seq, _ = build_scrna_read(
+            read_id="read-no-anchor",
+            bc3_seq="A" * BARCODE_LENGTH,
+            bc2_seq="C" * BARCODE_LENGTH,
+            bc1_seq="T" * BARCODE_LENGTH,
+            umi_seq="ACTACTAT",
+            polyg_run_length=polyg_run_length,
+            insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
+        )
+        umi_end = parse_span(annotation.get(position_key("UMI")))[1]
+
+        cut = writer.insert_cut(annotation, r1_seq)
+
+        assert_that(cut).is_equal_to(umi_end)
+        assert_that(cut).is_not_equal_to(umi_end + polyg_run_length)
+        assert_that(cut).is_equal_to(insert_start(reference=umi_end, anchor=None, seq=r1_seq))
+
+    def test_insert_cut_reaches_the_read_end_when_the_anchor_run_terminates_the_read(
+        self, writer: ScrnaWriter
+    ) -> None:
+        """Test that a run consuming the rest of the read is reported, not clamped back.
+
+        On a 2-colour instrument an unsequenced tail comes back as a run of the anchor
+        base, so the scan can walk to the read's last base and the honest answer for
+        where the insert starts is the read end. This method reports that answer
+        unchanged; deciding what to do about a read that has no insert left is the
+        caller's, taken where the outcome and the tallies are, and a clamp introduced
+        here would take that decision away from it by pretending an insert remained.
+        """
+        polyg_run_length = 6
+        annotation, r1_seq, _ = build_scrna_read(
+            read_id="read-saturating-run",
+            bc3_seq="A" * BARCODE_LENGTH,
+            bc2_seq="C" * BARCODE_LENGTH,
+            bc1_seq="T" * BARCODE_LENGTH,
+            umi_seq="ACTACTAT",
+            polyg_run_length=polyg_run_length,
+            insert_seq="",
+        )
+
+        cut = writer.insert_cut(annotation, r1_seq)
+
+        assert_that(cut).is_equal_to(len(r1_seq))
+        assert_that(r1_seq[cut:]).is_equal_to("")
+
+    def test_insert_cut_missing_umi_position_tag_raises_value_error_naming_read_and_tag(
+        self, writer: ScrnaWriter
+    ) -> None:
+        """Test that a header with no UMI_POS fails here, naming the read and the tag.
+
+        This is the guard ``read_span`` already applies for every other span the writer
+        reads, reached through a second caller. It matters more than it looks: the cut is
+        now asked for while the read is still being dispatched, so this is where a read
+        that never went through extract-umis is caught, and the message has to name both
+        the read and the tag for that to be actionable rather than a bare parse failure
+        somewhere inside span parsing.
+        """
+        read_id = "read-missing-umi-pos"
+        annotation, r1_seq, _ = build_scrna_read(
+            read_id=read_id,
+            bc3_seq="A" * BARCODE_LENGTH,
+            bc2_seq="C" * BARCODE_LENGTH,
+            bc1_seq="T" * BARCODE_LENGTH,
+            umi_seq="ACTACTAT",
+            polyg_run_length=4,
+            insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
+        )
+        del annotation.tags[position_key("UMI")]
+        assert_that(annotation.get(position_key("UMI"))).is_none()
+
+        with pytest.raises(ValueError) as exc_info:
+            writer.insert_cut(annotation, r1_seq)
+
+        message = str(exc_info.value)
+        assert_that(message).contains(read_id)
+        assert_that(message).contains(position_key("UMI"))
+
+
+class TestScrnaWriterCutIsGivenNotRecomputed:
+    """write_read slices R1 at the cut it is handed, and nothing else moves with it.
+
+    Deciding where R1 is cut and performing the cut now happen in two different
+    processes: the cut is computed while the read is being dispatched, in parallel, and
+    arrives at this writer as a value. A writer that recomputed it would still produce
+    the right output for every read whose recorded spans agree with the cut it was
+    handed - which is every read in the rest of this file - so the only way to tell the
+    two implementations apart is to hand over a cut that deliberately disagrees, and
+    assert the output follows the argument. That is what these tests do, and it is why
+    the cut they pass is one this writer would never have derived for the read.
+
+    The other half is what must NOT follow the cut. ``r1_seq`` and ``r1_qual`` still
+    arrive full and untrimmed, because the barcodes record's quality is sliced at each
+    component's recorded start, in the original read's coordinates, and those
+    coordinates only mean anything against the untrimmed string. So the same read written
+    at two different cuts must produce two different R1 records and byte-identical
+    barcodes records.
+    """
+
+    @pytest.fixture
+    def writer(self) -> ScrnaWriter:
+        """Provide a ScrnaWriter constructed against the shipped chemistry.
+
+        Returns:
+            A ``ScrnaWriter`` built from the ``carmack_custom_seq_1_0`` chemistry.
+        """
+        return ScrnaWriter(ChemistryFactory.get_chemistry(CHEMISTRY))
+
+    @pytest.mark.parametrize(
+        "cut_shift", [-2, 3], ids=["short of the run end", "past the run end"]
+    )
+    def test_write_read_slices_r1_at_the_cut_it_is_given(
+        self, writer: ScrnaWriter, cut_shift: int
+    ) -> None:
+        """Test that the R1 record follows the given cut, not the one the read implies.
+
+        The cut handed over here is deliberately wrong for this read - a couple of bases
+        short of the poly-G run's end in one case, a few bases into the insert in the
+        other - and is checked against the cut the writer itself would derive so that
+        "deliberately wrong" is asserted rather than assumed. Both directions are driven
+        because an implementation that quietly took the larger or the smaller of the two
+        would still pass a test that only ever pushed the cut one way.
+
+        The R1 record must be the read sliced at the argument, in sequence and in
+        quality alike, and must NOT equal the read sliced at the derived cut; any
+        implementation that recomputes the cut for itself fails on that second
+        assertion.
+        """
+        polyg_run_length = 5
+        annotation, r1_seq, r1_qual = build_scrna_read(
+            read_id="read-given-cut",
+            bc3_seq="A" * BARCODE_LENGTH,
+            bc2_seq="C" * BARCODE_LENGTH,
+            bc1_seq="T" * BARCODE_LENGTH,
+            umi_seq="ACTACTAT",
+            polyg_run_length=polyg_run_length,
+            insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
+        )
+        derived_cut = polyg_cut(annotation, polyg_run_length)
+        assert_that(derived_cut).is_equal_to(writer.insert_cut(annotation, r1_seq))
+        given_cut = derived_cut + cut_shift
+        assert_that(given_cut).is_not_equal_to(derived_cut)
+
+        r2_name = "read-given-cut"
+        r2_seq = "ACGT" * 5
+        r2_qual = "I" * len(r2_seq)
+        r1_stream = io.BytesIO()
+        r2_stream = io.BytesIO()
+        barcodes_stream = io.BytesIO()
+
+        writer.write_read(
+            annotation,
+            r1_seq,
+            r1_qual,
+            given_cut,
+            r2_name,
+            r2_seq,
+            r2_qual,
+            r1_stream,
+            r2_stream,
+            barcodes_stream,
+        )
+
+        header, seq, qual = parse_fastq_record(r1_stream)
+        assert_that(header).is_equal_to(annotation.read_id)
+        assert_that(seq).is_equal_to(r1_seq[given_cut:])
+        assert_that(qual).is_equal_to(r1_qual[given_cut:])
+        assert_that(seq).is_not_equal_to(r1_seq[derived_cut:])
+
+    def test_write_read_barcodes_and_r2_records_do_not_move_with_the_cut(
+        self, writer: ScrnaWriter
+    ) -> None:
+        """Test that only the R1 record changes when the same read is written at two cuts.
+
+        The barcodes record's quality is sliced at each component's recorded start, and
+        those starts are coordinates in the original, untrimmed read - which is exactly
+        why the untrimmed sequence and quality are what this writer is handed, rather
+        than a read already cut down to its insert. Writing one read twice, at two cuts
+        far enough apart to straddle the barcode segments, is what shows the barcodes
+        record does not silently follow the trim. R2 is asserted alongside it because it
+        is passed through untouched and has no business moving either; the R1 records are
+        asserted to differ so that the whole test cannot pass by writing nothing at all.
+        """
+        polyg_run_length = 4
+        annotation, r1_seq, r1_qual = build_scrna_read(
+            read_id="read-two-cuts",
+            bc3_seq="A" * BARCODE_LENGTH,
+            bc2_seq="C" * BARCODE_LENGTH,
+            bc1_seq="T" * BARCODE_LENGTH,
+            umi_seq="ACTACTAT",
+            polyg_run_length=polyg_run_length,
+            insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
+        )
+        r2_name = "read-two-cuts"
+        r2_seq = "ACGT" * 5
+        r2_qual = "I" * len(r2_seq)
+
+        records = []
+        for cut in (0, polyg_cut(annotation, polyg_run_length)):
+            r1_stream = io.BytesIO()
+            r2_stream = io.BytesIO()
+            barcodes_stream = io.BytesIO()
+            writer.write_read(
+                annotation,
+                r1_seq,
+                r1_qual,
+                cut,
+                r2_name,
+                r2_seq,
+                r2_qual,
+                r1_stream,
+                r2_stream,
+                barcodes_stream,
+            )
+            records.append(
+                (
+                    parse_fastq_record(r1_stream),
+                    parse_fastq_record(r2_stream),
+                    parse_fastq_record(barcodes_stream),
+                )
+            )
+
+        first, second = records
+        assert_that(first[2]).is_equal_to(second[2])
+        assert_that(first[1]).is_equal_to(second[1])
+        assert_that(first[0]).is_not_equal_to(second[0])
+
+    def test_write_read_barcode_and_umi_quality_windows_stay_in_original_coordinates(
+        self, writer: ScrnaWriter
+    ) -> None:
+        """Test that each quality window is read from the untrimmed read's own coordinates.
+
+        The previous test shows the barcodes record does not move with the cut; this one
+        says where it is actually read from, so that a writer which happened to produce a
+        stable but wrong window could not satisfy both. Every expected window here is
+        computed from the spans recorded on the annotation, applied to the full ``r1_qual``
+        the writer was handed, while the cut passed alongside sits well past all of them -
+        the arrangement in which an implementation that sliced quality out of the trimmed
+        insert would emit an unmistakably different record rather than a subtly shifted
+        one.
+        """
+        polyg_run_length = 4
+        annotation, r1_seq, r1_qual = build_scrna_read(
+            read_id="read-original-coordinates",
+            bc3_seq="A" * BARCODE_LENGTH,
+            bc2_seq="C" * BARCODE_LENGTH,
+            bc1_seq="T" * BARCODE_LENGTH,
+            umi_seq="ACTACTAT",
+            polyg_run_length=polyg_run_length,
+            insert_seq="TATAGCCTCTCTTATACACATCTCCTC",
+        )
+        cut = polyg_cut(annotation, polyg_run_length)
+        expected_qual = ""
+        for name in BARCODE_NAMES_IN_STRUCTURE_ORDER:
+            start = parse_span(annotation.get(position_key(name)))[0]
+            expected_qual += r1_qual[start : start + BARCODE_LENGTH]
+        umi_start = parse_span(annotation.get(position_key("UMI")))[0]
+        expected_qual += r1_qual[umi_start : umi_start + UMI_LENGTH]
+        assert_that(cut).is_greater_than(umi_start + UMI_LENGTH)
+
+        r2_seq = "ACGT" * 5
+        barcodes_stream = io.BytesIO()
+        writer.write_read(
+            annotation,
+            r1_seq,
+            r1_qual,
+            cut,
+            annotation.read_id,
+            r2_seq,
+            "I" * len(r2_seq),
+            io.BytesIO(),
+            io.BytesIO(),
+            barcodes_stream,
+        )
+
+        qual = parse_fastq_record(barcodes_stream)[2]
+        assert_that(qual).is_equal_to(expected_qual)
+        assert_that(qual).is_length(FIXED_BARCODES_RECORD_LENGTH)
+
+    def test_write_read_takes_the_cut_immediately_after_the_r1_sequence_and_quality(
+        self,
+    ) -> None:
+        """Test that the cut sits with the rest of R1 in the parameter list, not apart from it.
+
+        Every one of these arguments is passed positionally by the driver, so their order
+        is the contract rather than a detail. The cut belongs directly after the sequence
+        and quality it applies to: those three describe one read, and separating them -
+        putting the cut after the R2 triple, or last with the streams - would let a
+        caller mismatch a cut with a read it does not belong to and still be written
+        without complaint.
+        """
+        parameters = list(signature(ScrnaWriter.write_read).parameters)
+
+        assert_that(parameters).is_equal_to(
+            [
+                "self",
+                "ann",
+                "r1_seq",
+                "r1_qual",
+                "cut",
+                "r2_name",
+                "r2_seq",
+                "r2_qual",
+                "r1_stream",
+                "r2_stream",
+                "barcodes_stream",
+            ]
+        )

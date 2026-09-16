@@ -218,6 +218,14 @@ class UmiExtractionStats:
         The payload's ``data`` is pair-shaped rather than a mapping; see
         :func:`carmack.mqc_report.linegraph_xy_pairs` for why.
 
+        The description names the scan that produced these bins because one
+        phenomenon is counted twice in one report: a tract running to the end of
+        the read is a saturating run here and a dropped read in prepare-reads,
+        and the two scans differ in whether they walk through a single
+        interrupting base. The two numbers are read side by side, so the reason
+        they disagree belongs where they are read rather than only in the design
+        that argued for them.
+
         Args:
             prefix: Sample identifier used to key the payload's ``data`` section.
 
@@ -235,7 +243,14 @@ class UmiExtractionStats:
             "parent_id": CARMACK_PARENT_ID,
             "parent_name": CARMACK_PARENT_NAME,
             "section_name": "UMI Anchor Run Length",
-            "description": "Distribution of the anchor homopolymer run length observed at the first base after the UMI, over accepted reads.",
+            "description": (
+                "Distribution of the anchor homopolymer run length observed at the first base "
+                "after the UMI, over accepted reads. The run is measured by an unbridged scan, "
+                "which stops at the first non-anchor base, so a single sequencing error inside "
+                "the tract is reported here as a shorter run. Prepare-reads' insert-boundary "
+                "scan bridges one such interrupting base, so its insert_not_sequenced count "
+                "can exceed the number of reads in the saturating bin here."
+            ),
             "pconfig": {
                 "id": "carmack_umi_anchor_run_plot",
                 "title": "UMI Extraction: Anchor Run Length Distribution",

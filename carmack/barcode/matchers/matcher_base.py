@@ -285,11 +285,11 @@ class MatcherBase(ABC):
         A component the layout cannot place at all is exempt: where the structure predicts no
         position, position neither corroborates nor contradicts, so there is nothing for a
         displacement rule to measure. The exemption is load-bearing rather than merely tidy.
-        A target index sits behind a homopolymer and in front of a Mosaic End shipped with no
-        sequence, so its spacer check returns nothing on every read by construction; demanding
-        evidence would be unanswerable, and every read would be reported as carrying no target
-        at all. Such a component is bounded before it reaches a matcher, by the anchor run
-        that locates it, and that bound is its corroboration.
+        A target index sits behind a homopolymer and in front of a Mosaic End shipped with
+        ``verify`` false, so its spacer check returns nothing on every read by construction;
+        demanding evidence would be unanswerable, and every read would be reported as carrying
+        no target at all. Such a component is bounded before it reaches a matcher, by the
+        anchor run that locates it, and that bound is its corroboration.
 
         Args:
             read_idx: The candidate's span, in original-read coordinates.
@@ -329,6 +329,7 @@ class MatcherBase(ABC):
                 spacer_component
                 and spacer_component.type in (ReadComponentType.PRIMER, ReadComponentType.OTHER)
                 and spacer_component.sequence
+                and spacer_component.verify
             ):
                 spacer_seq = None
                 if loc == "upstream":

@@ -3,11 +3,14 @@
 For each UMI- and target-annotated R1 read, ``ReadPreparer.prepare_read`` decides which of
 two arms the read belongs to and tallies the outcome into a shared ``PrepareCounts``
 accumulator. A read carrying no real target index (no ``TGIDX`` tag, or one set to
-``NO_TARGET``) is unmatched and stays untrimmed -- a later scRNA writer trims it off the
-UMI span, not this stage. A read carrying a real target index is matched: its insert start
-is computed by the same chemistry-agnostic ``insert_start`` arithmetic the scRNA arm uses,
-just anchored off ``TGIDX_POS`` instead of ``UMI_POS``, and its scTIP header is rendered up
-front so a later writer needs nothing but the outcome to write the read.
+``NO_TARGET``) is unmatched and travels on whole: its insert start is settled here, off the
+UMI span, and rides along on the outcome for a later scRNA writer to slice at, because that
+writer needs the untrimmed read to take its barcode quality windows in the read's original
+coordinates. A read carrying a real target index is matched: its insert start comes from the
+same chemistry-agnostic ``insert_start`` arithmetic, just anchored off ``TGIDX_POS`` instead
+of ``UMI_POS``, and its scTIP header is rendered up front so a later writer needs nothing
+but the outcome to write the read. Both arms therefore settle their trim point in the same
+place, in a worker, rather than one of them settling it on the thread that writes.
 
 ``ReadPreparer.prepare_reads`` is the streaming driver: it opens the paired input FASTQs,
 pools ``prepare_read`` across a dynamic number of gzip writers -- three fixed files for the
@@ -39,7 +42,7 @@ from carmack.io.gzip_file import GzipFile
 from carmack.io.read_annotation import ReadAnnotation
 from carmack.mqc_report import write_mqc_payloads
 from carmack.parallel import map_batches_in_order
-from carmack.prepare_reads.insert_locator import insert_start
+from carmack.prepare_reads.insert_locator import insert_not_sequenced, insert_start
 from carmack.prepare_reads.prepare_reporting import PrepareCounts, PrepareStats
 from carmack.prepare_reads.scrna_writer import ScrnaWriter
 from carmack.prepare_reads.sctip_writer import (
@@ -68,19 +71,30 @@ WORKER_PREPARER: "ReadPreparer | None" = None
 class UnmatchedOutcome:
     """The scRNA (unmatched) arm's per-read result.
 
-    Carries the read's full, untrimmed sequence and quality: unlike the matched arm,
-    trimming this read down to its cDNA insert needs the UMI span, which a later scRNA
-    writer reads for itself rather than this stage recomputing it.
+    Carries the read's full, untrimmed sequence and quality alongside the coordinate
+    they are to be trimmed at, rather than the already-trimmed strings the matched arm
+    carries. The scRNA writer slices the synthesized barcodes record's quality at each
+    component's recorded start, in the original read's coordinates, and those
+    coordinates mean nothing against a string already cut down to its insert - so the
+    read has to travel whole, and its trim point has to travel beside it as a number.
+
+    That number is computed in the worker that dispatched the read, by the same
+    ``ScrnaWriter`` the driver later writes the read with, so this arm's cut and the
+    matched arm's are settled in one place instead of one of them being worked out on
+    the single thread every unmatched read is written by.
 
     Attributes:
         ann: The read's parsed header.
         r1_seq: The full, untrimmed R1 sequence.
         r1_qual: The full, untrimmed R1 quality string.
+        cut: The 0-based coordinate this read's insert starts at, which the writer
+            slices both ``r1_seq`` and ``r1_qual`` at.
     """
 
     ann: ReadAnnotation
     r1_seq: str
     r1_qual: str
+    cut: int
 
 
 @dataclass(frozen=True)
@@ -98,6 +112,13 @@ class MatchedOutcome:
     header: str
     r1_seq: str
     r1_qual: str
+
+
+# The two shapes the dispatch result of a WRITTEN read can take, named once so the
+# per-read signature and the batch worker's list of them cannot spell the pair out twice
+# and drift apart. A dropped read is deliberately not one of them: it comes back as
+# ``None``, which is why both of those places union this alias with one.
+PreparedOutcome = UnmatchedOutcome | MatchedOutcome
 
 
 class ReadPreparer:
@@ -174,13 +195,38 @@ class ReadPreparer:
 
     def prepare_read(
         self, name: str, seq: str, qual: str, counts: PrepareCounts
-    ) -> UnmatchedOutcome | MatchedOutcome:
+    ) -> PreparedOutcome | None:
         """Dispatch one read to the unmatched or a matched arm and tally the outcome.
 
         A chemistry with no target index support never even looks for a ``TGIDX`` tag,
         since ``self.tgidx_key`` is ``None`` for it. Otherwise a read with no ``TGIDX``
         tag, or one set to ``NO_TARGET``, is unmatched; any other value is matched, and
         its insert start is computed off the end of its ``TGIDX_POS`` span.
+
+        Both arms settle an insert start here. The matched arm computes its own; the
+        unmatched arm asks the ``ScrnaWriter`` this stage already holds, which has the
+        UMI's position key and its right anchor cached from its own construction, rather
+        than this class re-deriving the same chemistry facts into a second set of
+        attributes that could drift from the writer's. The deliberate consequence, worth
+        stating because it moves where a corrupt header is refused: an unmatched read
+        carrying no ``UMI_POS`` tag is now refused here, in the worker, rather than one
+        dispatch later on the writer thread. It is the same ``ValueError`` from the same
+        guard, raised a step earlier, and it makes this arm symmetrical with the matched
+        arm, which has always raised here for a missing ``TGIDX_POS``.
+
+        Settling both cuts here is also what lets one guard decide, for both arms,
+        whether the read has an insert at all: a cut that has reached the read's end
+        leaves nothing to write, so the read is dispatched nowhere and counted as
+        rejected instead. The order the tallies are taken in carries that: ``total`` is
+        bumped first and unconditionally, and an arm's own counter only once that arm's
+        guard has passed, so the three-term reconciliation holds after every single call
+        rather than only once a run has finished. On the matched arm the guard sits
+        immediately after the cut and before the scTIP header is rendered, since a read
+        about to be dropped needs no header and rendering one is the most expensive
+        thing this method does. What still runs ahead of that guard is the refusal of a
+        corrupt header, which outranks the drop: a read whose tags could not have come
+        from a correctly run chain is refused whether or not its insert was sequenced,
+        rather than being counted as a rejection it only looks like.
 
         Args:
             name: The read's annotated header, without its leading ``@``.
@@ -190,21 +236,32 @@ class ReadPreparer:
                 allocates no per-read outcome-tally object.
 
         Returns:
-            The unmatched or matched outcome for this read.
+            The unmatched or matched outcome for this read, or ``None`` when the cut
+            settled for it has reached the end of the read and there is no insert left
+            to write. A dropped read reaches no arm at all, and its R2 mate and its
+            synthesized barcodes record go down with it: the driver writes all three of
+            an unmatched read's files from the one call this ``None`` skips, so the
+            scRNA arm's three files stay positionally in register -- the property every
+            downstream consumer of that triple reads them by.
 
         Raises:
-            ValueError: If the read carries a real target index but no ``TGIDX_POS``
-                span for it, or no UMI tag at all -- a corrupt input, since a
-                correctly run assign-targets/extract-umis chain always writes both
-                alongside a real target value.
+            ValueError: If the read reaches the unmatched arm with no ``UMI_POS`` span
+                to take its cut off, or carries a real target index but no
+                ``TGIDX_POS`` span for it or no UMI tag at all -- a corrupt input,
+                since a correctly run assign-targets/extract-umis chain always writes
+                every one of them.
         """
         counts.total += 1
         ann = ReadAnnotation.parse(name)
 
         tgidx = ann.get(self.tgidx_key) if self.tgidx_key is not None else None
         if tgidx is None or tgidx == NO_TARGET:
+            cut = self.scrna_writer.insert_cut(ann, seq)
+            if insert_not_sequenced(cut, seq):
+                counts.insert_not_sequenced += 1
+                return None
             counts.unmatched += 1
-            return UnmatchedOutcome(ann=ann, r1_seq=seq, r1_qual=qual)
+            return UnmatchedOutcome(ann=ann, r1_seq=seq, r1_qual=qual, cut=cut)
 
         pos_key = position_key(self.tgidx_key)
         pos = ann.get(pos_key)
@@ -216,10 +273,21 @@ class ReadPreparer:
         _, tgidx_end = parse_span(pos)
         cut = insert_start(reference=tgidx_end, anchor=self.tgidx_right_anchor, seq=seq)
 
-        barcodes = {barcode_name: ann.get(barcode_name) for barcode_name in self.barcode_names}
+        # Read before the guard below, and only read: a matched read carrying no UMI tag
+        # is a corrupt input from a chain that cannot have run correctly, and a corrupt
+        # read is refused whether or not its insert turned out to have been sequenced.
+        # Dropping it instead would fold a broken upstream run into a counter that exists
+        # to report a sequencing outcome. Rendering the header stays below the guard,
+        # where the cost is: this is a dict lookup, that is the expensive part.
         umi = ann.get(self.umi_name)
         if umi is None:
             raise ValueError(f"Read '{ann.read_id}' carries no '{self.umi_name}' tag")
+
+        if insert_not_sequenced(cut, seq):
+            counts.insert_not_sequenced += 1
+            return None
+
+        barcodes = {barcode_name: ann.get(barcode_name) for barcode_name in self.barcode_names}
         header = render_sctip_header(self.chemistry, ann.read_id, barcodes, umi)
 
         counts.target_counts[tgidx] += 1
@@ -228,10 +296,19 @@ class ReadPreparer:
     def prepare_reads(self, output_dir: str = ".", prefix: str | None = None) -> PrepareStats:
         """Stream the paired reads, dispatch every one and write the output files.
 
-        Every input read is written exactly once, to exactly one output arm: the scRNA
+        Every input read is written exactly once, to exactly one output arm -- the scRNA
         arm's three files for an unmatched read, or one target bucket's (R1, R2) pair for
-        a matched one. This stage never filters, so reads written always reconciles with
-        reads read -- the invariant :class:`PrepareStats` states and checks.
+        a matched one -- unless its computed insert start has reached the end of the read,
+        in which case it is written nowhere at all and counted as ``insert_not_sequenced``
+        instead. That is this stage's one filtering case, and it exists because such a
+        read has nothing left past its cut: written out, it would be a zero-length record,
+        syntactically valid enough to clear every framing and length check and so to
+        desync the next reader that meets it rather than to be refused by it. Reads
+        written plus reads dropped therefore still reconciles with reads read -- the
+        three-term invariant :class:`PrepareStats` states and checks. The decision is
+        taken in the worker, where the cut is computed and the tallies are kept, so one
+        guard covers both arms instead of each arm answering it wherever its own writer
+        happens to run.
 
         Report files are written once the run is over: the ``prepare_stats.txt`` report,
         a ``detected_targets.txt`` giving the read count of just the arms and buckets
@@ -358,12 +435,17 @@ class ReadPreparer:
                 for outcomes, batch_counts in results:
                     r2_batch = r2_sidecar.popleft()
                     for outcome, r2_read in zip(outcomes, r2_batch, strict=True):
+                        if outcome is None:
+                            # Dropped reads keep their slot so this batch's outcomes stay
+                            # index-for-index with the R2 half held in the sidecar.
+                            continue
                         if isinstance(outcome, UnmatchedOutcome):
                             r2_name, r2_seq, r2_qual = r2_read
                             self.scrna_writer.write_read(
                                 outcome.ann,
                                 outcome.r1_seq,
                                 outcome.r1_qual,
+                                outcome.cut,
                                 r2_name,
                                 r2_seq,
                                 r2_qual,
@@ -427,7 +509,7 @@ def init_prepare_worker(preparer: "ReadPreparer") -> None:
 
 def prepare_read_batch(
     r1_batch: list[tuple[str, str, str]],
-) -> tuple[list["UnmatchedOutcome | MatchedOutcome"], PrepareCounts]:
+) -> tuple[list[PreparedOutcome | None], PrepareCounts]:
     """Dispatch one batch of R1 reads inside a worker process.
 
     Takes the batch as its only argument and reads its preparer off the module global
@@ -441,7 +523,9 @@ def prepare_read_batch(
 
     Returns:
         The batch's outcomes, in input order, and the tallies of the outcomes they
-        took.
+        took. There is exactly one entry per submitted read, a dropped read holding
+        its slot with a ``None``, because the driver pairs this list against the R2
+        half it kept out of the pool by position and by nothing else.
     """
     counts = PrepareCounts()
     outcomes = [

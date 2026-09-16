@@ -27,6 +27,7 @@ from carmack.chemistry.chemistry_base import (
 )
 from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import (
     BC2_PATH,
+    ME,
     POLYG_BASE,
     POLYG_MIN_RUN,
     TGIDX_LENGTH,
@@ -52,6 +53,17 @@ class TestReadComponent:
         assert_that(comp.name).is_equal_to("BC1")
         assert_that(comp.type).is_equal_to(ReadComponentType.BARCODE)
         assert_that(comp.length).is_equal_to(10)
+        assert_that(comp.verify).is_true()
+
+    def test_read_component_verify_false_is_stored(self) -> None:
+        """verify=False can be passed explicitly and is stored as given."""
+        comp = ReadComponent(
+            name="PRIMER_A",
+            type=ReadComponentType.PRIMER,
+            length=22,
+            verify=False,
+        )
+        assert_that(comp.verify).is_false()
 
     def test_read_component_type_must_be_enum(self):
         """Test that the component type must be a ReadComponentType member."""
@@ -1082,7 +1094,31 @@ class TestChemistryCarmackCustomSeq10:
         assert_that(right_anchor.type).is_equal_to(ReadComponentType.PRIMER)
         assert_that(right_anchor.is_anchor).is_true()
         assert_that(right_anchor.length).is_equal_to(19)
-        assert_that(right_anchor.sequence).is_none()
+        assert_that(right_anchor.sequence).is_equal_to("AGATGTGTATAAGAGACAG")
+
+    def test_me_component_has_known_sequence_but_is_not_verified(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ):
+        """ME's ReadComponent carries its known sequence, but with verify=False.
+
+        ME's sequence is well known and used elsewhere (the insert-boundary arithmetic anchors
+        off it), so it is registered on the component. verify=False keeps check_spacers from
+        ever comparing it, preserving the TGIDX downstream-spacer behaviour that
+        test_requires_spacer_evidence_is_false_for_the_target_index and its regression
+        counterpart in test_barcode_matchers.py pin down.
+        """
+        me_component = chemistry.read_structure.get_component_by_name("ME")
+        assert_that(me_component.sequence).is_equal_to("AGATGTGTATAAGAGACAG")
+        assert_that(me_component.sequence).is_equal_to(ME)
+        assert_that(me_component.verify).is_false()
+
+    def test_me_sequence_is_registered_in_known_sequences(
+        self, chemistry: ChemistryCarmackCustomSeq10
+    ):
+        """get_known_sequences() reports ME's sequence alongside PRIMER_C/PRIMER_A."""
+        known_seqs = chemistry.read_structure.get_known_sequences()
+        assert_that(known_seqs).contains_key("ME")
+        assert_that(known_seqs["ME"]).is_equal_to("AGATGTGTATAAGAGACAG")
 
     def test_me_component_cannot_be_matched_by_a_matcher(
         self, chemistry: ChemistryCarmackCustomSeq10
@@ -1249,7 +1285,29 @@ class TestChemistryCarmackCustomSeq10PrimD:
         assert_that(right_anchor.type).is_equal_to(ReadComponentType.PRIMER)
         assert_that(right_anchor.is_anchor).is_true()
         assert_that(right_anchor.length).is_equal_to(19)
-        assert_that(right_anchor.sequence).is_none()
+        assert_that(right_anchor.sequence).is_equal_to("AGATGTGTATAAGAGACAG")
+
+    def test_me_component_has_known_sequence_but_is_not_verified(
+        self, chemistry: ChemistryCarmackCustomSeq10PrimD
+    ):
+        """The PRIMER_D variant inherits ME's known sequence and verify=False unchanged.
+
+        _build_components() on this subclass only prepends PRIMER_D and delegates the rest to
+        the base class, so this confirms that inheritance carries ME's sequence registration
+        through even though this subclass's own file needs no change for it.
+        """
+        me_component = chemistry.read_structure.get_component_by_name("ME")
+        assert_that(me_component.sequence).is_equal_to("AGATGTGTATAAGAGACAG")
+        assert_that(me_component.sequence).is_equal_to(ME)
+        assert_that(me_component.verify).is_false()
+
+    def test_me_sequence_is_registered_in_known_sequences(
+        self, chemistry: ChemistryCarmackCustomSeq10PrimD
+    ):
+        """get_known_sequences() reports ME's sequence for the PRIMER_D variant too."""
+        known_seqs = chemistry.read_structure.get_known_sequences()
+        assert_that(known_seqs).contains_key("ME")
+        assert_that(known_seqs["ME"]).is_equal_to("AGATGTGTATAAGAGACAG")
 
     def test_start_positions(self, chemistry: ChemistryCarmackCustomSeq10PrimD):
         """Start positions account for the prepended PRIMER_D."""

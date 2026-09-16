@@ -4,7 +4,11 @@ A ``TGIDX=NONE`` read carries no target index, so nothing anchors an insert past
 homopolymer run: the read is scRNA cDNA rather than TGIDX-tagged genomic material. This
 arm trims R1 down to that cDNA insert, passes R2 through untouched, and synthesizes a
 third barcodes FASTQ carrying that read's barcode and UMI - the shape STARsolo expects
-for its own barcode/UMI-plus-cDNA read pair.
+for its own barcode/UMI-plus-cDNA read pair. Deciding where that trim falls and
+performing it happen in two different places: ``insert_cut`` is asked for the trim point
+where the reads are dispatched, in parallel, and the cut it answers with travels beside
+the read to this writer, which performs the slice on the single thread that owns these
+three files.
 
 The two halves of that synthesized record come from two different sources. Its sequence
 is read out of the header annotation's own value tags and is never re-sliced out of the
@@ -107,11 +111,49 @@ class ScrnaWriter:
         """
         return parse_span(self.read_value(ann, key))
 
+    def insert_cut(self, ann: ReadAnnotation, r1_seq: str) -> int:
+        """Return the 0-based coordinate this arm's R1 insert begins at.
+
+        The arithmetic lives on this class because this class owns the arm's geometry:
+        the UMI's position key and the anchor sitting on the UMI's 3' side are both
+        resolved once at construction and are already cached here, and ``write_read``
+        slices at exactly what this returns, so deriving the same coordinate a second
+        time beside the caller could only ever be a chance for one read to be given two
+        answers. It is CALLED from the worker that dispatches the read rather than from
+        ``write_read`` itself, which is what lets one guard cover both of the stage's
+        arms -- the matched arm computes its own cut there already, off the target
+        index's span rather than the UMI's -- and what takes the per-read anchor scan
+        off the single thread that writes every read this arm receives.
+
+        Whatever ``insert_start`` answers is returned unchanged, including a coordinate
+        that has reached the end of the read: on a 2-colour instrument an unsequenced
+        tail comes back as a run of the anchor base, so the scan can walk to the last
+        base of the read, and reporting that honestly rather than clamping it back
+        inside the read is ``insert_start``'s own contract. What to do about a read with
+        no insert left is the caller's decision, taken where the outcome and the tallies
+        are.
+
+        Args:
+            ann: The parsed annotation header of the R1 read.
+            r1_seq: The full, untrimmed R1 sequence, which the anchor run is scanned
+                across.
+
+        Returns:
+            The 0-based coordinate the insert starts at, which can reach ``len(r1_seq)``.
+
+        Raises:
+            ValueError: If the annotation carries no UMI ``*_POS`` tag, which is where a
+                read that never went through extract-umis is now refused.
+        """
+        umi_end = self.read_span(ann, self.umi_position_key)[1]
+        return insert_start(reference=umi_end, anchor=self.umi_right_anchor, seq=r1_seq)
+
     def write_read(
         self,
         ann: ReadAnnotation,
         r1_seq: str,
         r1_qual: str,
+        cut: int,
         r2_name: str,
         r2_seq: str,
         r2_qual: str,
@@ -142,10 +184,23 @@ class ScrnaWriter:
         same approximation CellRanger's CB/CY tag convention makes, and is not worth
         more precision.
 
+        R1 is cut at the coordinate handed in rather than at one derived here. That
+        coordinate is computed by ``insert_cut`` where the read was dispatched, and
+        arrives already checked by the stage's one guard over it, so it is taken on
+        trust: a second check here would duplicate that guard and could disagree with
+        the tallies kept beside it, leaving the stage counting one thing and writing
+        another. The sequence and quality still arrive full and untrimmed for the same
+        reason they always did -- the barcode and UMI quality windows below are sliced
+        at each component's recorded start, in the original read's coordinates, which
+        mean nothing against a string already cut down to its insert -- so only the R1
+        record moves with the cut.
+
         Args:
             ann: The parsed annotation header of the R1 read.
             r1_seq: The full, untrimmed R1 sequence.
             r1_qual: The full, untrimmed R1 quality string.
+            cut: The 0-based coordinate R1 is trimmed to, as ``insert_cut`` computed it
+                for this read before the read was dispatched here.
             r2_name: The FASTQ header line for R2.
             r2_seq: The R2 sequence.
             r2_qual: The R2 quality string.
@@ -157,8 +212,7 @@ class ScrnaWriter:
             ValueError: If the annotation is missing any barcode or UMI component's
                 value tag or ``*_POS`` tag.
         """
-        umi_start, umi_end = self.read_span(ann, self.umi_position_key)
-        cut = insert_start(reference=umi_end, anchor=self.umi_right_anchor, seq=r1_seq)
+        umi_start = self.read_span(ann, self.umi_position_key)[0]
         FastqFile.write_read(r1_stream, ann.read_id, r1_seq[cut:], r1_qual[cut:])
 
         r2_read_id = ReadAnnotation.parse(r2_name).read_id
@@ -171,9 +225,10 @@ class ScrnaWriter:
             start = self.read_span(ann, comp.position_key)[0]
             quality_parts.append(r1_qual[start : start + comp.length])
 
-        # The UMI's own span was already parsed above for the R1 cut point, so it is
-        # reused here rather than re-derived from self.umi_position_key, keeping the
-        # UMI appended last, after every barcode segment, in read-structure order.
+        # The UMI's span is read by this method for this quality window alone, since
+        # the R1 cut above arrives precomputed and nothing else here needs it. Appending
+        # the window after every barcode segment is what keeps the UMI last, in
+        # read-structure order.
         umi_value = self.read_value(ann, self.umi.name)
         quality_parts.append(r1_qual[umi_start : umi_start + self.umi.length])
 

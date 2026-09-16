@@ -4,6 +4,7 @@ Data structures and logic for reporting statistics on barcode extraction results
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -295,6 +296,142 @@ class ExtractionStats:
             },
             "data": {prefix: linegraph_xy_pairs(combined)},
         }
+
+
+BARCODE_RANK_MAX_POINTS = 300
+
+
+def log_spaced_ranks(n: int, max_points: int = BARCODE_RANK_MAX_POINTS) -> list[int]:
+    """
+    Choose which ranks to plot from a curve of ``n`` barcodes, spaced logarithmically.
+
+    A rank curve is read on log axes, so the points that carry its shape have to be
+    spaced logarithmically too. Thinning uniformly would spend almost the whole budget
+    on the flat tail and leave the knee, the part anyone actually reads, drawn by a
+    handful of points.
+
+    The result holds at most ``max_points`` ranks rather than exactly that many. At the
+    low end consecutive log steps are far less than one rank apart, so several of them
+    round to the same integer rank and collapse into one. The budget is an upper bound,
+    and the length must not be read back as a count of anything.
+
+    Ranks 1 and ``n`` are seeded literally instead of being left to the loop's float
+    arithmetic. They carry the two numbers a reader takes off this chart, the top
+    barcode's depth and the number of barcodes observed, and ``round(exp(log(n)))``
+    landing a rank either side of ``n`` would misreport the second of them silently.
+    The interior is clamped into ``[2, n - 1]`` for the same reason: the bound then
+    holds by construction rather than by trusting the exponential to stay inside it.
+
+    A budget below two points cannot carry both endpoints at once, so there is no curve
+    to draw and it raises. Truncating to a two-element list instead would quietly
+    violate the very bound the argument was asking for.
+
+    Args:
+        n: Number of barcodes on the curve, which is also the largest rank available.
+        max_points: Upper bound on how many ranks are returned. Must be at least 2
+            whenever ``n`` exceeds it.
+
+    Returns:
+        Strictly ascending ranks starting at 1 and ending at ``n``, or an empty list
+        when ``n`` is not positive.
+
+    Raises:
+        ValueError: If ``n`` exceeds ``max_points`` and ``max_points`` is below 2.
+    """
+    if n <= 0:
+        return []
+    if n <= max_points:
+        return list(range(1, n + 1))
+    if max_points < 2:
+        raise ValueError(f"max_points must be at least 2 to keep both endpoints, got {max_points}")
+
+    steps = max_points - 1
+    log_n = math.log(n)
+    ranks = {1, n}
+    for i in range(1, max_points - 1):
+        ranks.add(min(n - 1, max(2, round(math.exp(log_n * i / steps)))))
+    return sorted(ranks)
+
+
+def to_mqc_barcode_rank(
+    prefix: str,
+    barcode_counts: Mapping[str, int],
+    max_points: int = BARCODE_RANK_MAX_POINTS,
+) -> dict[str, object] | None:
+    """
+    Build a MultiQC "linegraph" custom-content payload of the barcode rank curve.
+
+    This is a module-level function rather than a method on ExtractionStats because the
+    per-barcode counts it plots live on the accumulator and never reach the finalized
+    stats object, which keeps only the top ten. Threading the whole counter through
+    ``finalize()`` purely so this builder could sit beside its siblings would be the
+    larger change, and would hang a per-barcode dict off a dataclass that exists to
+    stay small.
+
+    Three details of the payload are load-bearing against MultiQC's custom-content
+    parser rather than matters of taste.
+
+    ``data`` is a list of ``[x, y]`` pairs and not an ``{x: y}`` mapping. The
+    custom-content linegraph path renders a mapping's keys as lexically sorted strings,
+    which puts '10' between '1' and '2' -- ruinous for a curve running from rank 1 to
+    rank one million. A list of pairs is a first-class input shape MultiQC builds the
+    mapping from itself, and it keeps the ranks integers throughout.
+
+    An empty counter returns ``None`` rather than a payload carrying an empty pair
+    list. MultiQC indexes the first point unguarded, so an empty list raises IndexError
+    and takes down the entire report, not merely this section. The writer's own
+    emptiness check does not catch it either, because ``{prefix: []}`` is a dict
+    holding an empty list and so is truthy. The suppression has to happen here.
+
+    ``smooth_points`` is set explicitly and derived as ``max_points + 1``. MultiQC
+    re-bins any series longer than that threshold onto uniform index spacing, which
+    flattens exactly the log spacing this chart exists to produce, and setting
+    ``smooth_points`` to null does not disable the re-binning. Deriving the threshold
+    from the budget in force means a caller raising ``max_points`` cannot silently walk
+    back into it.
+
+    Args:
+        prefix: Sample identifier used to key the payload's ``data`` section.
+        barcode_counts: Read count per full barcode. Zero-count entries are barcodes
+            the run never observed and are excluded from the curve.
+        max_points: Upper bound on how many ranks the curve is plotted at.
+
+    Returns:
+        MultiQC custom-content payload nested under carmack's shared parent section,
+        holding one log-spaced rank/depth pair per plotted point, or None if no barcode
+        was observed at all.
+
+    Raises:
+        ValueError: If more barcodes were observed than ``max_points`` and ``max_points``
+            is below 2, raised by the downsampler, which cannot keep both endpoints.
+    """
+    counts = sorted((count for count in barcode_counts.values() if count > 0), reverse=True)
+    if not counts:
+        return None
+
+    data = [[rank, counts[rank - 1]] for rank in log_spaced_ranks(len(counts), max_points)]
+    return {
+        "id": "carmack_extraction_barcode_rank",
+        "plot_type": "linegraph",
+        "parent_id": CARMACK_PARENT_ID,
+        "parent_name": CARMACK_PARENT_NAME,
+        "section_name": "Barcode Extraction Barcode Rank",
+        "description": (
+            "Read depth of every observed full barcode against its abundance rank, on log "
+            "axes. The knee of the curve separates barcodes carrying real cells from the "
+            "ambient background tail."
+        ),
+        "pconfig": {
+            "id": "carmack_extraction_barcode_rank_plot",
+            "title": "Barcode Extraction: Barcode Rank",
+            "xlab": "Barcode rank",
+            "ylab": "Reads",
+            "xlog": True,
+            "ylog": True,
+            "smooth_points": max_points + 1,
+        },
+        "data": {prefix: data},
+    }
 
 
 @dataclass
