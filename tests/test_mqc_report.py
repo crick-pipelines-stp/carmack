@@ -148,7 +148,9 @@ def prepare_stats() -> PrepareStats:
         distribution sum to ``total_reads``, so neither of its builders is
         rendering a degenerate run.
     """
-    return PrepareStats(total_reads=2, unmatched_written=1, target_written={"targetA": 1})
+    return PrepareStats(
+        total_reads=2, unmatched_written=1, target_written={"targetA": 1}, insert_not_sequenced=0
+    )
 
 
 def mqc_payloads(stats_objects: Sequence[object]) -> list[dict[str, Any]]:

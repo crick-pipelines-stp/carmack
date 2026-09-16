@@ -23,6 +23,17 @@ fixed-length ``ME`` primer). Getting either chemistry accessor wrong, or the tri
 arithmetic wrong for the anchor it returns, would only show up here, not in the
 isolated unit cases.
 
+This module also holds the guard both arms put over that answer. ``insert_start`` is
+free to return a coordinate at, or past, the end of the read: the homopolymer branch
+saturates at ``len(seq)`` once the run consumes the rest of the read, and the
+fixed-length branch is arithmetic that never consults ``seq`` at all. On a 2-colour
+instrument an unsequenced tail is read as the anchor base, so a cluster that dies just
+after the scaffold produces exactly that saturating run and leaves no insert behind.
+``insert_not_sequenced`` is the predicate over the resulting ``(cut, seq)`` pair, and
+the tests for it below assert the condition it exists to express — that ``seq[cut:]``
+is the empty string — never that a kept read's insert equals ``seq[cut:]``, a form an
+empty insert satisfies just as happily as a real one.
+
 The final test is structural rather than behavioural: it guards against the module
 quietly growing a dependency it was designed not to need. insert_start is pure
 coordinate arithmetic taking a reference position, an already-resolved anchor
@@ -43,9 +54,17 @@ from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ME
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from carmack.io.read_annotation import ReadAnnotation
-from carmack.prepare_reads.insert_locator import insert_start
+from carmack.prepare_reads.insert_locator import insert_not_sequenced, insert_start
 
 CHEMISTRY = "carmack_custom_seq_1_0"
+
+# Every shipped chemistry whose reads reach the trim path. ``hydrop`` is deliberately
+# absent: it declares no UMI component, so ``ReadPreparer`` rejects it long before a
+# cut is ever computed for one of its reads.
+TRIMMED_CHEMISTRIES = [
+    "carmack_custom_seq_1_0",
+    "carmack_custom_seq_1_0_primd",
+]
 
 # Where the module under test lives, resolved from this file's own location rather than
 # by importing it, so the structural import-check test can inspect its source text even
@@ -241,6 +260,235 @@ class TestInsertStartWithCarmackCustomSeqChemistry:
 
         assert_that(anchor.length).is_equal_to(19)
         assert_that(result).is_equal_to(tgidx_pos_end + 19)
+
+
+class TestInsertNotSequenced:
+    """Tests for the guard predicate both trim arms put over the cut insert_start returns.
+
+    The predicate answers one question — is there anything left of the read once the
+    cut is applied — and it is asked of a coordinate that is allowed to be out of
+    range. That is why it is ``cut >= len(seq)`` and not ``cut == len(seq)``: the
+    homopolymer branch saturates at exactly the read end, while the fixed-length branch
+    adds a chemistry-declared length to a reference it never checks against the read and
+    so can land beyond it, a possibility
+    ``test_insert_start_ignores_seq_even_when_seq_is_too_short_to_reach_the_answer``
+    above already pins for insert_start itself. Both mean the same thing downstream: a
+    record with an empty sequence and an empty quality line, which is syntactically
+    valid, passes every length-equality check, and desyncs the next reader.
+
+    The cases here are deliberately built from bare coordinates and bare strings rather
+    than from any chemistry, because the predicate is chemistry-agnostic by
+    construction: it is told the cut, it is not asked to work one out.
+    """
+
+    @pytest.mark.parametrize(
+        "cut,seq",
+        [
+            (0, "ACGTACGT"),
+            (4, "ACGTACGT"),
+            (7, "ACGTACGT"),
+            (0, "A"),
+        ],
+    )
+    def test_insert_not_sequenced_is_false_when_bases_remain_after_the_cut(
+        self, cut: int, seq: str
+    ) -> None:
+        """Test that a cut with any read left after it reports an insert that was sequenced.
+
+        These are the reads the stage must keep. The last two cases are the tightest
+        ones the predicate has to get right: a cut one base short of the read end leaves
+        a single-base insert, and a cut of zero leaves a single-base read untouched.
+        Neither is a drop — nothing here filters on how *much* insert was sequenced,
+        only on whether any of it was — so a guard written with ``>`` slipping to
+        ``>=``'s neighbour, or one that quietly imposed a minimum length, fails here.
+        """
+        result = insert_not_sequenced(cut, seq)
+
+        assert_that(result).is_false()
+
+    @pytest.mark.parametrize("seq", ["ACGTACGT", "GGGGGGGGGGGG", "A"])
+    def test_insert_not_sequenced_is_true_when_the_cut_lands_on_the_read_end(
+        self, seq: str
+    ) -> None:
+        """Test that a cut at exactly the read end reports no insert — the observed defect.
+
+        This is the coordinate a saturating homopolymer run produces: on a 2-colour
+        instrument the absence of signal is read as the anchor base, so a cluster that
+        dies just after the scaffold leaves a run of it that walks to the read end, and
+        ``locate_anchor_run`` correctly reports that end. Slicing there yields the empty
+        string, which is exactly the record that must never be written.
+        """
+        result = insert_not_sequenced(len(seq), seq)
+
+        assert_that(result).is_true()
+
+    @pytest.mark.parametrize("overshoot", [1, 2, 7])
+    def test_insert_not_sequenced_is_true_when_the_cut_overshoots_the_read_end(
+        self, overshoot: int
+    ) -> None:
+        """Test that a cut past the read end reports no insert, not merely a cut at it.
+
+        The fixed-length branch adds a length the chemistry declares to a reference
+        coordinate and never consults the read, so on a read that ended early it returns
+        a coordinate strictly greater than ``len(seq)``. Python slices that as the empty
+        string without complaint, so the resulting record is indistinguishable from the
+        saturating case and must be caught by the same guard. A predicate written as
+        ``cut == len(seq)`` passes every case above and fails every case here, which is
+        the whole reason this test exists separately.
+        """
+        seq = "ACGTACGT"
+
+        result = insert_not_sequenced(len(seq) + overshoot, seq)
+
+        assert_that(result).is_true()
+
+    @pytest.mark.parametrize("cut", [0, 1, 4])
+    def test_insert_not_sequenced_is_true_for_an_empty_read_at_every_cut(self, cut: int) -> None:
+        """Test that an empty read has no insert at any cut, including a cut of zero.
+
+        The degenerate boundary: with ``len(seq)`` at zero, every cut is at or past the
+        read end, so the predicate must hold without ever indexing into the read. A cut
+        of zero is the case that separates the correct ``>=`` from a ``>``, which would
+        report an empty read as having an insert.
+        """
+        result = insert_not_sequenced(cut, "")
+
+        assert_that(result).is_true()
+
+    def test_insert_not_sequenced_agrees_with_the_slice_at_the_cut_being_empty(self) -> None:
+        """Test that the predicate is exactly the condition "the slice at the cut is empty".
+
+        Stated as the definition rather than as an implementation: for every cut from
+        the start of the read to well past its end, the predicate must agree with
+        ``seq[cut:] == ""``, which is the property the caller actually depends on — it
+        is about to write ``seq[cut:]`` into a FASTQ record. Comparing whole mappings
+        rather than asserting case by case means a disagreement names the cut it
+        happened at.
+
+        This is deliberately not the shape ``written_seq == seq[cut:]``, which is
+        satisfied vacuously when both sides are empty and so cannot distinguish a read
+        that was correctly trimmed from one that was emptied. Asserting the cut range
+        produces both answers keeps the comparison from passing on a degenerate range
+        where every cut happened to fall on the same side.
+        """
+        seq = "ACGTACGTACGT"
+        cuts = range(len(seq) + 4)
+
+        observed = {cut: insert_not_sequenced(cut, seq) for cut in cuts}
+
+        assert_that(observed).is_equal_to({cut: seq[cut:] == "" for cut in cuts})
+        assert_that(set(observed.values())).is_equal_to({True, False})
+
+
+class TestInsertNotSequencedOverRealAnchorCuts:
+    """Tests putting the predicate over cuts insert_start really returns for shipped anchors.
+
+    The unit cases above hand the predicate a coordinate directly, which says nothing
+    about whether the coordinates the trim arms produce ever reach the read end. These
+    build the reads that produce them, through both shipped chemistries' own anchor
+    components, so every offset is derived from ``ReadStructure`` and no chemistry
+    constant appears in the test at all. ``hydrop`` is absent by design: it declares no
+    UMI component, so its reads never reach this path.
+    """
+
+    @pytest.mark.parametrize("chemistry_name", TRIMMED_CHEMISTRIES)
+    def test_insert_not_sequenced_is_true_for_a_run_that_terminates_the_read(
+        self, chemistry_name: str
+    ) -> None:
+        """Test the unmatched arm's real failure: the anchor run consumes the rest of the read.
+
+        Built the way the instrument builds it — a read whose anchor base repeats from
+        the reference coordinate to the last base and stops there, with nothing after
+        it. The run length is taken from the anchor's own ``min_run`` so the scan is
+        genuinely entered rather than falling through its shift search, and the
+        assertion that the cut equals ``len(seq)`` records what makes this case reach
+        the predicate at all.
+        """
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+        anchor = chemistry.umi_right_anchor()
+        prefix = "ACTACTACTACT"
+        reference = len(prefix)
+        seq = prefix + anchor.homopolymer_base * (anchor.min_run + 2)
+
+        cut = insert_start(reference=reference, anchor=anchor, seq=seq)
+
+        assert_that(cut).is_equal_to(len(seq))
+        assert_that(insert_not_sequenced(cut, seq)).is_true()
+
+    @pytest.mark.parametrize("chemistry_name", TRIMMED_CHEMISTRIES)
+    def test_insert_not_sequenced_is_true_for_a_bridged_run_that_reaches_the_read_end(
+        self, chemistry_name: str
+    ) -> None:
+        """Test that a run carrying one interrupting base still reaches the guard.
+
+        The trim path's scan bridges a single non-anchor base, so a tail carrying one
+        sequencing error inside it still walks to the read end and still yields a cut
+        with nothing after it. An unbridged scan would stop at the interruption and
+        report a shorter run, which is why the two counts measured over one library
+        differ — and why the guard has to sit on the bridged cut rather than on any
+        separately measured run length.
+        """
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+        anchor = chemistry.umi_right_anchor()
+        prefix = "ACTACTACTACT"
+        reference = len(prefix)
+        interrupted = anchor.homopolymer_base * (anchor.min_run + 2) + "A"
+        seq = prefix + interrupted + anchor.homopolymer_base * anchor.min_run
+
+        cut = insert_start(reference=reference, anchor=anchor, seq=seq)
+
+        assert_that(cut).is_equal_to(len(seq))
+        assert_that(insert_not_sequenced(cut, seq)).is_true()
+
+    @pytest.mark.parametrize("chemistry_name", TRIMMED_CHEMISTRIES)
+    def test_insert_not_sequenced_is_false_for_a_single_base_after_the_run(
+        self, chemistry_name: str
+    ) -> None:
+        """Test the positive control: one base of insert past the run is kept, not dropped.
+
+        The same read as the terminating case with a single base appended, so the only
+        difference between being dropped and being kept is whether anything was
+        sequenced after the run. Nothing here is padded and no minimum insert length is
+        imposed, so a one-base insert must come back as a read that was sequenced. Kept
+        alongside the drop cases because a guard that reported every read as unsequenced
+        would satisfy all of them and fail only this one.
+        """
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+        anchor = chemistry.umi_right_anchor()
+        prefix = "ACTACTACTACT"
+        reference = len(prefix)
+        seq = prefix + anchor.homopolymer_base * (anchor.min_run + 2) + "A"
+
+        cut = insert_start(reference=reference, anchor=anchor, seq=seq)
+
+        assert_that(cut).is_less_than(len(seq))
+        assert_that(insert_not_sequenced(cut, seq)).is_false()
+
+    @pytest.mark.parametrize("chemistry_name", TRIMMED_CHEMISTRIES)
+    @pytest.mark.parametrize("deficit", [0, 1])
+    def test_insert_not_sequenced_is_true_when_the_fixed_length_anchor_passes_the_read_end(
+        self, chemistry_name: str, deficit: int
+    ) -> None:
+        """Test the matched arm's real failure: fixed-length arithmetic walking off the read.
+
+        The matched arm adds the length of the anchor 3' of the target index, taken here
+        from the chemistry rather than written down, and never verifies those bases are
+        present. A read that ends at the anchor's last base gives a cut of exactly
+        ``len(seq)``; a read one base shorter gives a cut beyond it. Both are covered by
+        the one ``deficit`` parameter so the ``==`` and the ``>`` cases are exercised as
+        the same situation seen from one base apart, which is what the ``>=`` in the
+        predicate is for.
+        """
+        chemistry = ChemistryFactory.get_chemistry(chemistry_name)
+        anchor = chemistry.tgidx_right_anchor()
+        reference = 12
+        seq = "A" * (reference + anchor.length - deficit)
+
+        cut = insert_start(reference=reference, anchor=anchor, seq=seq)
+
+        assert_that(cut).is_equal_to(reference + anchor.length)
+        assert_that(cut).is_greater_than_or_equal_to(len(seq))
+        assert_that(insert_not_sequenced(cut, seq)).is_true()
 
 
 class TestInsertLocatorHasNoForbiddenImports:

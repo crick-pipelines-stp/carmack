@@ -2,18 +2,22 @@
 
 ``PrepareStats`` is the reconciling value object for a prepare-reads run: every
 input read is dispatched to exactly one output arm - the scRNA (``TGIDX=NONE``)
-arm, or one scTIP target bucket - and the same object renders the plain-text
-``prepare_stats.txt`` report. Unlike the assign-targets stage this stage never
-filters, so ``total_reads`` is the denominator throughout, not just for the
-unmatched count: a per-target line is a fraction of every read the run saw, not
-a fraction of the reads that matched. These tests pin the value object's
-contract (frozen, safe division, the derived ``matched_written`` total), the
-reconciling invariant (``unmatched_written + sum(target_written.values()) ==
+arm, or one scTIP target bucket - or, in the stage's one filtering case, written
+to no arm at all because its computed insert start reached the end of the read,
+leaving nothing to write. The same object renders the plain-text
+``prepare_stats.txt`` report. ``total_reads`` is the denominator throughout, not
+just for the unmatched count: a per-target line is a fraction of every read the
+run saw, dropped reads included, not a fraction of the reads that matched. These
+tests pin the value object's contract (frozen, safe division, the derived
+``matched_written`` total), the three-term reconciling invariant
+(``unmatched_written + sum(target_written.values()) + insert_not_sequenced ==
 total_reads``) across the degenerate and mixed cases the design calls out, and
 the report's shape: the volatile run-detail header that ``strip_report_run_details``
 must keep working against, every section heading, the counts and their
-percentages, the literal statement of the reconciling invariant, and the
-per-target distribution sorted by target name.
+percentages, the literal statement of the reconciling invariant, the
+unconditional ``Rejected (insert_not_sequenced)`` line that is rendered even at
+zero so a reader can tell "none were dropped" from "this build cannot drop", and
+the per-target distribution sorted by target name.
 
 The same object renders ``detected_targets.txt``, the machine-readable list of
 the arms and buckets a run actually wrote a read into, and those tests pin what
@@ -21,19 +25,27 @@ a downstream consumer of that file depends on: one tab-separated token and count
 per line and nothing else, the ``NONE`` sentinel first and only when a read was
 unmatched, an undetected target omitted whether it is absent from the tallies or
 present with a zero count, and an ordering that agrees with the report's own
-distribution. The count is what makes the file a contract a consumer can hold
-to: a consumer fanning out over the buckets a run really has needs the per-bucket
+distribution. A read dropped for having no sequenced insert reached no arm, so it
+is named by no token here and moves no count: that omission is deliberate and is
+pinned, because a consumer sizes its arm fan-out from this file and a token for
+reads that went nowhere would size work for an output that does not exist.
+
+The count is what makes the file a contract a consumer can hold to: a consumer
+fanning out over the buckets a run really has needs the per-bucket
 totals as well as their names, and with only names here it read the counts off
 the MultiQC artefact instead, making a report-shaped file into pipeline control
 flow that moves whenever the report changes shape.
 
 The same value object also renders MultiQC custom content payloads for the run:
-``to_mqc_general_stats`` reduces the unmatched and matched counts to the two
-percentages of ``total_reads`` a generalstats table needs, reusing ``fraction``
-so those percentages can never drift from what ``get_report`` already prints;
-``to_mqc_target_distribution`` renders the same per-target distribution as a
-bargraph, adding the unmatched arm as one more category so every read the run
-saw is accounted for in one chart. Both are keyed by a caller-supplied prefix
+``to_mqc_general_stats`` reduces the unmatched, matched and dropped counts to
+the three percentages of ``total_reads`` a generalstats table needs, reusing
+``fraction`` so those percentages can never drift from what ``get_report``
+already prints; ``to_mqc_target_distribution`` renders the same per-target
+distribution as a bargraph, adding the unmatched arm as one more category. A
+read dropped for having no sequenced insert reached no arm, so it is a category
+in neither chart and is reported by the General Statistics table alone: the bars
+sum to the reads the run wrote, not to every read it saw, and saying so is the
+bargraph description's job. Both are keyed by a caller-supplied prefix
 and both attribute themselves to the shared Carmack parent from
 ``carmack.mqc_report``, though through different keys: the bargraph through the
 ``parent_id``/``parent_name`` pair that nests its section, the generalstats
@@ -42,6 +54,19 @@ the generalstats branch before a parent id is ever read. These tests pin the
 reuse of ``fraction``, the zero-reads edge case, the prefix keying,
 JSON-serializability, and -- for the distribution -- that no read is
 double-counted or dropped and that the target categories stay sorted by name.
+
+The dropped percentage's column is the one that departs from the convention its
+two neighbours keep: its colour ramp is bounded at 1 rather than 100, because a
+metric that is pathological at a few reads in tens of millions has no resolution
+at all against a 0-100 ramp. The bound rescales the colour and not the number,
+which stays a percentage on the same 0-100 scale as every sibling stage's, so
+the bound is pinned per column here while the settings the three columns share
+are still asserted over all of them. The column's description carries the other
+half of the story: the scan behind its number bridges an interrupting base where
+extract-umis' anchor-run distribution is measured by one that does not, so one
+phenomenon is counted twice in one report and each description has to say which
+scan produced its number. That second description is pinned in
+``tests/test_umi_extractor.py``, beside the payload that carries it.
 
 They also pin what makes each payload addressable in a MultiQC run. A payload
 carrying no ``id`` is filed under the cleaned filename MultiQC falls back to, so
@@ -69,13 +94,15 @@ the run's totals are rendered as a frozen ``PrepareStats`` at the end. Its
 tests pin the properties that make batching invisible to the statistics - an
 additive fold, an untouched argument, order independence, and a partition of a
 read set tallying to the same totals as a single pass over it - plus the field
-mapping and plain-dict rendering that ``to_stats`` performs.
+mapping and plain-dict rendering that ``to_stats`` performs. The read set those
+tests fold carries dropped reads as well as written ones, in more than one batch,
+so the new tally is folded and reconciled for real rather than summed from zero.
 """
 
 import dataclasses
 import json
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from itertools import permutations
 from typing import Any
 
@@ -87,6 +114,7 @@ from carmack.assign_targets.assign_reporting import AssignStats
 from carmack.assign_targets.target_assigner import NO_TARGET
 from carmack.mqc_report import CARMACK_PARENT_ID, CARMACK_PARENT_NAME
 from carmack.prepare_reads.prepare_reporting import PrepareCounts, PrepareStats
+from carmack.umi.umi_reporting import UmiExtractionStats
 
 # The repo-wide MultiQC payload contract, and the reflection that reaches every
 # stage's builders, are stated once in the shared module's own tests. They are
@@ -112,14 +140,42 @@ VERSION_PREFIX = "# Carmack version:"
 GENERATED_PREFIX = "# Report generated at:"
 
 REPORT_HEADING = "# Prepare Reads Stats"
+TARGET_DISTRIBUTION_HEADING = "# Target Distribution"
 FIRST_COUNT_LINE = "Total reads:"
+MATCHED_COUNT_LINE = "Matched (scTIP arms):"
 
 # The literal reconciling formula the report must state, in the field names the
-# module exposes, so a reader of the report can check the invariant by eye.
-INVARIANT_FORMULA = "unmatched_written + sum(target_written.values()) == total_reads"
+# module exposes, so a reader of the report can check the invariant by eye. Three
+# terms, not two: a read is written to the scRNA arm, written to a target bucket,
+# or dropped for having no sequenced insert, and nothing else can happen to it.
+INVARIANT_FORMULA = (
+    "unmatched_written + sum(target_written.values()) + insert_not_sequenced == total_reads"
+)
 
-# The two scalar tallies the fold has to sum termwise.
-SCALAR_FIELD_NAMES = ("total", "unmatched")
+# The rejected-reason line the report renders for the one outcome that reaches no
+# arm. The prefix is what every rejected line in every stage's report starts with,
+# so counting it is how a test can say the report carries exactly one such line;
+# the label is the whole token, spelled out because the counter, the report line and
+# the MultiQC key all have to agree on it. It is deliberately not ``empty_insert``:
+# that term already means adapter dimer, which extract-barcodes drops upstream.
+REJECTED_LINE_PREFIX = "Rejected ("
+INSERT_NOT_SEQUENCED_LABEL = "Rejected (insert_not_sequenced)"
+
+# A run in which some reads were dropped for having no sequenced insert. The arm
+# tallies are the default ones, with the dropped reads added on top of the total so
+# the three-term invariant still holds: 6 of 16 reads dropped renders a percentage
+# legible enough to read off the line by eye.
+DROPPED_INSERT_NOT_SEQUENCED = 6
+DROPPED_TOTAL_READS = TOTAL_READS + DROPPED_INSERT_NOT_SEQUENCED
+
+# The rate actually observed in the field, which is why the count is rendered beside
+# the percentage rather than instead of it: at this rate the percentage rounds away
+# to 0.00% under ``.2%`` and only the integer carries the signal.
+RARE_INSERT_NOT_SEQUENCED = 126
+RARE_TOTAL_READS = 62_205_779
+
+# The three scalar tallies the fold has to sum termwise.
+SCALAR_FIELD_NAMES = ("total", "unmatched", "insert_not_sequenced")
 
 # The accumulator has exactly one counter, unlike assign-targets' three.
 COUNTER_FIELD_NAMES = ("target_counts",)
@@ -130,6 +186,7 @@ COUNTER_KEYS = (("target_counts", "targetA"),)
 STATS_FIELD_NAMES = {
     "total": "total_reads",
     "unmatched": "unmatched_written",
+    "insert_not_sequenced": "insert_not_sequenced",
     "target_counts": "target_written",
 }
 
@@ -138,40 +195,47 @@ STATS_FIELD_NAMES = {
 # on its exact type instead.
 STATS_DICT_FIELD_NAMES = ("target_written",)
 
-# One read's contribution to a batch's tallies: its outcome, then the target bucket
-# a matched read was written to.
+# One read's contribution to a batch's tallies: its outcome - written to the scRNA
+# arm, written to a target bucket, or dropped for having no sequenced insert - then
+# the target bucket a matched read was written to.
 type ReadOutcome = tuple[str, str | None]
 
-# A read set covering both outcomes, with every counter key seen more than once and
-# ordered so that reversing the set populates the counter in a different order. Its
-# tallies are exactly TARGET_WRITTEN and UNMATCHED_WRITTEN above.
+# A read set covering all three outcomes, with every counter key seen more than once
+# and ordered so that reversing the set populates the counter in a different order.
+# Its written tallies are exactly TARGET_WRITTEN and UNMATCHED_WRITTEN above, plus
+# two reads that reached no arm at all, so the three-term invariant is folded and
+# reconciled here against a tally that is actually non-zero.
 READS: list[ReadOutcome] = [
     ("unmatched", None),
     ("matched", "targetA"),
+    ("dropped", None),
     ("unmatched", None),
     ("matched", "targetB"),
     ("unmatched", None),
     ("matched", "targetA"),
     ("matched", "targetC"),
     ("unmatched", None),
+    ("dropped", None),
     ("matched", "targetC"),
     ("matched", "targetA"),
 ]
 
 # Where the read set is cut into the two batches the fold tests use. Cut here, every
-# counter key the second batch touches is also touched by the first, and that overlap
-# is what lets those tests tell an additive fold from a replacing one.
-FOLD_SPLIT = 5
+# counter key the second batch touches is also touched by the first, and both batches
+# carry a dropped read: the overlap is what lets those tests tell an additive fold
+# from a replacing one, and the drop on both sides is what stops the new tally's fold
+# being the trivial 0 + 0.
+FOLD_SPLIT = 6
 FIRST_BATCH_READS = READS[:FOLD_SPLIT]
 SECOND_BATCH_READS = READS[FOLD_SPLIT:]
 
 # Partitions of the read set into batches, as batch sizes. The single batch is today's
 # serial loop; the others are batchings a pool could produce, including one read per
 # batch, uneven batches, and an empty batch mid-run.
-READ_PARTITIONS = [(10,), (1,) * 10, (5, 5), (2, 3, 5), (4, 0, 6), (3, 3, 4)]
+READ_PARTITIONS = [(12,), (1,) * 12, (6, 6), (2, 4, 6), (5, 0, 7), (4, 4, 4)]
 
 # The partition whose batches are folded in every possible order.
-PERMUTED_PARTITION = (3, 3, 4)
+PERMUTED_PARTITION = (4, 4, 4)
 
 # Two distinct prefixes, used to prove the mqc payloads key off whatever prefix
 # is passed in rather than a name the module hardcodes.
@@ -197,15 +261,52 @@ STAGE_TOKEN_PREFIX = f"{CARMACK_PARENT_ID}_prepare_"
 REJECTED_STAGE_TOKEN = "prepare_stats"
 
 # The generalstats data columns, each of which pconfig must configure a header for.
-GENERAL_STATS_COLUMNS = ("pct_unmatched", "pct_matched")
+# Three, not two: the run's two destinations, and the one outcome that reaches
+# neither, without which the table reports every run as though every read it saw was
+# written somewhere.
+GENERAL_STATS_COLUMNS = ("pct_unmatched", "pct_matched", "pct_insert_not_sequenced")
+
+# The column for the outcome that reaches no arm, and the sibling stage's own column
+# for reads it threw away, whose colour ramp this one is held to.
+INSERT_NOT_SEQUENCED_COLUMN = "pct_insert_not_sequenced"
+UMI_REJECT_COLUMN = "pct_truncated"
 
 # Every setting a generalstats header must carry for MultiQC to render the column as a
 # titled, bounded, colour-scaled percentage rather than guess it from the data key.
 PCONFIG_COLUMN_KEYS = ("title", "description", "min", "max", "suffix", "format", "scale")
 
 # The bounds and formatting that make a column read as a percentage, as every sibling
-# stage's percentage columns spell them.
-PCONFIG_PERCENTAGE_SETTINGS = {"min": 0, "max": 100, "suffix": "%", "format": "{:,.2f}"}
+# stage's percentage columns spell them. ``max`` is deliberately not among them: it is
+# the one setting the three columns disagree on, so it is asserted per column instead
+# of over all of them, and the rest still are.
+PCONFIG_PERCENTAGE_SETTINGS = {"min": 0, "suffix": "%", "format": "{:,.2f}"}
+
+# The colour-ramp ceiling each column declares, in the same percentage units the values
+# themselves carry. Two of the three take the convention's 100; the dropped-reads column
+# takes 1, which is a decision about resolution rather than about units and is argued in
+# the test that asserts it.
+GENERAL_STATS_COLUMN_MAX = {
+    "pct_unmatched": 100,
+    "pct_matched": 100,
+    "pct_insert_not_sequenced": 1,
+}
+
+# The words the dropped-reads column's description has to carry. One phenomenon is
+# counted twice in one report - once here, once by extract-umis' anchor-run
+# distribution - by two scans that differ in whether they walk through a single
+# interrupting base, so each description has to say which scan produced its number and
+# that the other stage's count can differ. ``bridges`` is the affirmative form and
+# ``unbridged``, pinned on the other description, is the negative one; neither is a
+# substring of the other, so neither description can pass by making the other's claim.
+BRIDGED_SCAN_WORDS = ("bridges", "interrupt", "exceed")
+
+# What the bargraph's description must stop claiming, and what it must tell a reader
+# instead: the categories are the arms reads were written to, so a dropped read is in
+# none of them and is reported in the General Statistics table. The contrast with
+# assign-targets' matched-only denominator is why the description exists at all, so it
+# is pinned as still being drawn.
+NEVER_FILTERS_CLAIM = "never filters"
+BARGRAPH_DESCRIPTION_WORDS = ("general statistics", "dropped", "assign-targets")
 
 # How a bargraph's pconfig id is derived from the payload id, and the y-axis label every
 # sibling stage's bargraph carries.
@@ -229,6 +330,7 @@ def make_stats(**overrides: object) -> PrepareStats:
         "total_reads": TOTAL_READS,
         "unmatched_written": UNMATCHED_WRITTEN,
         "target_written": dict(TARGET_WRITTEN),
+        "insert_not_sequenced": 0,
     }
     values.update(overrides)
     return PrepareStats(**values)
@@ -236,7 +338,45 @@ def make_stats(**overrides: object) -> PrepareStats:
 
 def make_empty_stats() -> PrepareStats:
     """Build a ``PrepareStats`` for a run that processed no reads."""
-    return PrepareStats(total_reads=0, unmatched_written=0, target_written={})
+    return PrepareStats(
+        total_reads=0, unmatched_written=0, target_written={}, insert_not_sequenced=0
+    )
+
+
+def make_dropped_stats() -> PrepareStats:
+    """Build a ``PrepareStats`` for a run that dropped reads for having no sequenced insert.
+
+    The arm tallies are the reconciling defaults and the dropped reads are added on
+    top of ``total_reads``, so the three-term invariant still holds and every arm
+    percentage moves the way it moves in a real run that dropped reads: the
+    denominator is every read the run saw, not just the reads it wrote.
+
+    Returns:
+        A PrepareStats whose ``insert_not_sequenced`` tally is non-zero.
+    """
+    return make_stats(
+        total_reads=DROPPED_TOTAL_READS,
+        insert_not_sequenced=DROPPED_INSERT_NOT_SEQUENCED,
+    )
+
+
+def make_rare_drop_stats() -> PrepareStats:
+    """Build a ``PrepareStats`` at the drop rate a real library was observed to show.
+
+    A few reads in tens of millions: the rate the counter exists for, and the one at
+    which the percentage alone says nothing. Everything not dropped is put on the
+    scRNA arm so the invariant holds without a second set of target tallies to keep
+    in step with the total.
+
+    Returns:
+        A PrepareStats whose drop percentage rounds away but whose count does not.
+    """
+    return PrepareStats(
+        total_reads=RARE_TOTAL_READS,
+        unmatched_written=RARE_TOTAL_READS - RARE_INSERT_NOT_SEQUENCED,
+        target_written={},
+        insert_not_sequenced=RARE_INSERT_NOT_SEQUENCED,
+    )
 
 
 def tally(reads: Sequence[ReadOutcome]) -> PrepareCounts:
@@ -254,6 +394,8 @@ def tally(reads: Sequence[ReadOutcome]) -> PrepareCounts:
         counts.total += 1
         if outcome == "unmatched":
             counts.unmatched += 1
+        elif outcome == "dropped":
+            counts.insert_not_sequenced += 1
         else:
             counts.target_counts[target] += 1
     return counts
@@ -278,15 +420,21 @@ def split(reads: Sequence[ReadOutcome], sizes: Sequence[int]) -> list[list[ReadO
 
 
 def outcome_sum(counts: PrepareCounts) -> int:
-    """Return the unmatched tally plus every target tally, which must equal ``total``.
+    """Return every arm tally plus the dropped tally, which must equal ``total``.
+
+    The third term is what keeps this a reconciliation rather than an inequality now
+    that a read can reach no arm: reads written plus reads dropped is every read
+    tallied, and a drop that forgot to bump ``total``, or a tally bumped twice,
+    shows up here as a mismatch.
 
     Args:
         counts: Tallies to reconcile.
 
     Returns:
-        The sum of the unmatched tally and every value in the target counter.
+        The sum of the unmatched tally, every value in the target counter, and the
+        tally of reads dropped for having no sequenced insert.
     """
-    return counts.unmatched + sum(counts.target_counts.values())
+    return counts.unmatched + sum(counts.target_counts.values()) + counts.insert_not_sequenced
 
 
 def detected_rows(stats: PrepareStats) -> list[list[str]]:
@@ -383,6 +531,28 @@ def assign_target_distribution_section_name() -> str:
     return str(stats.to_mqc_target_distribution(MQC_PREFIX_A)["section_name"])
 
 
+def sibling_reject_column_scale() -> str:
+    """Return the colour ramp a sibling stage gives a column counting reads it threw away.
+
+    Read out of extract-umis' own builder rather than spelled again here, the way the
+    bargraph's section name is read out of assign-targets', so this stage's
+    dropped-reads column stays scaled like the reject columns it sits beside in one
+    table however that convention is reworded. Neither column this stage already
+    renders can stand in for it: both count legitimate destinations, and are scaled to
+    say so.
+
+    Returns:
+        The ``scale`` extract-umis declares for its truncated-reads percentage.
+    """
+    stats = UmiExtractionStats(
+        total_reads=1, accepted=1, missing_left_anchor=0, truncated=0, umi_length=12
+    )
+    for entry in stats.to_mqc_general_stats(MQC_PREFIX_A)["pconfig"]:
+        if UMI_REJECT_COLUMN in entry:
+            return str(entry[UMI_REJECT_COLUMN]["scale"])
+    return ""
+
+
 def sibling_mqc_payload_ids() -> set[str]:
     """Collect the module id of every MultiQC payload the other carmack stages render.
 
@@ -407,12 +577,39 @@ class TestPrepareStatsConstruction:
         assert_that(stats.total_reads).is_equal_to(TOTAL_READS)
         assert_that(stats.unmatched_written).is_equal_to(UNMATCHED_WRITTEN)
         assert_that(stats.target_written).is_equal_to(dict(TARGET_WRITTEN))
+        assert_that(stats.insert_not_sequenced).is_equal_to(0)
+
+    def test_dropped_tally_is_set_from_the_constructor(self) -> None:
+        """Test that a non-zero dropped tally is readable back unchanged."""
+        stats = make_dropped_stats()
+
+        assert_that(stats.insert_not_sequenced).is_equal_to(DROPPED_INSERT_NOT_SEQUENCED)
 
     def test_target_written_accepts_an_empty_mapping(self) -> None:
         """Test that a scRNA-only chemistry's empty target map is a legal value."""
-        stats = PrepareStats(total_reads=5, unmatched_written=5, target_written={})
+        stats = PrepareStats(
+            total_reads=5, unmatched_written=5, target_written={}, insert_not_sequenced=0
+        )
 
         assert_that(stats.target_written).is_equal_to({})
+
+    def test_insert_not_sequenced_must_be_supplied_explicitly(self) -> None:
+        """Test that the dropped tally has no default a producer can silently fall into.
+
+        The reconciling invariant now has three terms, so a producer that says
+        nothing about the third one is a producer whose numbers may not reconcile.
+        A default of zero would let it build a stats object that looks right,
+        renders a ``Rejected`` line at zero, and quietly under-reports a run that
+        really did drop reads. Required, exactly as the UMI stage requires its own
+        reject counters, so omitting it is a TypeError at the construction site
+        rather than a wrong number in a report.
+        """
+        with pytest.raises(TypeError):
+            PrepareStats(  # type: ignore[call-arg]
+                total_reads=TOTAL_READS,
+                unmatched_written=UNMATCHED_WRITTEN,
+                target_written=dict(TARGET_WRITTEN),
+            )
 
 
 class TestPrepareStatsValueObject:
@@ -424,6 +621,7 @@ class TestPrepareStatsValueObject:
             ("total_reads", 99),
             ("unmatched_written", 0),
             ("target_written", {}),
+            ("insert_not_sequenced", 7),
         ],
     )
     def test_stats_are_frozen(self, field_name: str, new_value: object) -> None:
@@ -475,31 +673,53 @@ class TestPrepareStatsValueObject:
         assert_that(stats.matched_written).is_equal_to(expected)
 
     @pytest.mark.parametrize(
-        "total_reads,unmatched_written,target_written",
+        "total_reads,unmatched_written,target_written,insert_not_sequenced",
         [
-            (0, 0, {}),
-            (5, 5, {}),
-            (5, 0, {"targetA": 5}),
-            (10, 4, {"targetA": 3, "targetB": 1, "targetC": 2}),
+            (0, 0, {}, 0),
+            (5, 5, {}, 0),
+            (5, 0, {"targetA": 5}, 0),
+            (10, 4, {"targetA": 3, "targetB": 1, "targetC": 2}, 0),
+            (12, 4, {"targetA": 3, "targetB": 1, "targetC": 2}, 2),
+            (5, 3, {}, 2),
+            (5, 0, {}, 5),
         ],
-        ids=["zero_reads", "unmatched_only", "matched_only_single_bucket", "mixed_multi_bucket"],
+        ids=[
+            "zero_reads",
+            "unmatched_only",
+            "matched_only_single_bucket",
+            "mixed_multi_bucket",
+            "mixed_multi_bucket_with_drops",
+            "unmatched_and_drops",
+            "every_read_dropped",
+        ],
     )
     def test_outcome_counts_reconcile_to_total_reads(
-        self, total_reads: int, unmatched_written: int, target_written: dict[str, int]
+        self,
+        total_reads: int,
+        unmatched_written: int,
+        target_written: dict[str, int],
+        insert_not_sequenced: int,
     ) -> None:
-        """Test the reconciling invariant the producer must satisfy in every shape of run.
+        """Test the three-term reconciling invariant the producer must satisfy in every run.
 
         The dataclass does not enforce it; this documents it as the contract,
         across the degenerate zero-reads case, a scRNA-only chemistry, a single
-        matched bucket, and a mixed multi-bucket run.
+        matched bucket, a mixed multi-bucket run, the same run with reads dropped
+        for having no sequenced insert, and the pathological run in which every
+        read was dropped. Reads written plus reads dropped is every read read: a
+        read reaches exactly one arm or no arm at all, and nothing else can happen
+        to it, so no fourth term can appear here.
         """
         stats = PrepareStats(
             total_reads=total_reads,
             unmatched_written=unmatched_written,
             target_written=target_written,
+            insert_not_sequenced=insert_not_sequenced,
         )
 
-        assert_that(stats.unmatched_written + stats.matched_written).is_equal_to(stats.total_reads)
+        assert_that(
+            stats.unmatched_written + stats.matched_written + stats.insert_not_sequenced
+        ).is_equal_to(stats.total_reads)
 
 
 class TestPrepareStatsReportRunDetails:
@@ -551,13 +771,73 @@ class TestPrepareStatsReportSections:
 
         assert_that(report.index(INVARIANT_FORMULA)).is_less_than(report.index(FIRST_COUNT_LINE))
 
-    def test_report_does_not_call_written_reads_rejected(self) -> None:
-        """Test that dispatch wording is used: no read outcome is labelled rejected.
+    def test_invariant_note_states_the_three_term_formula_on_one_line(self) -> None:
+        """Test that the invariant is emitted as one comment line carrying all three terms.
 
-        This stage never filters - every read is written to exactly one arm -
-        so nothing in the counts section should be described as rejected.
+        The formula outgrew the line length once the third term was added, so the
+        module holds it as two implicitly concatenated literals -- which is a
+        detail of how the source is written and must not reach the file. A reader
+        checks the invariant by eye against the counts below it, and a formula
+        wrapped onto a second line reads as two separate comments; a golden
+        comparison would see a line that is not there at all. This pins the joined
+        result rather than the literals, so the source may be re-wrapped freely
+        and may not change what is rendered.
         """
-        assert_that(make_stats().get_report()).does_not_contain("Rejected")
+        note = make_stats().invariant_note()
+
+        assert_that(note).is_equal_to(f"# {INVARIANT_FORMULA}\n")
+        assert_that(note.splitlines()).is_length(1)
+
+    @pytest.mark.parametrize(
+        "stats_builder", [make_stats, make_dropped_stats], ids=["no_drops", "with_drops"]
+    )
+    def test_report_carries_exactly_one_rejected_line_for_the_unsequenced_insert(
+        self, stats_builder: Callable[[], PrepareStats]
+    ) -> None:
+        """Test that the report labels the one outcome that reaches no arm as rejected.
+
+        This stage now filters in exactly one case: a read whose computed insert
+        start has reached the end of the read has no insert to write, and writing
+        it would emit a zero-length record that desyncs the next reader. A read
+        dropped for that reason is not written anywhere, so the dispatch counts
+        above cannot account for it and the report has to say so in the rejected
+        vocabulary the sibling stages already use. Exactly one such line: the drop
+        has one reason, and a second ``Rejected`` line would mean this stage had
+        quietly grown a second filter. The token is ``insert_not_sequenced`` and
+        not ``empty_insert``, which already means adapter dimer -- a bench failure
+        dropped upstream, not late cluster death on the instrument -- and both can
+        occur in one library.
+
+        Args:
+            stats_builder: Builds the run whose report is read, with and without
+                reads actually dropped, because the line is rendered either way.
+        """
+        report = stats_builder().get_report()
+
+        rejected_lines = [
+            line for line in report.splitlines() if line.startswith(REJECTED_LINE_PREFIX)
+        ]
+
+        assert_that(rejected_lines).is_length(1)
+        assert_that(rejected_lines[0]).starts_with(f"{INSERT_NOT_SEQUENCED_LABEL}: ")
+
+    def test_rejected_line_follows_the_arm_counts_and_precedes_the_distribution(self) -> None:
+        """Test that the drop is read after the two destinations and before the breakdown.
+
+        The counts section reads as a dispatch: the arms a read could be written
+        to, then the reads that reached neither, then the per-target breakdown of
+        one of those arms. Rendered before the arm counts the drop would read as a
+        filter applied ahead of dispatch, which it is not, and rendered inside the
+        distribution it would read as an arm, which it never is.
+        """
+        report = make_dropped_stats().get_report()
+
+        assert_that(report.index(MATCHED_COUNT_LINE)).is_less_than(
+            report.index(INSERT_NOT_SEQUENCED_LABEL)
+        )
+        assert_that(report.index(INSERT_NOT_SEQUENCED_LABEL)).is_less_than(
+            report.index(TARGET_DISTRIBUTION_HEADING)
+        )
 
 
 class TestPrepareStatsReportCounts:
@@ -569,11 +849,68 @@ class TestPrepareStatsReportCounts:
             "Total reads: 10",
             "Unmatched (scRNA arm): 4 (40.00%)",
             "Matched (scTIP arms): 6 (60.00%)",
+            "Rejected (insert_not_sequenced): 0 (0.00%)",
         ],
     )
     def test_report_renders_counts_against_total_reads(self, expected_line: str) -> None:
-        """Test that every top-level count renders with its percentage of total_reads."""
+        """Test that every top-level count renders with its percentage of total_reads.
+
+        The rejected line is here rather than only in the dropped-run case because
+        it is rendered unconditionally: a run that dropped nothing still says so.
+        A line that appeared only when the count was non-zero would leave a reader
+        of a healthy run's report unable to tell "no read was dropped" from "this
+        build does not check", which is exactly the ambiguity that let the defect
+        run in production unnoticed.
+        """
         assert_that(make_stats().get_report()).contains(expected_line)
+
+    @pytest.mark.parametrize(
+        "expected_line",
+        [
+            "Total reads: 16",
+            "Unmatched (scRNA arm): 4 (25.00%)",
+            "Matched (scTIP arms): 6 (37.50%)",
+            "Rejected (insert_not_sequenced): 6 (37.50%)",
+        ],
+    )
+    def test_report_renders_a_run_with_drops_against_total_reads(self, expected_line: str) -> None:
+        """Test that a run that dropped reads renders every count over the same denominator.
+
+        The dropped reads are part of ``total_reads``, so adding them moves the arm
+        percentages down as well as rendering a non-zero rejected count: the
+        denominator is every read the run saw, not the reads it managed to write.
+        """
+        assert_that(make_dropped_stats().get_report()).contains(expected_line)
+
+    def test_rejected_percentage_is_taken_against_total_reads(self) -> None:
+        """Test that the rejected line's denominator is total_reads, not the reads written.
+
+        Computed here from the stats object rather than written out as a literal,
+        so an implementation dividing by ``unmatched_written + matched_written``
+        -- which differs from ``total_reads`` by exactly the dropped reads -- is
+        caught by the number rather than by the shape of the line.
+        """
+        stats = make_dropped_stats()
+        expected = PrepareStats.fraction(stats.insert_not_sequenced, stats.total_reads)
+
+        assert_that(stats.get_report()).contains(
+            f"{INSERT_NOT_SEQUENCED_LABEL}: {stats.insert_not_sequenced} ({expected:.2%})"
+        )
+
+    def test_rejected_line_renders_an_exact_count_beside_a_rounded_percentage(self) -> None:
+        """Test that a drop rate too small to show as a percentage still shows as a count.
+
+        This is the rate the counter exists for: a few reads in tens of millions,
+        enough to desync a downstream reader and not enough to move two decimal
+        places. Rendering the count beside the percentage is what makes the line
+        readable at that rate, so the count is asserted where the percentage has
+        rounded to nothing.
+        """
+        report = make_rare_drop_stats().get_report()
+
+        assert_that(report).contains(
+            f"{INSERT_NOT_SEQUENCED_LABEL}: {RARE_INSERT_NOT_SEQUENCED} (0.00%)"
+        )
 
     def test_report_handles_zero_reads_without_error(self) -> None:
         """Test that a run with no reads renders rather than raising ZeroDivisionError."""
@@ -582,6 +919,7 @@ class TestPrepareStatsReportCounts:
         assert_that(report).contains("Total reads: 0")
         assert_that(report).contains("Unmatched (scRNA arm): 0 (0.00%)")
         assert_that(report).contains("Matched (scTIP arms): 0 (0.00%)")
+        assert_that(report).contains("Rejected (insert_not_sequenced): 0 (0.00%)")
         assert_that(report).contains("# Target Distribution")
 
 
@@ -595,9 +933,10 @@ class TestPrepareStatsReportDistributions:
     def test_target_distribution_renders_against_total_reads(self, expected_entry: str) -> None:
         """Test that per-target counts render as a percentage of total_reads, not matched_written.
 
-        Unlike assign-targets' target_section(), this stage never filters, so
-        every target line's denominator is the same total_reads the unmatched
-        count uses, not the sum of matched reads alone.
+        Unlike assign-targets' target_section(), every target line's denominator
+        here is the same total_reads the unmatched count uses -- every read the
+        run saw, the few dropped for having no sequenced insert included -- not
+        the sum of matched reads alone.
         """
         assert_that(make_stats().get_report()).contains(expected_entry)
 
@@ -724,16 +1063,51 @@ class TestPrepareStatsDetectedTargets:
             {NO_TARGET: stats.unmatched_written, **stats.target_written}
         )
 
-    def test_counts_sum_to_total_reads_because_the_stage_never_filters(self) -> None:
-        """Test that the listed counts account for every read the run saw, not a subset.
+    @pytest.mark.parametrize(
+        "stats_builder", [make_stats, make_dropped_stats], ids=["no_drops", "with_drops"]
+    )
+    def test_counts_sum_to_the_reads_the_run_wrote(
+        self, stats_builder: Callable[[], PrepareStats]
+    ) -> None:
+        """Test that the listed counts account for every read written, not a subset of them.
 
-        This stage dispatches each input read to exactly one arm, so a consumer
-        can treat the listed counts as a partition of the run rather than a
-        sample of it, and check that reading against the report's own total.
+        This stage dispatches each input read to exactly one arm unless the read
+        had no sequenced insert, in which case it reaches no arm and is named by
+        no token here. So a consumer can treat the listed counts as a partition of
+        the reads the run wrote rather than a sample of them, and check that
+        reading against the report's own total less its rejected count -- the two
+        numbers the report states the invariant over.
+
+        Args:
+            stats_builder: Builds the run whose file is read, with and without
+                dropped reads, so the subtracted term is exercised at zero and not.
         """
-        stats = make_stats()
+        stats = stats_builder()
 
-        assert_that(sum(detected_counts(stats).values())).is_equal_to(stats.total_reads)
+        assert_that(sum(detected_counts(stats).values())).is_equal_to(
+            stats.total_reads - stats.insert_not_sequenced
+        )
+
+    def test_rendering_is_unchanged_by_reads_dropped_for_an_unsequenced_insert(self) -> None:
+        """Test that a dropped read leaves this file exactly as it was.
+
+        A dropped read reached no arm, so there is no bucket for it to name and no
+        count for it to move. The downstream consumer sizes its arm fan-out from
+        this file, so a token for reads that went nowhere would size work for an
+        output that does not exist, and a count folded into an existing arm's row
+        would size that arm's work wrongly. The omission is deliberate rather than
+        an oversight, so it is pinned against the very same tallies with the drop
+        count zeroed -- which fails any implementation that lets the new counter
+        reach this rendering at all, rather than merely asserting the absence of a
+        token nobody has written yet.
+        """
+        with_drops = make_dropped_stats()
+        without_drops = dataclasses.replace(with_drops, insert_not_sequenced=0)
+
+        rendered = with_drops.get_detected_targets()
+
+        assert_that(rendered).is_equal_to(without_drops.get_detected_targets())
+        assert_that(rendered).does_not_contain("insert_not_sequenced")
 
     def test_listed_tokens_are_the_sentinel_or_a_target_name(self) -> None:
         """Test that nothing but the sentinel and the run's own target keys is emitted."""
@@ -767,12 +1141,18 @@ class TestPrepareStatsMqcGeneralStats:
 
         assert_that(list(payload["data"].keys())).is_equal_to([prefix])
 
-    def test_data_section_contains_exactly_the_two_percentage_fields(self) -> None:
-        """Test that the per-prefix section carries pct_unmatched and pct_matched, and nothing else."""
+    def test_data_section_contains_exactly_the_three_percentage_fields(self) -> None:
+        """Test that the per-prefix section carries the three percentage columns and nothing else.
+
+        The third is the one outcome that reaches no arm. A table carrying only the
+        two destinations reports every run as though every read it saw was written
+        somewhere, which is exactly the reading under which zero-length records left
+        this stage unnoticed.
+        """
         payload = make_stats().to_mqc_general_stats(MQC_PREFIX_A)
 
         assert_that(set(payload["data"][MQC_PREFIX_A].keys())).is_equal_to(
-            {"pct_unmatched", "pct_matched"}
+            set(GENERAL_STATS_COLUMNS)
         )
 
     def test_pct_unmatched_reuses_the_fraction_staticmethod(self) -> None:
@@ -798,6 +1178,66 @@ class TestPrepareStatsMqcGeneralStats:
 
         assert_that(payload["data"][MQC_PREFIX_A]["pct_matched"]).is_equal_to(expected)
 
+    def test_pct_insert_not_sequenced_reuses_the_fraction_staticmethod(self) -> None:
+        """Test that the dropped percentage is insert_not_sequenced / total_reads * 100, via fraction.
+
+        Asserted on a run that actually dropped reads, because the interesting way to
+        get this column wrong is to take it against the reads the run wrote rather than
+        against every read it saw - a denominator that agrees with ``total_reads``
+        exactly when the tally is zero, which it is in every other case in this file.
+        The written-read denominator is computed here too and asserted to give a
+        different number, so the value itself rules it out rather than the reading of
+        the implementation.
+        """
+        stats = make_dropped_stats()
+        expected = PrepareStats.fraction(stats.insert_not_sequenced, stats.total_reads) * 100
+        reads_written = stats.unmatched_written + stats.matched_written
+        against_reads_written = (
+            PrepareStats.fraction(stats.insert_not_sequenced, reads_written) * 100
+        )
+
+        data = stats.to_mqc_general_stats(MQC_PREFIX_A)["data"][MQC_PREFIX_A]
+
+        assert_that(data[INSERT_NOT_SEQUENCED_COLUMN]).is_equal_to(expected)
+        assert_that(data[INSERT_NOT_SEQUENCED_COLUMN]).is_not_equal_to(against_reads_written)
+
+    def test_pct_insert_not_sequenced_is_scaled_like_every_other_percentage_column(self) -> None:
+        """Test that the dropped percentage is a 0-100 percentage, not a 0-1 fraction.
+
+        This column's ``max`` is 1 where its neighbours' is 100, and that bound is a
+        colour-ramp ceiling rather than a change of units. A value rescaled to match
+        the bound would read as one hundredth of the rate it describes, and would do it
+        silently, because at the rate this counter exists for every rendering of it
+        rounds to the same printed ``0.00%`` either way. Half the reads dropped is
+        50.0 here - not 0.5, and not 0.005.
+        """
+        stats = PrepareStats(
+            total_reads=2, unmatched_written=1, target_written={}, insert_not_sequenced=1
+        )
+
+        data = stats.to_mqc_general_stats(MQC_PREFIX_A)["data"][MQC_PREFIX_A]
+
+        assert_that(data[INSERT_NOT_SEQUENCED_COLUMN]).is_equal_to(50.0)
+
+    def test_rejected_percentage_matches_the_report_line_for_the_same_stats(self) -> None:
+        """Test that the column prints the percentage the report's Rejected line already prints.
+
+        Cross-checked against the report's own rendered text rather than against
+        ``fraction`` a second time, so a column that reuses ``fraction`` but scales or
+        rounds it differently from the report is still caught. The two numbers are read
+        side by side - one in the General Statistics table, one in ``prepare_stats.txt``
+        - and a reader who finds them disagreeing has no way to tell which of them is
+        describing the run.
+        """
+        stats = make_dropped_stats()
+
+        data = stats.to_mqc_general_stats(MQC_PREFIX_A)["data"][MQC_PREFIX_A]
+        pct = data[INSERT_NOT_SEQUENCED_COLUMN]
+
+        assert_that(stats.get_report()).contains(
+            f"{INSERT_NOT_SEQUENCED_LABEL}: {stats.insert_not_sequenced} ({pct:.2f}%)"
+        )
+
     def test_percentages_reconcile_with_get_report_for_the_same_stats(self) -> None:
         """Test that the payload's percentages are exactly what get_report() already prints.
 
@@ -815,12 +1255,17 @@ class TestPrepareStatsMqcGeneralStats:
         assert_that(report).contains(unmatched_text)
         assert_that(report).contains(matched_text)
 
-    def test_zero_reads_payload_does_not_raise_and_is_zero(self) -> None:
-        """Test that a run with no reads renders 0.0 percentages rather than raising."""
+    @pytest.mark.parametrize("column", GENERAL_STATS_COLUMNS)
+    def test_zero_reads_payload_does_not_raise_and_is_zero(self, column: str) -> None:
+        """Test that a run with no reads renders 0.0 percentages rather than raising.
+
+        Run over every column rather than the two destinations alone: the dropped
+        percentage divides by the same zero total the others do, and ``fraction`` is
+        what keeps all three from raising on it.
+        """
         payload = make_empty_stats().to_mqc_general_stats(MQC_PREFIX_A)
 
-        assert_that(payload["data"][MQC_PREFIX_A]["pct_unmatched"]).is_equal_to(0.0)
-        assert_that(payload["data"][MQC_PREFIX_A]["pct_matched"]).is_equal_to(0.0)
+        assert_that(payload["data"][MQC_PREFIX_A][column]).is_equal_to(0.0)
 
     def test_payload_is_json_serializable(self) -> None:
         """Test that the payload round-trips through json.dumps with no lingering Counter or dataclass."""
@@ -901,15 +1346,17 @@ class TestPrepareStatsMqcGeneralStats:
 
     @pytest.mark.parametrize("column", GENERAL_STATS_COLUMNS)
     @pytest.mark.parametrize("setting,value", list(PCONFIG_PERCENTAGE_SETTINGS.items()))
-    def test_every_column_header_renders_a_bounded_percentage(
+    def test_every_column_header_renders_a_suffixed_percentage(
         self, column: str, setting: str, value: object
     ) -> None:
-        """Test that each column is bounded 0-100 and formatted as a suffixed, two-decimal percentage.
+        """Test that each column starts at zero and is formatted as a suffixed, two-decimal percentage.
 
         The data section already carries percentages of ``total_reads``, so the
         header has to say so; without it MultiQC renders them as bare unsuffixed
         floats auto-scaled to whatever range the run happened to produce, which is
-        not comparable with the neighbouring stages' percentage columns.
+        not comparable with the neighbouring stages' percentage columns. The upper
+        bound is the one setting the three columns disagree on, so it is asserted
+        column by column below rather than shared here.
         """
         assert_that(general_stats_header(column)).contains_entry({setting: value})
 
@@ -924,6 +1371,73 @@ class TestPrepareStatsMqcGeneralStats:
 
         assert_that(scale).is_instance_of(str)
         assert_that(str(scale).strip()).is_not_empty()
+
+    @pytest.mark.parametrize("column,ceiling", list(GENERAL_STATS_COLUMN_MAX.items()))
+    def test_each_column_header_declares_its_own_colour_ramp_ceiling(
+        self, column: str, ceiling: int
+    ) -> None:
+        """Test that each column carries its own ``max``, and that the dropped column's is 1.
+
+        ``max`` is the only percentage setting the three columns disagree on, which is
+        why it is asserted per column instead of alongside the ones they share. The two
+        destination columns take the convention's 100, as every sibling stage's
+        percentage column does.
+
+        The dropped-reads column takes 1, and the reason is resolution, not units. The
+        rate this counter exists to surface is a few reads in tens of millions, so
+        against a 0-100 ramp every healthy library sits in the bottom thousandth of the
+        scale and renders in one flat colour - saying nothing the column's absence
+        would not also have said. Bounding the ramp at 1% spans the colour over the
+        range the metric actually varies in and saturates it at a rate that is already
+        a catastrophe, which is the correct behaviour at 1%.
+
+        What the bound does not touch is the number. The value stays
+        ``fraction(...) * 100``, on the same 0-100 percentage scale as its neighbours,
+        and with ``format`` left at the sibling convention's ``{:,.2f}`` the cell still
+        prints ``0.00%`` at the observed rate. The exact integer is one line away in
+        ``prepare_stats.txt``; what the bound buys is that the cell beside it is no
+        longer flat-coloured.
+        """
+        assert_that(general_stats_header(column)).contains_entry({"max": ceiling})
+
+    def test_the_unsequenced_insert_column_is_scaled_like_a_sibling_reject_column(self) -> None:
+        """Test that the dropped-reads column takes the ramp a sibling gives a reject count.
+
+        The two columns this stage already renders are scaled for legitimate
+        destinations - a read on either arm is this stage doing its job - so neither of
+        their ramps can stand in for a column counting reads that were thrown away. The
+        sibling stages already have columns of that kind and already agree on a ramp for
+        them, so it is read out of one of their builders rather than spelled again here.
+        """
+        header = general_stats_header(INSERT_NOT_SEQUENCED_COLUMN)
+
+        assert_that(header).contains_key("scale")
+        assert_that(header["scale"]).is_equal_to(sibling_reject_column_scale())
+
+    def test_the_unsequenced_insert_column_description_says_its_scan_bridges_an_interruption(
+        self,
+    ) -> None:
+        """Test that the column's tooltip says the scan behind its number bridges an interruption.
+
+        One phenomenon is counted twice in one report. The scan this stage runs to find
+        where the insert begins walks through a single interrupting base, so an
+        unsequenced tail carrying one sequencing error still reaches the read end and is
+        dropped here; extract-umis measures the same tract with a scan that stops at
+        that base, files the read under a shorter run, and so reports fewer reads in its
+        saturating bin than this column counts. A reader comparing the two numbers and
+        finding them different has to be able to learn why from the prose in front of
+        them, which is why the column's own description has to carry it rather than only
+        the design.
+
+        The affirmative ``bridges`` is pinned here and the negative ``unbridged`` on the
+        other description, in ``tests/test_umi_extractor.py``: neither word is a
+        substring of the other, so neither description can pass this by making the claim
+        that belongs to the other one.
+        """
+        header = general_stats_header(INSERT_NOT_SEQUENCED_COLUMN)
+
+        assert_that(header).contains_key("description")
+        assert_that(str(header["description"])).contains_ignoring_case(*BRIDGED_SCAN_WORDS)
 
 
 class TestPrepareStatsMqcTargetDistribution:
@@ -982,17 +1496,61 @@ class TestPrepareStatsMqcTargetDistribution:
 
         assert_that(target_names).is_equal_to(sorted(TARGET_WRITTEN))
 
-    def test_sum_of_every_category_count_equals_total_reads(self) -> None:
+    @pytest.mark.parametrize(
+        "build_stats", [make_stats, make_dropped_stats], ids=["no-drops", "with-drops"]
+    )
+    def test_sum_of_every_category_count_equals_the_reads_the_run_wrote(
+        self, build_stats: Callable[[], PrepareStats]
+    ) -> None:
         """Test that no read is double-counted or dropped across the categories.
 
-        This stage never filters, so the categories must partition every read
-        the run saw exactly once.
+        The categories are the arms reads were written to, so they must partition the
+        reads the run wrote exactly once - which is ``total_reads`` less the reads that
+        reached no arm, not ``total_reads`` itself. Run over a stats object that dropped
+        nothing and one that dropped six of sixteen, because the two denominators
+        coincide exactly when the tally is zero: a chart summing to the wrong one would
+        pass on the zero case alone, which is every other case in this file.
         """
-        stats = make_stats()
+        stats = build_stats()
 
         payload = stats.to_mqc_target_distribution(MQC_PREFIX_A)
 
-        assert_that(sum(payload["data"][MQC_PREFIX_A].values())).is_equal_to(stats.total_reads)
+        assert_that(sum(payload["data"][MQC_PREFIX_A].values())).is_equal_to(
+            stats.total_reads - stats.insert_not_sequenced
+        )
+
+    def test_no_category_is_added_for_reads_that_reached_no_arm(self) -> None:
+        """Test that a run's dropped reads get no bar of their own on the arm distribution.
+
+        This chart is a chart of arms and a dropped read has no arm, so a category for
+        those reads would put a bar on it for a file that does not exist - and a
+        consumer reading the chart as the arm fan-out would size work for that file. The
+        omission is deliberate rather than an oversight, so it is pinned here: the
+        categories stay the targets plus the scRNA arm even on a run that dropped reads,
+        and the tally's own name is among them nowhere.
+        """
+        stats = make_dropped_stats()
+
+        categories = stats.to_mqc_target_distribution(MQC_PREFIX_A)["data"][MQC_PREFIX_A]
+
+        assert_that(list(categories)).is_equal_to([*sorted(TARGET_WRITTEN), NO_TARGET])
+        assert_that(categories).does_not_contain_key("insert_not_sequenced")
+
+    def test_description_says_the_categories_are_the_arms_reads_were_written_to(self) -> None:
+        """Test that the description stops claiming the bars partition every read the run saw.
+
+        The prose is what a reader has in front of them when the bars do not add up to
+        the run's total, and it used to explain that gap away in advance by saying this
+        stage never filters. It does now, in exactly one case, so a reader missing a
+        handful of reads has to be sent to where those reads are reported - the General
+        Statistics table and the stats report - rather than told there are none. The
+        contrast with assign-targets' matched-only denominator is why this description
+        exists at all, so it is pinned as still being drawn.
+        """
+        description = str(make_stats().to_mqc_target_distribution(MQC_PREFIX_A)["description"])
+
+        assert_that(description).does_not_contain(NEVER_FILTERS_CLAIM)
+        assert_that(description).contains_ignoring_case(*BARGRAPH_DESCRIPTION_WORDS)
 
     def test_zero_count_target_is_still_included_as_a_category(self) -> None:
         """Test that a target tallied at zero still gets its own category, at zero.
@@ -1158,10 +1716,16 @@ class TestPrepareCountsConstruction:
 
     def test_explicit_values_are_stored(self) -> None:
         """Test that constructor arguments are readable back unchanged."""
-        counts = PrepareCounts(total=5, unmatched=2, target_counts=Counter({"targetA": 3}))
+        counts = PrepareCounts(
+            total=6,
+            unmatched=2,
+            insert_not_sequenced=1,
+            target_counts=Counter({"targetA": 3}),
+        )
 
-        assert_that(counts.total).is_equal_to(5)
+        assert_that(counts.total).is_equal_to(6)
         assert_that(counts.unmatched).is_equal_to(2)
+        assert_that(counts.insert_not_sequenced).is_equal_to(1)
         assert_that(counts.target_counts).is_equal_to(Counter({"targetA": 3}))
 
 
@@ -1235,6 +1799,49 @@ class TestPrepareCountsFold:
             assert_that(getattr(totals, field_name)[key]).is_greater_than(
                 max(before[key], folded_in[key])
             )
+
+    def test_add_folds_the_unsequenced_insert_tally_additively(self) -> None:
+        """Test that the dropped tally is summed across batches, not overwritten by the last.
+
+        Asserted on its own as well as through the parametrized scalar fold,
+        because it is the term that is new and the one an implementation is most
+        likely to leave out of ``add`` altogether -- which no other test would
+        notice while the counter is only ever zero. The premise is asserted first:
+        both batches really do carry a drop, so a fold that assigned rather than
+        added would land on the wrong number rather than coincidentally the right
+        one.
+        """
+        totals = tally(FIRST_BATCH_READS)
+        batch = tally(SECOND_BATCH_READS)
+        assert_that(totals.insert_not_sequenced).is_greater_than(0)
+        assert_that(batch.insert_not_sequenced).is_greater_than(0)
+        expected = totals.insert_not_sequenced + batch.insert_not_sequenced
+
+        totals.add(batch)
+
+        assert_that(totals.insert_not_sequenced).is_equal_to(expected)
+
+    @pytest.mark.parametrize("order", list(permutations(range(len(PERMUTED_PARTITION)))))
+    def test_fold_order_does_not_change_the_unsequenced_insert_tally(
+        self, order: tuple[int, ...]
+    ) -> None:
+        """Test that the dropped tally does not depend on which worker finished first.
+
+        The batches are folded in every possible order, and the tally has to come
+        out the same each time -- which is what keeps a run's rejected count a
+        property of the reads rather than of the pool's scheduling.
+
+        Args:
+            order: The order the partition's batches are folded in.
+        """
+        batches = split(READS, PERMUTED_PARTITION)
+        totals = PrepareCounts()
+
+        for index in order:
+            totals.add(tally(batches[index]))
+
+        assert_that(totals.insert_not_sequenced).is_equal_to(tally(READS).insert_not_sequenced)
+        assert_that(totals.insert_not_sequenced).is_greater_than(0)
 
     def test_add_leaves_the_folded_batch_untouched(self) -> None:
         """Test that folding does not corrupt the batch it read its tallies from."""
@@ -1338,6 +1945,22 @@ class TestPrepareCountsToStats:
         stats = counts.to_stats()
 
         assert_that(getattr(stats, stats_field)).is_equal_to(getattr(counts, counts_field))
+
+    def test_to_stats_carries_the_unsequenced_insert_tally_under_the_same_name(self) -> None:
+        """Test that the dropped tally arrives on the stats object, under its own name.
+
+        The counter, the report line and the MultiQC key are all spelled with one
+        token, so ``to_stats`` renames nothing here -- unlike the three tallies
+        either side of it, which it does rename. The tally is asserted non-zero
+        first, so a ``to_stats`` that dropped the field and let the stats object
+        default it cannot pass by both sides happening to be zero.
+        """
+        counts = tally(READS)
+        assert_that(counts.insert_not_sequenced).is_greater_than(0)
+
+        stats = counts.to_stats()
+
+        assert_that(stats.insert_not_sequenced).is_equal_to(counts.insert_not_sequenced)
 
     @pytest.mark.parametrize("stats_field", STATS_DICT_FIELD_NAMES)
     def test_to_stats_returns_plain_dicts_not_counters(self, stats_field: str) -> None:

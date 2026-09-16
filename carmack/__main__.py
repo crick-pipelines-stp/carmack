@@ -250,7 +250,10 @@ def prepare_reads(r1_annotated_fastq, r2_fastq, chemistry, output_dir, prefix, c
     target index at all - goes to the scRNA arm's three fixed output files, untrimmed
     past its UMI span. A read carrying a real target index is trimmed off the end of its
     TGIDX_POS span and written to that target's own scTIP (R1, R2) file pair. Every input
-    read is written exactly once, to exactly one of the two arms.
+    read is written exactly once, to exactly one of the two arms, unless its trim point
+    has reached the end of the read - a cluster that stopped sequencing before the insert
+    leaves nothing to write, so the read is written to no arm and counted as
+    insert_not_sequenced in the run's report instead.
     """
 
     log.info("Preparing reads from annotated FASTQ file...")
