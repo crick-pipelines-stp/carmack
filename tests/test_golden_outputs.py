@@ -199,14 +199,16 @@ MQC_PAYLOAD_GLOB = "*_mqc.json"
 MQC_ID_PREFIX = f"{CARMACK_PARENT_ID}_"
 
 # The payload files each stage emits, one file per payload. Listed per stage so that a
-# chemistry's expected set is assembled from the stages it actually runs. Four of these are
+# chemistry's expected set is assembled from the stages it actually runs. Five of these are
 # conditional -- a stage suppresses an edit-distance or anchor-run distribution it never
-# observed, because an empty chart claiming a measurement that was never taken is worse than
-# an absent section -- but every input this module runs exercises all four, so they belong
-# in the expected set rather than being treated as optional here.
+# observed, and the barcode rank curve when no read yielded a full barcode, because an empty
+# chart claiming a measurement that was never taken is worse than an absent section -- but
+# every input this module runs exercises all five, so they belong in the expected set rather
+# than being treated as optional here.
 EXTRACTION_MQC_STEMS = (
     "extraction_general_stats",
     "extraction_breakdown",
+    "extraction_barcode_rank",
     "extraction_edit_distance",
 )
 UMI_MQC_STEMS = (
@@ -709,6 +711,28 @@ class BarcodeGoldenOutputChecks:
             golden_run: The extraction run under test.
         """
         assert_is_png(golden_run.produced("bc_rank.png"))
+
+    def test_barcode_rank_payload_and_plot_are_both_written(self, golden_run: GoldenRun) -> None:
+        """
+        Test that one run writes both the barcode rank MultiQC payload and the rank PNG.
+
+        The two are separate outputs for separate readers and neither replaces the other:
+        the payload feeds the interactive barcode rank curve in the MultiQC report, while
+        the PNG is the standalone image this stage has always produced and the fallback for
+        a standalone CLI run with no MultiQC to read the payload. Asserted on the same run
+        so that dropping either one is caught, rather than being masked by the other still
+        being there.
+
+        Args:
+            golden_run: The extraction run under test.
+        """
+        (payload_name,) = expected_mqc_file_names(golden_run.prefix, ["extraction_barcode_rank"])
+        payload = golden_run.output_dir / payload_name
+        plot = golden_run.produced("bc_rank.png")
+        assert_that(payload.exists()).described_as(
+            f"MultiQC barcode rank payload {payload}"
+        ).is_true()
+        assert_that(plot.exists()).described_as(f"static barcode rank plot {plot}").is_true()
 
 
 class UmiGoldenOutputChecks:
