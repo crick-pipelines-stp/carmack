@@ -4,6 +4,7 @@ Tests for barcode matcher classes: MatcherBase, FixedPositionMatcher, KmerMatche
 
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal
 
 import pytest
@@ -22,13 +23,13 @@ from carmack.barcode.matchers.alignment_matcher import (
 from carmack.barcode.matchers.fixed_position_matcher import FixedPositionMatcher
 from carmack.barcode.matchers.kmer_matcher import KmerMatcher
 from carmack.barcode.matchers.matcher_base import MatcherBase, UnresolvedComponentStartError
-from carmack.chemistry.chemistry_base import ChemistryBase
-from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import PRIMER_A, PRIMER_C
+from carmack.chemistry.chemistry_base import ChemistryBase, WhitelistSource
+from carmack.chemistry.chemistry_carmack_custom_seq_1_0 import ME, PRIMER_A, PRIMER_C
 from carmack.chemistry.chemistry_factory import ChemistryFactory
 from carmack.chemistry.chemistry_hydrop import ChemistryHydrop
 from carmack.chemistry.read_component import ReadComponent, ReadComponentType
 from tests.conftest import WIDE_SPACER_DOWNSTREAM, WIDE_SPACER_UPSTREAM
-from tests.test_chemistry import ChemistryCarmackCustomSeq10
+from tests.test_chemistry import ChemistryCarmackCustomSeq10, StubChemistry
 
 # Matcher classes whose constructor takes an explicit error budget rather than reading one
 # from the chemistry.
@@ -309,6 +310,86 @@ class TestBarcodeMatcherBase:
         assert_that(spacer_results["upstream"]).is_equal_to(upstream_spacer)
         assert_that(spacer_results["downstream"]).is_equal_to(downstream_spacer)
 
+    @pytest.fixture
+    def bc_whitelist_source(self, tmp_path: Path) -> WhitelistSource:
+        """Write a one-entry whitelist file for the isolated 'BC' component and point at it.
+
+        StubChemistry validates, at construction, that every BARCODE component in its read
+        structure has a declared whitelist source, so this has to be a real file rather than a
+        value handed straight to the matcher.
+        """
+        whitelist_path = tmp_path / "bc_whitelist.txt"
+        whitelist_path.write_text("TTTT\n", encoding="utf-8")
+        return WhitelistSource(path=whitelist_path)
+
+    def test_check_spacers_never_compares_a_spacer_with_verify_false(
+        self, bc_whitelist_source: WhitelistSource
+    ) -> None:
+        """Test that check_spacers never compares a spacer whose verify flag is False.
+
+        Built on an isolated two-component read structure -- a spacer immediately
+        upstream of a barcode -- rather than a shipped chemistry, so the only thing
+        under test is the ``verify`` flag itself. The read is constructed to carry
+        the spacer's exact sequence at the exact offset ``check_spacers`` would read
+        it from, so a result here can only come from the flag being ignored, never
+        from the sequence genuinely being absent.
+        """
+        spacer_component = ReadComponent(
+            name="SPACER_UNVERIFIED",
+            type=ReadComponentType.OTHER,
+            length=5,
+            sequence="AAAAA",
+            verify=False,
+        )
+        barcode_component = ReadComponent(name="BC", type=ReadComponentType.BARCODE, length=4)
+        chemistry = StubChemistry(
+            components=(spacer_component, barcode_component),
+            sources={"BC": bc_whitelist_source},
+        )
+        matcher = FixedPositionMatcher(
+            whitelist=("TTTT",), component=barcode_component, chemistry=chemistry
+        )
+
+        read = "AAAAATTTT"
+        match_idx = (5, 9)
+
+        spacer_results = matcher.check_spacers(read, match_idx)
+
+        assert_that(spacer_results["upstream"]).is_none()
+
+    def test_check_spacers_still_resolves_a_verify_true_spacer_by_name(
+        self, bc_whitelist_source: WhitelistSource
+    ) -> None:
+        """Test that a verify=True spacer (the default) is unaffected by the new guard.
+
+        Same isolated read structure as the verify=False case above, with only the
+        flag flipped, so this pins the behaviour the guard must leave alone: a
+        spacer with a matching sequence and verify left at its default still
+        resolves to the spacer's own name, exactly as PRIMER_A, PRIMER_C, and
+        hydrop's SPACER_1/SPACER_2 do today.
+        """
+        spacer_component = ReadComponent(
+            name="SPACER_VERIFIED",
+            type=ReadComponentType.OTHER,
+            length=5,
+            sequence="AAAAA",
+        )
+        barcode_component = ReadComponent(name="BC", type=ReadComponentType.BARCODE, length=4)
+        chemistry = StubChemistry(
+            components=(spacer_component, barcode_component),
+            sources={"BC": bc_whitelist_source},
+        )
+        matcher = FixedPositionMatcher(
+            whitelist=("TTTT",), component=barcode_component, chemistry=chemistry
+        )
+
+        read = "AAAAATTTT"
+        match_idx = (5, 9)
+
+        spacer_results = matcher.check_spacers(read, match_idx)
+
+        assert_that(spacer_results["upstream"]).is_equal_to("SPACER_VERIFIED")
+
     # ==========================================
     # component_window() and requires_spacer_evidence()
     # ==========================================
@@ -488,6 +569,29 @@ class TestBarcodeMatcherBase:
         assert_that(matcher.check_spacers("A" * 150, (40, 48))).is_equal_to(
             {"upstream": None, "downstream": None}
         )
+
+    def test_check_spacers_still_returns_none_downstream_of_tgidx_once_me_has_a_sequence(
+        self, component_matcher: Callable[[str, str], KmerMatcher]
+    ) -> None:
+        """Test that ME's registered sequence never turns into a downstream spacer match.
+
+        Built on the real carmack_custom_seq_1_0 chemistry and a real KmerMatcher over TGIDX,
+        not the isolated stub used to pin the verify guard itself, since the point here is that
+        the real chemistry's real ME component does not regress. ME sits immediately downstream
+        of TGIDX and carries verify=False specifically so check_spacers keeps ignoring it, even
+        though it now carries its real, known sequence. The read below plants ME's exact
+        sequence at the exact offset check_spacers reads the downstream spacer from, so a match
+        here could only come from the verify guard being bypassed, never from the sequence
+        genuinely being absent -- pinning the guarantee that registering ME's sequence must not
+        turn it into a spacer that check_spacers verifies.
+        """
+        matcher = component_matcher("carmack_custom_seq_1_0", "TGIDX")
+        match_idx = (40, 48)
+        read = "A" * match_idx[1] + ME + "A" * 10
+
+        spacer_results = matcher.check_spacers(read, match_idx)
+
+        assert_that(spacer_results["downstream"]).is_none()
 
 
 class TestMatcherStartIdxContract:
@@ -2686,12 +2790,11 @@ class TestKmerMatcherTargetIndexAmbiguity:
 
         - the target index's previous component is the POLYG homopolymer, which carries no
           `sequence`, so it is rejected by the `match_seq` guard inside `check_spacers` (the
-          `spacer_component.type in (PRIMER, OTHER) and spacer_component.sequence` condition in
-          `matcher_base.py`);
-        - `ReadStructure.get_next(TGIDX)` returns the `ME` primer, but `ME`'s component also
-          carries no `sequence` (only its length is used, arithmetically, elsewhere in the
-          pipeline), so it is rejected by the same guard and no real comparison is ever made
-          downstream either;
+          `spacer_component.type in (PRIMER, OTHER) and spacer_component.sequence and
+          spacer_component.verify` condition in `matcher_base.py`);
+        - `ReadStructure.get_next(TGIDX)` returns the `ME` primer; `ME`'s component carries its
+          known sequence, but `verify=False` on it fails the same guard, so no real comparison
+          is ever made downstream either;
         - `check_spacers` therefore returns None on both sides for every candidate, no candidate
           is ever validated, and every tie over a target index falls through to a single attempt
           with no match.
@@ -2721,7 +2824,8 @@ class TestKmerMatcherTargetIndexAmbiguity:
         assert_that(previous.sequence).is_none()
         assert_that(following.name).is_equal_to("ME")
         assert_that(following.type).is_equal_to(ReadComponentType.PRIMER)
-        assert_that(following.sequence).is_none()
+        assert_that(following.sequence).is_equal_to("AGATGTGTATAAGAGACAG")
+        assert_that(following.verify).is_false()
 
     @pytest.mark.parametrize("index", [INDEX_A, INDEX_B])
     def test_same_matcher_resolves_an_unambiguous_exact_hit(

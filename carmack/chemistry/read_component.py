@@ -29,6 +29,9 @@ class ReadComponent:
         sequence: Optional known sequence for this component (e.g., primer
             sequence). Should be None for barcode components (since they are
             loaded from a whitelist).
+        verify: Whether matchers should check this component's sequence
+            against the read. False for a component whose sequence is known
+            but not meant to be spacer-verified here.
         homopolymer_base: For homopolymer components, the single repeated base
             (one of A, C, G, T).
         min_run: For homopolymer components, the minimum run length that anchors
@@ -43,6 +46,7 @@ class ReadComponent:
     type: ReadComponentType = ReadComponentType.OTHER
     length: int | None = None
     sequence: str | None = None
+    verify: bool = True
     homopolymer_base: str | None = None
     min_run: int | None = None
     start: int | None = field(init=False, default=None)
