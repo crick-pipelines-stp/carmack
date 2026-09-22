@@ -15,6 +15,8 @@ BAI_PATH = "tests/data/hydrop_scatac_1_S1_R1.sorted.bam.bai"
 TAGGED_BAM_PATH = "tests/data/hydrop_scatac_1_S1_R1.dedup.tagged.bam"
 BED_PATH = "tests/data/atac_k562_peaks.sorted.bed"
 BC_VALID_PATH = "tests/data/bc_valid.csv"
+LINEAR_DEDUP_BAM_PATH = "tests/data/linear_dedup_fixture.bam"
+LINEAR_DEDUP_BAI_PATH = "tests/data/linear_dedup_fixture.bam.bai"
 
 
 @mock.patch("carmack.__main__.carmack_cli")
@@ -119,7 +121,7 @@ class TestCli(unittest.TestCase):
         mock_atexit_register.side_effect = capture_register
 
         # Call run_carmack (we need to mock the carmack_cli call to avoid running the actual CLI)
-        with mock.patch("carmack.__main__.carmack_cli") as mock_carmack_cli:
+        with mock.patch("carmack.__main__.carmack_cli"):
             with mock.patch("carmack.__main__.stderr.print"):
                 carmack.__main__.run_carmack()
 
@@ -325,6 +327,145 @@ class TestCli(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("cell", result.output.lower())
 
+    @mock.patch("carmack.__main__.LinearDedup", autospec=True)
+    def test_cli_command_linear_dedup(self, mock_linear_dedup):
+        """Test linear-dedup command with all required arguments."""
+        # Init
+        params = {"output_dir": ".", "prefix": ""}
+
+        # Test
+        cmd = (
+            ["linear-dedup"]
+            + [LINEAR_DEDUP_BAM_PATH, LINEAR_DEDUP_BAI_PATH]
+            + self.assemble_params(params)
+        )
+        result = self.invoke_cli(cmd)
+
+        # Assert
+        self.assertEqual(result.exit_code, 0)
+        mock_linear_dedup.assert_called_once_with(
+            LINEAR_DEDUP_BAM_PATH, LINEAR_DEDUP_BAI_PATH, barcode_tag="CB"
+        )
+        mock_linear_dedup.return_value.linear_dedup_reads.assert_called_once_with(".", "")
+
+    @mock.patch("carmack.__main__.get_bai", autospec=True)
+    @mock.patch("carmack.__main__.LinearDedup", autospec=True)
+    def test_cli_command_linear_dedup_auto_bai(self, mock_linear_dedup, mock_get_bai):
+        """Test linear-dedup command auto-detects BAI when not provided."""
+        mock_get_bai.return_value = LINEAR_DEDUP_BAI_PATH
+
+        # Test without BAI argument
+        cmd = ["linear-dedup", LINEAR_DEDUP_BAM_PATH, "--output_dir", "."]
+        result = self.invoke_cli(cmd)
+
+        # Assert
+        self.assertEqual(result.exit_code, 0)
+        mock_get_bai.assert_called_once_with(LINEAR_DEDUP_BAM_PATH)
+        mock_linear_dedup.assert_called_once_with(
+            LINEAR_DEDUP_BAM_PATH, LINEAR_DEDUP_BAI_PATH, barcode_tag="CB"
+        )
+
+    @mock.patch("carmack.__main__.LinearDedup", autospec=True)
+    def test_cli_command_linear_dedup_default_barcode_tag(self, mock_linear_dedup):
+        """Test linear-dedup command defaults barcode_tag to CB when not provided."""
+        cmd = ["linear-dedup", LINEAR_DEDUP_BAM_PATH, LINEAR_DEDUP_BAI_PATH, "--output_dir", "."]
+        result = self.invoke_cli(cmd)
+
+        # Assert
+        self.assertEqual(result.exit_code, 0)
+        mock_linear_dedup.assert_called_once_with(
+            LINEAR_DEDUP_BAM_PATH, LINEAR_DEDUP_BAI_PATH, barcode_tag="CB"
+        )
+
+    @mock.patch("carmack.__main__.LinearDedup", autospec=True)
+    def test_cli_command_linear_dedup_custom_barcode_tag(self, mock_linear_dedup):
+        """Test linear-dedup command threads --barcode_tag through to LinearDedup."""
+        cmd = [
+            "linear-dedup",
+            LINEAR_DEDUP_BAM_PATH,
+            LINEAR_DEDUP_BAI_PATH,
+            "--output_dir",
+            ".",
+            "--barcode_tag",
+            "XC",
+        ]
+        result = self.invoke_cli(cmd)
+
+        # Assert
+        self.assertEqual(result.exit_code, 0)
+        mock_linear_dedup.assert_called_once_with(
+            LINEAR_DEDUP_BAM_PATH, LINEAR_DEDUP_BAI_PATH, barcode_tag="XC"
+        )
+
+    @mock.patch("carmack.__main__.LinearDedup", autospec=True)
+    def test_cli_command_linear_dedup_custom_barcode_tag_short_flag(self, mock_linear_dedup):
+        """Test linear-dedup command threads -b through to LinearDedup."""
+        cmd = [
+            "linear-dedup",
+            LINEAR_DEDUP_BAM_PATH,
+            LINEAR_DEDUP_BAI_PATH,
+            "-o",
+            ".",
+            "-b",
+            "XC",
+        ]
+        result = self.invoke_cli(cmd)
+
+        # Assert
+        self.assertEqual(result.exit_code, 0)
+        mock_linear_dedup.assert_called_once_with(
+            LINEAR_DEDUP_BAM_PATH, LINEAR_DEDUP_BAI_PATH, barcode_tag="XC"
+        )
+
+    @mock.patch("carmack.__main__.LinearDedup", autospec=True)
+    def test_cli_command_linear_dedup_with_prefix(self, mock_linear_dedup):
+        """Test linear-dedup command with a custom prefix."""
+        cmd = [
+            "linear-dedup",
+            LINEAR_DEDUP_BAM_PATH,
+            LINEAR_DEDUP_BAI_PATH,
+            "--prefix",
+            "linear_dedup_test",
+            "--output_dir",
+            ".",
+        ]
+        result = self.invoke_cli(cmd)
+
+        self.assertEqual(result.exit_code, 0)
+        mock_linear_dedup.return_value.linear_dedup_reads.assert_called_once_with(
+            ".", "linear_dedup_test"
+        )
+
+    @mock.patch("carmack.__main__.LinearDedup", autospec=True)
+    def test_cli_command_linear_dedup_default_prefix(self, mock_linear_dedup):
+        """Test linear-dedup command defaults prefix to None when not provided."""
+        cmd = ["linear-dedup", LINEAR_DEDUP_BAM_PATH, LINEAR_DEDUP_BAI_PATH]
+        result = self.invoke_cli(cmd)
+
+        self.assertEqual(result.exit_code, 0)
+        mock_linear_dedup.return_value.linear_dedup_reads.assert_called_once_with(".", None)
+
+    @mock.patch("carmack.__main__.LinearDedup", autospec=True)
+    def test_cli_command_linear_dedup_help(self, mock_linear_dedup):
+        """Test linear-dedup --help displays help message describing the grouping/scoring rule."""
+        result = self.invoke_cli(["linear-dedup", "--help"])
+
+        self.assertEqual(result.exit_code, 0)
+        output_lower = result.output.lower()
+        self.assertIn("bam", output_lower)
+        self.assertIn("barcode", output_lower)
+        self.assertIn("chromosome", output_lower)
+        self.assertIn("strand", output_lower)
+        self.assertIn("position", output_lower)
+        self.assertIn("score", output_lower)
+        # The docstring describes the grouping/scoring rule in carmack's own terms only,
+        # never naming any external/downstream pipeline this module might later run inside of.
+        self.assertNotIn("cutandrun", output_lower)
+        self.assertNotIn("cut&run", output_lower)
+        self.assertNotIn("cut&tag", output_lower)
+        self.assertNotIn("nf-core", output_lower)
+        self.assertNotIn("jacquard", output_lower)
+
     def test_cli_commands_listed_in_help(self):
         """Test that all commands are listed in the main help output."""
         result = self.invoke_cli(["--help"])
@@ -335,3 +476,4 @@ class TestCli(unittest.TestCase):
         self.assertIn("bam-tag-deduplicate", result.output)
         self.assertIn("split-bam", result.output)
         self.assertIn("call-cells", result.output)
+        self.assertIn("linear-dedup", result.output)
