@@ -112,10 +112,11 @@ class LinearDedup:
         eligible_pairs_by_chromosome: dict[str, int] = {}
         best_by_key: dict[tuple[str, str, bool, int], tuple[str, float]] = {}
 
-        total_reads = input_bam.count()
+        total_reads = input_bam.count(until_eof=True)
+        input_bam.reset()
         with progress_bar(unit="reads") as pbar:
             task = pbar.add_task("Deduplicating reads", total=total_reads)
-            for read in input_bam.fetch():
+            for read in input_bam.fetch(until_eof=True):
                 pbar.advance(task)
 
                 if not read.is_read1:
@@ -193,10 +194,11 @@ class LinearDedup:
             The number of records written.
         """
         written = 0
-        total_reads = input_bam.count()
+        total_reads = input_bam.count(until_eof=True)
+        input_bam.reset()
         with progress_bar(unit="reads") as pbar:
             task = pbar.add_task("Writing deduplicated reads", total=total_reads)
-            for read in input_bam.fetch():
+            for read in input_bam.fetch(until_eof=True):
                 pbar.advance(task)
 
                 if read.is_secondary or read.is_supplementary:

@@ -1136,6 +1136,69 @@ class TestFindBestReadsUnpaired:
         assert_that(stats.total_pairs).described_as("total_pairs").is_equal_to(1)
 
 
+class TestFindBestReadsFullyUnmappedPair:
+    """A pair whose R1 and R2 are both unmapped sorts to reference_id -1, past every mapped
+    record, in a coordinate-sorted BAM. pysam.AlignmentFile.fetch() with no arguments stops
+    before that trailing block unless until_eof=True is passed -- so this pair must still be
+    seen, counted, and excluded, not silently invisible to the scan."""
+
+    def test_fully_unmapped_pair_is_seen_counted_and_excluded(self, tmp_path: Path):
+        header = build_synthetic_header(SYNTHETIC_REFERENCES)
+        anchor_r1, anchor_r2 = make_pair(
+            header,
+            "anchor",
+            "chr1",
+            r1_pos=7000,
+            r1_reverse=False,
+            r2_pos=7200,
+            r2_reverse=True,
+            r1_tags={"CB": "CELL_ANCHOR", "AS": 25},
+        )
+
+        def build_unmapped_segment(is_read1: bool) -> pysam.AlignedSegment:
+            segment = pysam.AlignedSegment(header)
+            segment.query_name = "fully_unmapped"
+            segment.is_paired = True
+            segment.is_read1 = is_read1
+            segment.is_read2 = not is_read1
+            segment.is_unmapped = True
+            segment.mate_is_unmapped = True
+            segment.reference_id = -1
+            segment.reference_start = -1
+            segment.next_reference_id = -1
+            segment.next_reference_start = -1
+            segment.mapping_quality = 0
+            segment.query_sequence = "A" * 50
+            segment.query_qualities = pysam.qualitystring_to_array("I" * 50)
+            segment.set_tags([("CB", "CELL_UNMAPPED")])
+            return segment
+
+        unmapped_r1 = build_unmapped_segment(is_read1=True)
+        unmapped_r2 = build_unmapped_segment(is_read1=False)
+        # The fully-unmapped pair (reference_id -1) must come after every mapped record for the
+        # file to stay in valid coordinate-sort order -- exactly the trailing block that a plain
+        # fetch() (no until_eof) fails to reach.
+        bam_path, bai_path = write_indexed_bam(
+            header,
+            tmp_path / "fully_unmapped.bam",
+            [anchor_r1, anchor_r2, unmapped_r1, unmapped_r2],
+        )
+
+        engine = LinearDedup(bam_path, bai_path)
+        with pysam.AlignmentFile(bam_path, "rb", index_filename=bai_path) as bam:
+            winners, stats = engine.find_best_reads(bam)
+
+        assert_that(stats.total_pairs).described_as(
+            "total_pairs (anchor R1 + fully-unmapped R1)"
+        ).is_equal_to(2)
+        assert_that(stats.skipped_unmapped).described_as(
+            "skipped_unmapped (the fully-unmapped pair's R1)"
+        ).is_equal_to(1)
+        assert_that(stats.eligible_pairs).described_as("eligible_pairs").is_equal_to(1)
+        assert_that(winners).described_as("winners").contains("anchor")
+        assert_that(winners).described_as("winners").does_not_contain("fully_unmapped")
+
+
 class TestFindBestReadsTieBreak:
     """Exact AS ties keep whichever read was seen first (strict >, not >=)."""
 
