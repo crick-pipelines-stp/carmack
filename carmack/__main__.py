@@ -16,6 +16,7 @@ import carmack
 from carmack.assign_targets.target_assigner import DEFAULT_MAX_WORKERS, TargetAssigner
 from carmack.barcode.barcode_extractor import BarcodeExtractor
 from carmack.cell_caller.cell_caller import CellCaller
+from carmack.linear_dedup.linear_dedup import LinearDedup
 from carmack.prepare_reads.read_preparer import DEFAULT_MAX_WORKERS as PREPARE_READS_DEFAULT_MAX_WORKERS
 from carmack.prepare_reads.read_preparer import ReadPreparer
 from carmack.split_reads.split_reads import BamSplitter
@@ -41,6 +42,7 @@ click.rich_click.COMMAND_GROUPS = {
                 "prepare-reads",
                 "bam-tag-deduplicate",
                 "call-cells",
+                "linear-dedup",
             ],
         },
         {
@@ -348,6 +350,29 @@ def call_cells(bed, bam, bai, force_n, min_overlap, visualise, output_dir, prefi
         plot.savefig(os.path.join(output_dir, f"{prefix}barcode_matrix.png"))
 
     cell_caller.export(output_dir, prefix, force_n)
+
+
+@carmack_cli.command("linear-dedup")
+@click.argument("bam", required=True, nargs=1, type=click.Path(exists=True), metavar="<bam>")
+@click.argument("bai", required=False, nargs=1, type=click.Path(exists=True), default=None, metavar="<bai>")
+@click.option("-o", "--output_dir", required=False, type=click.Path(exists=True), default=".", help="Output directory to save generated files")
+@click.option("-p", "--prefix", required=False, type=str, default=None, show_default=True, help="Prefix for generated files")
+@click.option("-b", "--barcode_tag", required=False, type=str, default="CB", show_default=True, help="Tag carrying the cell barcode used to group reads into duplicate groups")
+def linear_dedup(bam, bai, output_dir, prefix, barcode_tag):
+    """
+    Deduplicate aligned BAM reads by position and score, for chemistries with no UMI to key on.
+
+    Reads are grouped by cell barcode, chromosome and strand-aware fragment position, and only the
+    single highest-scoring read pair per group (by AS tag) is kept. The barcode tag to group on is
+    configurable, and defaults to CB. A coordinate-sorted, indexed output BAM is written alongside a
+    stats report to the output directory.
+    """
+    if bai is None:
+        bai = get_bai(bam)
+
+    log.info("Deduplicating reads by position and score...")
+    linear_dedup_engine = LinearDedup(bam, bai, barcode_tag=barcode_tag)
+    linear_dedup_engine.linear_dedup_reads(output_dir, prefix)
 
 
 # Main script is being run - launch the CLI
