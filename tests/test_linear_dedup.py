@@ -1240,6 +1240,132 @@ class TestFindBestReadsTieBreak:
         assert_that(winners).described_as("tie winners").does_not_contain("tie_second")
 
 
+MULTI_CONTIG_REFERENCES = {"chr1": 5000, "chr2": 5000, "chr3": 5000}
+
+
+class TestFindBestReadsMultiContigPartitioning:
+    """find_best_reads scans one contig at a time internally (see the module docstring) --
+    this proves that partitioning never leaks a winner or a stats count across contigs, and
+    that a trailing no-coordinate pair is still reconciled into stats without ever winning."""
+
+    def test_winners_and_per_chromosome_stats_do_not_leak_across_contigs(self, tmp_path: Path):
+        header = build_synthetic_header(MULTI_CONTIG_REFERENCES)
+
+        # chr1: a duplicate pair -- one winner (the higher-AS read).
+        chr1_low_r1, chr1_low_r2 = make_pair(
+            header,
+            "chr1_low",
+            "chr1",
+            r1_pos=100,
+            r1_reverse=False,
+            r2_pos=300,
+            r2_reverse=True,
+            r1_tags={"CB": "CELL_A", "AS": 10},
+        )
+        chr1_high_r1, chr1_high_r2 = make_pair(
+            header,
+            "chr1_high",
+            "chr1",
+            r1_pos=100,
+            r1_reverse=False,
+            r2_pos=300,
+            r2_reverse=True,
+            r1_tags={"CB": "CELL_A", "AS": 99},
+        )
+        # chr2: a lone read at the same (chrom-agnostic) position/cell as chr1's group --
+        # must not collide with it, since chrom is part of the fragment key.
+        chr2_alone_r1, chr2_alone_r2 = make_pair(
+            header,
+            "chr2_alone",
+            "chr2",
+            r1_pos=100,
+            r1_reverse=False,
+            r2_pos=300,
+            r2_reverse=True,
+            r1_tags={"CB": "CELL_A", "AS": 5},
+        )
+        # chr3: two different cells at the same position -- both winners.
+        chr3_cell_c_r1, chr3_cell_c_r2 = make_pair(
+            header,
+            "chr3_cell_c",
+            "chr3",
+            r1_pos=100,
+            r1_reverse=False,
+            r2_pos=300,
+            r2_reverse=True,
+            r1_tags={"CB": "CELL_C", "AS": 20},
+        )
+        chr3_cell_d_r1, chr3_cell_d_r2 = make_pair(
+            header,
+            "chr3_cell_d",
+            "chr3",
+            r1_pos=100,
+            r1_reverse=False,
+            r2_pos=300,
+            r2_reverse=True,
+            r1_tags={"CB": "CELL_D", "AS": 20},
+        )
+
+        def build_fully_unmapped_segment(is_read1: bool) -> pysam.AlignedSegment:
+            segment = pysam.AlignedSegment(header)
+            segment.query_name = "fully_unmapped"
+            segment.is_paired = True
+            segment.is_read1 = is_read1
+            segment.is_read2 = not is_read1
+            segment.is_unmapped = True
+            segment.mate_is_unmapped = True
+            segment.reference_id = -1
+            segment.reference_start = -1
+            segment.next_reference_id = -1
+            segment.next_reference_start = -1
+            segment.mapping_quality = 0
+            segment.query_sequence = "A" * 50
+            segment.query_qualities = pysam.qualitystring_to_array("I" * 50)
+            segment.set_tags([("CB", "CELL_UNMAPPED")])
+            return segment
+
+        unmapped_r1 = build_fully_unmapped_segment(is_read1=True)
+        unmapped_r2 = build_fully_unmapped_segment(is_read1=False)
+
+        bam_path, bai_path = write_indexed_bam(
+            header,
+            tmp_path / "multi_contig.bam",
+            [
+                chr1_low_r1,
+                chr1_high_r1,
+                chr1_low_r2,
+                chr1_high_r2,
+                chr2_alone_r1,
+                chr2_alone_r2,
+                chr3_cell_c_r1,
+                chr3_cell_d_r1,
+                chr3_cell_c_r2,
+                chr3_cell_d_r2,
+                unmapped_r1,
+                unmapped_r2,
+            ],
+        )
+
+        engine = LinearDedup(bam_path, bai_path)
+        with pysam.AlignmentFile(bam_path, "rb", index_filename=bai_path) as bam:
+            winners, stats = engine.find_best_reads(bam)
+
+        assert_that(winners).described_as("multi-contig winners").is_equal_to(
+            {"chr1_high", "chr2_alone", "chr3_cell_c", "chr3_cell_d"}
+        )
+        assert_that(stats.pairs_kept_by_chromosome).described_as(
+            "pairs_kept_by_chromosome must not leak across contigs"
+        ).is_equal_to({"chr1": 1, "chr2": 1, "chr3": 2})
+        assert_that(stats.eligible_pairs_by_chromosome).described_as(
+            "eligible_pairs_by_chromosome must not leak across contigs"
+        ).is_equal_to({"chr1": 2, "chr2": 1, "chr3": 2})
+        assert_that(stats.total_pairs).described_as("total_pairs").is_equal_to(6)
+        assert_that(stats.skipped_unmapped).described_as(
+            "the fully-unmapped pair's R1"
+        ).is_equal_to(1)
+        assert_that(stats.eligible_pairs).described_as("eligible_pairs").is_equal_to(5)
+
+
 class TestLinearDedupCustomBarcodeTag:
     """barcode_tag is threaded through both fragment_key grouping and the fail-fast check."""
 
@@ -1661,6 +1787,40 @@ class TestLinearDedupReadsOrchestration:
         assert_that((tmp_path / f"{expected_prefix}.linear_dedup.bam.bai").exists()).described_as(
             "output BAM index uses the same derived prefix"
         ).is_true()
+
+
+class TestLinearDedupOutputOrderMatchesFilteredInput:
+    """linear_dedup_reads no longer runs an external sort on its output (see the module's
+    linear_dedup_reads docstring) -- this proves the assumption that makes that safe: the
+    output is exactly the filtered input stream, in the same relative order, not merely
+    non-decreasing by (reference_id, reference_start)."""
+
+    def test_output_order_equals_filtered_input_order(self, tmp_path: Path):
+        engine = LinearDedup(BAM_PATH, BAI_PATH)
+        engine.linear_dedup_reads(str(tmp_path), prefix="order_check")
+
+        with pysam.AlignmentFile(str(tmp_path / "order_check.linear_dedup.bam"), "rb") as bam:
+            output_records = list(bam)
+
+        with pysam.AlignmentFile(BAM_PATH, "rb", index_filename=BAI_PATH) as input_bam:
+            winners, _ = LinearDedup(BAM_PATH, BAI_PATH).find_best_reads(input_bam)
+
+        with pysam.AlignmentFile(BAM_PATH, "rb", index_filename=BAI_PATH) as input_bam:
+            expected_order = [
+                read
+                for read in input_bam.fetch(until_eof=True)
+                if not read.is_secondary
+                and not read.is_supplementary
+                and read.query_name in winners
+            ]
+
+        assert_that(len(output_records)).described_as(
+            "output record count vs. the filtered input stream"
+        ).is_equal_to(len(expected_order))
+        for position, (actual, expected) in enumerate(zip(output_records, expected_order)):
+            assert_that(actual.to_string()).described_as(
+                f"record at output position {position} vs. its filtered-input counterpart"
+            ).is_equal_to(expected.to_string())
 
 
 # ---------------------------------------------------------------------------------------------
