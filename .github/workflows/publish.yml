@@ -1,5 +1,12 @@
-# The one workflow that publishes. It runs the suite first (tests.yml, called as-is) and
-# pushes the runtime image to ghcr.io/crick-pipelines-stp/carmack only if that passes.
+# The one workflow that publishes. It starts when a tests.yml run finishes, and pushes the
+# runtime image to ghcr.io/crick-pipelines-stp/carmack only if that run passed and was a
+# push to main, a v* tag, or a dispatch from one of those refs. To rebuild an image,
+# dispatch the "Docker tests" workflow on main or the tag, not this one.
+#
+# A workflow_run run executes in the context of the default branch, so github.ref and
+# github.sha name the tip of main, not the commit that was tested. Everything below
+# works from the tested run's head_sha and head_branch instead (head_branch holds the
+# tag name for a tag push).
 #
 # Tags:
 #   sha-<7>        every push to main and every release; never moved, so it is what a
@@ -11,14 +18,16 @@
 name: Publish image
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["Docker tests"]
+    types: [completed]
+    # Matched against the tested run's head_branch, which is the tag name for a tag push.
+    # PR runs never start this workflow, so its runs, and its badge, are publishes only.
+    branches: [main, "v*"]
 
 # A half-finished push is never cancelled; a second one for the same ref waits instead.
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 permissions:
@@ -26,16 +35,20 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
+  SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+  SOURCE_REF: ${{ github.event.workflow_run.head_branch }}
 
 jobs:
-  test:
-    uses: ./.github/workflows/tests.yml
-
   publish:
     name: push the runtime image
-    needs: test
-    # A dispatch from any other branch would push an image nobody asked for.
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    # PR runs, fork runs and runs from any other branch never publish: an image from
+    # them is one nobody asked for.
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && contains(fromJSON('["push", "workflow_dispatch"]'), github.event.workflow_run.event)
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && (github.event.workflow_run.head_branch == 'main'
+          || startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -43,6 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.SOURCE_SHA }}
           # git describe needs the tags and the history back to them.
           fetch-depth: 0
 
@@ -54,7 +68,9 @@ jobs:
         run: |
           version=$(git describe --tags --match 'v*' 2>/dev/null \
               | sed 's/^v//;s/-\([0-9]*\)-g.*/.\1/') || true
-          echo "version=${version:-0.0.0+$(git rev-parse --short HEAD)}" >> "$GITHUB_OUTPUT"
+          short_sha=$(git rev-parse --short=7 HEAD)
+          echo "version=${version:-0.0.0+${short_sha}}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -64,6 +80,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Every tag names its source explicitly: metadata-action's own sha, branch and
+      # semver detection reads github.sha and github.ref, which here are main's tip.
       - name: Compute tags and labels
         id: meta
         uses: docker/metadata-action@v5
@@ -71,13 +89,14 @@ jobs:
           images: ${{ env.IMAGE }}
           flavor: latest=false
           tags: |
-            type=sha,prefix=sha-
-            type=raw,value=main,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+            type=raw,value=sha-${{ steps.version.outputs.short_sha }}
+            type=raw,value=main,enable=${{ env.SOURCE_REF == 'main' }}
+            type=semver,pattern={{version}},value=${{ env.SOURCE_REF }},enable=${{ startsWith(env.SOURCE_REF, 'v') }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.SOURCE_REF }},enable=${{ startsWith(env.SOURCE_REF, 'v') }}
+            type=raw,value=latest,enable=${{ startsWith(env.SOURCE_REF, 'v') && !contains(env.SOURCE_REF, '-') }}
           labels: |
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
 
       # provenance is off so the push is one plain manifest: a single digest to pin, and no
       # attestation entry in an index for older apptainer pulls to trip over.
@@ -99,6 +118,7 @@ jobs:
       - name: Record the pin
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
           TAGS: ${{ steps.meta.outputs.tags }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -108,7 +128,7 @@ jobs:
             echo "carmack version \`${VERSION}\`"
             echo
             echo '```'
-            echo "${IMAGE}:sha-${GITHUB_SHA::7}@${DIGEST}"
+            echo "${IMAGE}:sha-${SHORT_SHA}@${DIGEST}"
             echo '```'
             echo
             echo "Tags:"

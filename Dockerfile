@@ -54,7 +54,7 @@ LABEL org.opencontainers.image.title="carmack" \
 # discards every comment in the file and reflows the inline tables.
 ARG CARMACK_VERSION=0.0.0
 
-COPY --chown=$MAMBA_USER:$MAMBA_USER pyproject.toml README.md ./
+COPY --chown=$MAMBA_USER:$MAMBA_USER pyproject.toml README.md LICENSE ./
 COPY --chown=$MAMBA_USER:$MAMBA_USER carmack ./carmack
 
 # pip resolves only the pure-python remainder here: conda has already satisfied
@@ -85,10 +85,10 @@ CMD ["pytest"]
 FROM installed AS runtime
 
 # Dropping the source tree stops carmack/ next to WORKDIR shadowing the installed
-# package for anything run from this directory, which is the failure the README warns
-# about. It has to happen in a leaf stage: the test stage resolves ".[tests]" from this
-# same directory, and against a stripped one setuptools builds an empty carmack wheel
-# that pip then installs over the real one.
+# package for anything run from this directory, which is the failure
+# docs/development.md warns about. It has to happen in a leaf stage: the test stage
+# resolves ".[tests]" from this same directory, and against a stripped one setuptools
+# builds an empty carmack wheel that pip then installs over the real one.
 RUN rm -rf carmack \
     && carmack --help > /dev/null \
     && python -c "import carmack, pathlib; assert 'site-packages' in carmack.__file__, carmack.__file__" \

@@ -3,15 +3,21 @@
 # the job -- which is why `contents: read` is the whole permission set.
 name: Docker tests
 
-# main is not a trigger here: publish.yml calls this workflow before it pushes, so a push
-# to main runs the suite once, as the gate on its own image.
+# A push to main or a v* tag is tested here too, and publish.yml starts from the run's
+# completion rather than calling this workflow, so every run of the suite, PR or not, is
+# recorded under this workflow and its badge.
 on:
   pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
-  workflow_call:
 
+# Only a PR's superseded run is cancelled. Every other run gets a group of its own,
+# because a cancelled -- or queued-and-replaced -- run on main or a tag never reaches
+# publish.yml, and that commit would get no image.
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 permissions:
