@@ -1,6 +1,8 @@
 # carmack
 
 [![Docker tests](https://github.com/crick-pipelines-stp/carmack/actions/workflows/tests.yml/badge.svg)](https://github.com/crick-pipelines-stp/carmack/actions/workflows/tests.yml)
+[![Publish image](https://github.com/crick-pipelines-stp/carmack/actions/workflows/publish.yml/badge.svg)](https://github.com/crick-pipelines-stp/carmack/actions/workflows/publish.yml)
+[![ghcr.io](https://img.shields.io/badge/ghcr.io-carmack-2496ED?logo=docker&logoColor=white)](https://github.com/crick-pipelines-stp/carmack/pkgs/container/carmack)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
