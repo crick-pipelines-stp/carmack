@@ -2,6 +2,7 @@
 
 [![Docker tests](https://github.com/crick-pipelines-stp/carmack/actions/workflows/tests.yml/badge.svg)](https://github.com/crick-pipelines-stp/carmack/actions/workflows/tests.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Single-cell multi-omic tools: a command-line toolkit that takes raw sequencing reads from
 a barcoded single-cell library through cell barcode, UMI and target-index extraction and
@@ -74,3 +75,7 @@ Commands that run on a worker pool take `-n`/`--cpu_count` to set its size.
 
 See [`docs/`](docs/README.md) for the contributor guide and the design notes behind
 individual stages.
+
+## License
+
+carmack is released under the [MIT License](LICENSE).
