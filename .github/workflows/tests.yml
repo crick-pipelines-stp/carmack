@@ -3,11 +3,12 @@
 # the job -- which is why `contents: read` is the whole permission set.
 name: Docker tests
 
+# main is not a trigger here: publish.yml calls this workflow before it pushes, so a push
+# to main runs the suite once, as the gate on its own image.
 on:
   pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: tests-${{ github.ref }}

@@ -11,11 +11,14 @@ FROM mambaorg/micromamba:2.9.0-debian13 AS base
 # single-threaded gzip. Nothing here is now uninstallable by pip alone -- the dependency
 # that forced a conda base, umi_tools, is gone -- so this is a build-time choice rather
 # than a requirement, and the image could move to python:3.12 plus an apt pigz if the
-# rebuild cost were ever worth trading away.
+# rebuild cost were ever worth trading away. procps is there for Nextflow, not carmack:
+# the wrapper a Nextflow task runs in exits 1 before the command starts when `ps` is
+# missing, because it uses it to collect task metrics.
 RUN micromamba install -y -n base -c conda-forge -c bioconda \
         python=3.12 \
         pip \
         pigz \
+        procps-ng \
         pysam \
         numpy \
         scipy \
@@ -88,6 +91,7 @@ FROM installed AS runtime
 # that pip then installs over the real one.
 RUN rm -rf carmack \
     && carmack --help > /dev/null \
-    && python -c "import carmack, pathlib; assert 'site-packages' in carmack.__file__, carmack.__file__"
+    && python -c "import carmack, pathlib; assert 'site-packages' in carmack.__file__, carmack.__file__" \
+    && ps --version > /dev/null
 
 CMD ["bash"]
