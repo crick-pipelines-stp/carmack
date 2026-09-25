@@ -1,6 +1,27 @@
 # carmack
 Single-cell multi-omic tools
 
+## Container image
+
+CI publishes the `runtime` target of the `Dockerfile` to
+`ghcr.io/crick-pipelines-stp/carmack` (public, no login needed) after the test
+suite passes, from `.github/workflows/publish.yml`:
+
+| Tag | Pushed on | Moves? |
+|---|---|---|
+| `sha-<7-char commit>` | every push to `main`, every release | never |
+| `main` | every push to `main` | yes |
+| `X.Y.Z`, `X.Y` | a `vX.Y.Z` git tag | `X.Y` does |
+| `latest` | a `vX.Y.Z` git tag that is not a pre-release | yes |
+
+Pin a `sha-*` tag together with its digest (printed in the run's summary), for
+example `ghcr.io/crick-pipelines-stp/carmack:sha-01f2d18@sha256:…`; a tag on its
+own can in principle be re-pushed. `carmack --version` inside the image reports
+`X.Y.Z` for a release, `X.Y.Z.N` for N commits past one, and `0.0.0+<sha>`
+before the first release. The image includes `ps`, which Nextflow needs to run a
+task at all. No `local` tag is ever published, so a consumer's own
+`docker build` of this repo can use that name without colliding.
+
 ## Development
 
 ### Git hooks
