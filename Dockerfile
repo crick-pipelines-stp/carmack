@@ -85,10 +85,10 @@ CMD ["pytest"]
 FROM installed AS runtime
 
 # Dropping the source tree stops carmack/ next to WORKDIR shadowing the installed
-# package for anything run from this directory, which is the failure the README warns
-# about. It has to happen in a leaf stage: the test stage resolves ".[tests]" from this
-# same directory, and against a stripped one setuptools builds an empty carmack wheel
-# that pip then installs over the real one.
+# package for anything run from this directory, which is the failure
+# docs/development.md warns about. It has to happen in a leaf stage: the test stage
+# resolves ".[tests]" from this same directory, and against a stripped one setuptools
+# builds an empty carmack wheel that pip then installs over the real one.
 RUN rm -rf carmack \
     && carmack --help > /dev/null \
     && python -c "import carmack, pathlib; assert 'site-packages' in carmack.__file__, carmack.__file__" \
