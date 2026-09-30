@@ -4,7 +4,6 @@
 > Development of carmack has moved to
 > **[neurogenomics/carmack](https://github.com/neurogenomics/carmack)**. Open issues and
 > pull requests there, and pull container images from `ghcr.io/neurogenomics/carmack`.
-> This repository is no longer maintained.
 
 [![Docker tests](https://github.com/crick-pipelines-stp/carmack/actions/workflows/tests.yml/badge.svg)](https://github.com/crick-pipelines-stp/carmack/actions/workflows/tests.yml)
 [![Publish image](https://github.com/crick-pipelines-stp/carmack/actions/workflows/publish.yml/badge.svg)](https://github.com/crick-pipelines-stp/carmack/actions/workflows/publish.yml)
