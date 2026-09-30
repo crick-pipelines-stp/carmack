@@ -1,7 +1,10 @@
 # The one workflow that publishes. It starts when a tests.yml run finishes, and pushes the
-# runtime image to ghcr.io/crick-pipelines-stp/carmack only if that run passed and was a
+# runtime image to docker.io/thecrick/carmack only if that run passed and was a
 # push to main, a v* tag, or a dispatch from one of those refs. To rebuild an image,
 # dispatch the "Docker tests" workflow on main or the tag, not this one.
+#
+# Docker Hub login needs the DOCKERHUB_TOKEN repo secret: an access token for the
+# thecrick account with read and write scope.
 #
 # A workflow_run run executes in the context of the default branch, so github.ref and
 # github.sha name the tip of main, not the commit that was tested. Everything below
@@ -34,7 +37,8 @@ permissions:
   contents: read
 
 env:
-  IMAGE: ghcr.io/${{ github.repository }}
+  DOCKERHUB_USERNAME: thecrick
+  IMAGE: docker.io/thecrick/carmack
   SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
   SOURCE_REF: ${{ github.event.workflow_run.head_branch }}
 
@@ -52,7 +56,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,9 +79,8 @@ jobs:
 
       - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Every tag names its source explicitly: metadata-action's own sha, branch and
       # semver detection reads github.sha and github.ref, which here are main's tip.
